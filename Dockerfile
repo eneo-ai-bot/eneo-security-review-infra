@@ -12,4 +12,8 @@ RUN chmod 0755 /opt/eneo-bootstrap/install.sh \
     /opt/eneo-bootstrap/install.py \
     /usr/local/bin/eneo-review-memory
 
-USER hermes
+# Hermes runs s6-overlay as PID 1, which must start as root to initialize /run
+# and then drops privileges to the unprivileged hermes user (uid 10000) on its
+# own. Do NOT add `USER hermes` here: a non-root PID 1 leaves s6 unable to chown
+# /run, and the container crash-loops at preinit (exit code 100). The gateway
+# still runs unprivileged via that s6-managed privilege drop.

@@ -22,8 +22,9 @@ services:
       # - "traefik.http.services.eneo-review.loadbalancer.server.port=8644"
     volumes:
       - hermes_review_data:/opt/data
-    security_opt:
-      - no-new-privileges:true
+    # `no-new-privileges` is intentionally NOT set: it is incompatible with the
+    # Hermes image's s6-overlay init, which must drop root -> hermes (uid 10000)
+    # at startup. The gateway still runs unprivileged via that s6 privilege drop.
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=256m
     stop_grace_period: 90s
