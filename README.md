@@ -177,10 +177,10 @@ On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 @review
 ```
 
-Hermes reviews the current head and posts one PR comment. A normal result is at
-most three findings and roughly 450 visible words. When findings exist, one
-collapsed **Copyable fix brief for a coding agent** gives the author a compact
-prompt that can be pasted into Codex or Claude Code.
+Hermes reviews the current head and posts one short, scannable PR comment. A
+normal result has at most three findings. When findings exist, one collapsed
+**Copyable fix brief for a coding agent** gives the author a compact prompt that
+can be pasted into Codex or Claude Code.
 
 The reviewer covers:
 
