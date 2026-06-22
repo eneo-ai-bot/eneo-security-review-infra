@@ -8,6 +8,14 @@ context_file_max_chars: 24000
 display:
   tool_progress: 'off'
   interim_assistant_messages: false
+  busy_ack_enabled: false
+  long_running_notifications: false
+
+# PR-sized contexts never reach Codex's 272K compaction threshold, so the
+# auto-raise feature is moot for reviews; disable it purely to keep its one-off
+# "auto-compaction raised to 85%" notice out of the PR comment stream.
+compression:
+  codex_gpt55_autoraise: false
 
 terminal:
   backend: local
