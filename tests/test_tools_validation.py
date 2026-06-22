@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import email.message
 import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,23 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
 from eneo_review_tools import tools  # noqa: E402
+
+
+class _FakeResponse:
+    """Minimal context-manager stand-in for urlopen's response object."""
+
+    def __init__(self, body: bytes = b"{}", headers: dict | None = None):
+        self._body = body
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, _n: int = -1) -> bytes:
+        return self._body
 
 
 class ToolValidationTests(unittest.TestCase):
@@ -207,6 +226,7 @@ class ToolValidationTests(unittest.TestCase):
         with (
             patch.dict(os.environ, self.env, clear=False),
             patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=[]),
             patch.object(tools, "_file_at_revision", return_value=b"line one\n") as reader,
         ):
             result = json.loads(
@@ -221,6 +241,88 @@ class ToolValidationTests(unittest.TestCase):
             )
         reader.assert_called_once_with("contributor/platform-fork", "backend/app.py", "a" * 40)
         self.assertEqual(result["source_repository"], "contributor/platform-fork")
+
+    # --- read-failure fix: transport retry, stable not-found, path/side contract ---
+
+    def _http_error(self, code: int):
+        return urllib.error.HTTPError("https://api.github.com/x", code, "err", email.message.Message(), None)
+
+    def _pull(self):
+        return {
+            "head": {"sha": "a" * 40, "repo": {"full_name": "eneo/platform"}},
+            "base": {"sha": "b" * 40, "repo": {"full_name": "eneo/platform"}},
+        }
+
+    def test_request_retries_transient_5xx_then_succeeds(self):
+        with (
+            patch.object(tools.time, "sleep"),
+            patch("urllib.request.urlopen", side_effect=[self._http_error(502), _FakeResponse(b'{"ok":true}')]) as opener,
+        ):
+            data, truncated, _ = tools._request("/repos/eneo/platform/pulls/1")
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(data, b'{"ok":true}')
+        self.assertFalse(truncated)
+
+    def test_request_does_not_retry_4xx(self):
+        with patch("urllib.request.urlopen", side_effect=self._http_error(404)) as opener:
+            with self.assertRaises(tools.NotFoundError):
+                tools._request("/repos/eneo/platform/pulls/1")
+        self.assertEqual(opener.call_count, 1)
+
+    def test_request_does_not_retry_generic_urlerror(self):
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")) as opener:
+            with self.assertRaises(tools.ToolInputError):
+                tools._request("/repos/eneo/platform/pulls/1")
+        self.assertEqual(opener.call_count, 1)
+
+    def test_file_not_found_message_is_stable_and_pathless(self):
+        with patch.object(tools, "_request_json", side_effect=tools.NotFoundError("not found")):
+            with self.assertRaises(tools.ToolInputError) as ctx:
+                tools._file_at_revision("eneo/platform", "backend/guessed/path.py", "a" * 40)
+        message = str(ctx.exception)
+        self.assertIn("do not retry guessed paths", message)
+        self.assertNotIn("backend/guessed/path.py", message)
+
+    def test_pr_file_rejects_base_side_for_added_file_before_network(self):
+        files = [{"path": "backend/new.py", "status": "added", "previous_path": None}]
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=files),
+            patch.object(tools, "_file_at_revision") as reader,
+        ):
+            result = json.loads(
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new.py", "side": "base"})
+            )
+        self.assertIn("added file has no base side", result["error"])
+        reader.assert_not_called()
+
+    def test_pr_file_rejects_head_side_for_deleted_file_before_network(self):
+        files = [{"path": "backend/gone.py", "status": "removed", "previous_path": None}]
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=files),
+            patch.object(tools, "_file_at_revision") as reader,
+        ):
+            result = json.loads(
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/gone.py", "side": "head"})
+            )
+        self.assertIn("deleted file has no head side", result["error"])
+        reader.assert_not_called()
+
+    def test_pr_file_base_side_of_renamed_file_uses_previous_path(self):
+        files = [{"path": "backend/new_name.py", "status": "renamed", "previous_path": "backend/old_name.py"}]
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=files),
+            patch.object(tools, "_file_at_revision", return_value=b"prior\n") as reader,
+        ):
+            json.loads(
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new_name.py", "side": "base"})
+            )
+        reader.assert_called_once_with("eneo/platform", "backend/old_name.py", "b" * 40)
 
 
 if __name__ == "__main__":

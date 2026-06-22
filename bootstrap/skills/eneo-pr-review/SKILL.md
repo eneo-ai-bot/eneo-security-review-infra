@@ -30,7 +30,13 @@ only the `eneo_review` tools available to this run.
 3. Read the unified diff with `eneo_pr_diff`. Start with changed hunks. If the
    full diff is truncated, use path-specific diff reads. Call `eneo_pr_file` for
    bounded head or base ranges only when needed to establish causality, inspect
-   a guard, or disprove a claim.
+   a guard, or disprove a claim. Pass an exact repository path — one from the
+   `eneo_pr_overview` changed-file list or already seen in the diff — never a
+   guessed path. Use `side: head` for added or modified files and for any
+   unchanged caller, callee, or test you read for context; use `side: base` only
+   to compare the prior version of a modified or deleted file. An added file has
+   no base and a deleted file has no head. If a read returns not-found, do not
+   retry it or guess variants — continue from the diff and overview evidence.
 4. **Pass 1, candidate review:** create at most eight candidates across security,
    correctness, reliability, contracts, tests, maintainability, performance, and
    migrations. Ignore style, naming, formatting, subjective preferences, and

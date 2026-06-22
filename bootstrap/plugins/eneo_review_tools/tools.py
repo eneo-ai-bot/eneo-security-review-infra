@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +22,10 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 class ToolInputError(ValueError):
     pass
+
+
+class NotFoundError(ToolInputError):
+    """GitHub returned 404 for the requested repository, pull request, revision, or path."""
 
 
 def _output(value: Any) -> str:
@@ -72,6 +77,12 @@ def _path(raw: Any, *, required: bool = True) -> str:
         raise ToolInputError(str(exc)) from exc
 
 
+# Transient GitHub statuses (502/503/504) are retried briefly with a short linear
+# backoff; every 4xx is final and never retried.
+_RETRYABLE_STATUS = frozenset({502, 503, 504})
+_MAX_ATTEMPTS = 3
+
+
 def _request(
     endpoint: str,
     *,
@@ -92,29 +103,35 @@ def _request(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(f"{_API_ROOT}{endpoint}", headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read(max_bytes + 1)
-            truncated = len(data) > max_bytes
-            if truncated:
-                data = data[:max_bytes]
-            response_headers = {
-                "etag": response.headers.get("ETag", ""),
-                "content_type": response.headers.get("Content-Type", ""),
-            }
-            return data, truncated, response_headers
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise ToolInputError("GitHub rejected the read token") from exc
-        if exc.code == 403:
-            raise ToolInputError("GitHub denied or rate-limited the read request") from exc
-        if exc.code == 404:
-            raise ToolInputError("GitHub repository, pull request, revision, or path was not found") from exc
-        if exc.code == 406:
-            raise ToolInputError("GitHub could not render this diff; inspect smaller files instead") from exc
-        raise ToolInputError(f"GitHub read failed with HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise ToolInputError("GitHub could not be reached") from exc
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read(max_bytes + 1)
+                truncated = len(data) > max_bytes
+                if truncated:
+                    data = data[:max_bytes]
+                response_headers = {
+                    "etag": response.headers.get("ETag", ""),
+                    "content_type": response.headers.get("Content-Type", ""),
+                }
+                return data, truncated, response_headers
+        except urllib.error.HTTPError as exc:
+            if exc.code in _RETRYABLE_STATUS and attempt + 1 < _MAX_ATTEMPTS:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            if exc.code == 401:
+                raise ToolInputError("GitHub rejected the read token") from exc
+            if exc.code == 403:
+                raise ToolInputError("GitHub denied or rate-limited the read request") from exc
+            if exc.code == 404:
+                # Callers translate this into a stable, domain-specific message.
+                raise NotFoundError("not found") from exc
+            if exc.code == 406:
+                raise ToolInputError("GitHub could not render this diff; inspect smaller files instead") from exc
+            raise ToolInputError(f"GitHub read failed with HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise ToolInputError("GitHub could not be reached") from exc
+    raise ToolInputError("GitHub could not be reached")
 
 
 def _request_json(endpoint: str, *, max_bytes: int = 2_000_000) -> Any:
@@ -129,7 +146,10 @@ def _request_json(endpoint: str, *, max_bytes: int = 2_000_000) -> Any:
 
 def _pr(repository: str, number: int) -> dict[str, Any]:
     owner_repo = urllib.parse.quote(repository, safe="/")
-    value = _request_json(f"/repos/{owner_repo}/pulls/{number}")
+    try:
+        value = _request_json(f"/repos/{owner_repo}/pulls/{number}")
+    except NotFoundError as exc:
+        raise ToolInputError("the repository or pull request was not found") from exc
     if not isinstance(value, dict):
         raise ToolInputError("GitHub returned an unexpected pull request response")
     return value
@@ -150,6 +170,7 @@ def _changed_files(repository: str, number: int, maximum: int = 300) -> list[dic
                 continue
             filename = str(item.get("filename", ""))[:500]
             status = str(item.get("status", ""))[:40]
+            previous_filename = str(item.get("previous_filename", ""))[:500]
             blob_sha = str(item.get("sha", "")).strip().lower()
             patch_text = str(item.get("patch", ""))
             # GitHub normally supplies the file blob SHA. If it does not, keep a
@@ -170,6 +191,7 @@ def _changed_files(repository: str, number: int, maximum: int = 300) -> list[dic
                 {
                     "path": filename,
                     "status": status,
+                    "previous_path": previous_filename or None,
                     "additions": int(item.get("additions", 0) or 0),
                     "deletions": int(item.get("deletions", 0) or 0),
                     "changes": int(item.get("changes", 0) or 0),
@@ -279,9 +301,17 @@ def _file_at_revision(repository: str, path: str, revision: str) -> bytes:
     owner_repo = urllib.parse.quote(repository, safe="/")
     encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
     ref = urllib.parse.quote(revision, safe="")
-    value = _request_json(
-        f"/repos/{owner_repo}/contents/{encoded_path}?ref={ref}", max_bytes=2_000_000
-    )
+    try:
+        value = _request_json(f"/repos/{owner_repo}/contents/{encoded_path}?ref={ref}", max_bytes=2_000_000)
+    except NotFoundError as exc:
+        # Stable, path-independent text so repeated guesses collapse to one failure class
+        # and the gateway exact_failure loop guard can still stop the loop.
+        raise ToolInputError(
+            "the requested file was not found at the pull-request revision. Read paths from the "
+            "eneo_pr_overview changed-file list; use side: head for added or modified files and "
+            "side: base only for the prior version of a modified or deleted file; do not retry "
+            "guessed paths."
+        ) from exc
     if not isinstance(value, dict) or value.get("type") != "file":
         raise ToolInputError("the requested path is not a regular file")
     if value.get("encoding") != "base64" or not isinstance(value.get("content"), str):
@@ -315,9 +345,28 @@ def pr_file(args: dict[str, Any], **_: Any) -> str:
         source_repository = _repository_name(((side_data.get("repo") or {}).get("full_name", "")))
         if not _SHA_RE.fullmatch(revision):
             raise ToolInputError("GitHub did not provide a valid requested revision")
+        # Validate path/side against the changed-file list so invalid combinations fail
+        # deterministically with one stable error instead of the model learning by repeated
+        # 404s. Unchanged context files are absent from the list but remain readable at head.
+        changed = {item["path"]: item for item in _changed_files(repository, number)}
+        info = changed.get(path)
+        read_path = path
+        if info is not None:
+            status = info.get("status", "")
+            if side == "base" and status == "added":
+                raise ToolInputError("an added file has no base side; read it at side: head")
+            if side == "head" and status == "removed":
+                raise ToolInputError("a deleted file has no head side; read it at side: base")
+            if side == "base" and status == "renamed":
+                previous = info.get("previous_path")
+                if not previous:
+                    raise ToolInputError("the prior path of this renamed file is unavailable; read it at side: head")
+                read_path = previous
+        elif side == "base":
+            raise ToolInputError("side: base applies only to a changed file; read unchanged context at side: head")
         # A PR head can live in a fork. The repository name is derived only from the
         # allowlisted PR metadata, never accepted from model input.
-        raw = _file_at_revision(source_repository, path, revision)
+        raw = _file_at_revision(source_repository, read_path, revision)
         if b"\x00" in raw[:8192]:
             raise ToolInputError("binary files are not returned")
         text = raw.decode("utf-8", errors="replace")
