@@ -1,0 +1,52 @@
+services:
+  hermes-review:
+    build:
+      context: .
+      args:
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    restart: unless-stopped
+    command: gateway run
+    env_file:
+      - .env
+    expose:
+      - "8644"
+    networks:
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      # Fallback ONLY if the Dokploy Domains UI fails to route after deploy:
+      # - "traefik.http.routers.eneo-review.rule=Host(`eneo-security.sundsvall.dev`)"
+      # - "traefik.http.routers.eneo-review.entrypoints=websecure"
+      # - "traefik.http.routers.eneo-review.tls.certResolver=letsencrypt"
+      # - "traefik.http.services.eneo-review.loadbalancer.server.port=8644"
+    volumes:
+      - hermes_review_data:/opt/data
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8644/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  hermes_review_data:
