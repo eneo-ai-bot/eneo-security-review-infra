@@ -96,11 +96,12 @@ Ponytail is allowed to reduce unnecessary code, abstractions, dependencies, and 
 
 The review should feel like a thoughtful colleague, not a scanner dump.
 
-The visible comment is limited to:
+The canonical live contract for the visible comment is
+`bootstrap/workspace/AGENTS.md`. In human terms, the comment is limited to:
 
 - one summary sentence;
 - at most three findings;
-- about 450 visible words;
+- a short prose budget spent on evidence and the fix;
 - one compact section per finding;
 - one collapsed, copyable fix brief when findings exist.
 
@@ -132,7 +133,7 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 I found one issue worth addressing before merge.
 
 ### Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · **Security / reliability** · **High confidence**
+`backend/src/intric/jobs/service.py:142` · security · **High / important**
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 

@@ -49,12 +49,14 @@ only the `eneo_review` tools available to this run.
    PR state, changed paths, file versions, and human suppressions. Omit every item
    returned with `suppressed: true`.
 8. Return only the final GitHub comment under AGENTS.md. Do not expose private
-   chain-of-thought, candidate lists, rejected findings, or scoring deliberation.
+   chain-of-thought, candidate lists, rejected findings, scoring deliberation,
+   provider notices, progress updates, or status chatter.
 
 ## Hard limits
 
 - At most three published findings.
-- About 450 visible words, plus one collapsed fix brief under 300 words.
+- The final comment must satisfy the loaded AGENTS.md GitHub comment contract,
+  including its visible prose budget and collapsed fix brief rules.
 - No watchlist, style feedback, praise filler, dependency shopping list,
   architecture rewrite, or generic best-practice lecture.
 - No shell, file edits, code execution, tests, GitHub writes through tools, or

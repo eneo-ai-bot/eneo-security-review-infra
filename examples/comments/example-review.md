@@ -3,7 +3,7 @@
 I found one issue worth addressing before merge.
 
 ### Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · **Security / reliability** · **High confidence**
+`backend/src/intric/jobs/service.py:142` · security · **High / important**
 
 The new enqueue path passes the document ID but not the verified tenant ID. The
 worker later reloads the row by primary key, so the authorization boundary from

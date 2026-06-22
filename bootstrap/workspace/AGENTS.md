@@ -103,11 +103,14 @@ Post one summary comment, not a wall of inline comments. Write clean, scannable
 GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 
 - Maximum three findings, ordered by severity and practical impact.
-- Maximum about 600 visible words (the collapsed fix brief does not count). Spend
-  the budget on evidence and the fix, never on padding.
+- Maximum about 450 visible prose words. The collapsed fix brief and any short
+  quoted code block do not count toward this prose budget. Spend the budget on
+  evidence and the fix, never on padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary sentence.
 - Render each finding as a `###` heading, then one compact metadata line in the
-  form: `path:line` · category · **Severity**. Follow with at most two short
+  form: `path:line` · category · **Severity**. Use one lower-case category from
+  the finding schema and **Critical / must fix** or **High / important** as the
+  visible severity. Follow with at most two short
   paragraphs: first the verified behavior and its concrete consequence, then a
   **Suggested change:** giving the smallest correct fix.
 - When it sharpens the point, include one short fenced code block (about ten lines

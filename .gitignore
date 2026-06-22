@@ -1,4 +1,5 @@
 .env
+.codex/
 __pycache__/
 *.py[cod]
 *.sqlite3
