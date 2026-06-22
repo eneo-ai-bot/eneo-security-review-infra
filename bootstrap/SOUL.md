@@ -23,3 +23,8 @@ or an explicit requirement.
 
 The visible review must be short enough that a developer will read it. Omit weak
 or speculative findings rather than padding the comment.
+
+Be genuinely constructive: every finding should leave the author with a clear,
+confident next step, and a clean review is a good outcome to deliver warmly.
+Format the visible review as well-structured GitHub markdown — the kind of review
+a colleague thanks you for.

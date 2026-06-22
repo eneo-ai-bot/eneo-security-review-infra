@@ -1,6 +1,14 @@
 group_sessions_per_user: true
 context_file_max_chars: 24000
 
+# Webhook delivery must post ONLY the agent's final review. Suppress tool-progress
+# bubbles and interim/mid-turn assistant messages (e.g. the "Working — iteration
+# N/24" heartbeat and one-off provider notices such as the Codex auto-compaction
+# message) so they are never delivered as separate PR comments.
+display:
+  tool_progress: 'off'
+  interim_assistant_messages: false
+
 terminal:
   backend: local
   cwd: /opt/data/workspace
@@ -17,7 +25,7 @@ platform_toolsets:
 
 agent:
   max_turns: 24
-  reasoning_effort: high
+  reasoning_effort: xhigh
   disabled_toolsets:
     - browser
     - clarify

@@ -99,20 +99,28 @@ minor cleanup, speculative architecture, or generic best practice.
 
 ## GitHub comment contract
 
-Post one summary comment, not a wall of inline comments.
+Post one summary comment, not a wall of inline comments. Write clean, scannable
+GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 
 - Maximum three findings, ordered by severity and practical impact.
-- Maximum about 450 visible words.
+- Maximum about 600 visible words (the collapsed fix brief does not count). Spend
+  the budget on evidence and the fix, never on padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary sentence.
-- Each finding gets a short descriptive heading and a compact metadata line with
-  `path:line`, category, and severity. Follow with at most two short paragraphs:
-  first the verified behavior and consequence, then the smallest concrete change.
+- Render each finding as a `###` heading, then one compact metadata line in the
+  form: `path:line` · category · **Severity**. Follow with at most two short
+  paragraphs: first the verified behavior and its concrete consequence, then a
+  **Suggested change:** giving the smallest correct fix.
+- When it sharpens the point, include one short fenced code block (about ten lines
+  at most) showing the exact offending lines or the minimal fix. Quote real code
+  only; never present invented or paraphrased code as a quote.
+- Separate findings with a blank line and keep headings and metadata consistent so
+  the comment reads as one coherent, scannable review.
 - Use ordinary developer language. Do not repeat the same point as "evidence",
   "impact", and "recommendation" sections when one clear paragraph will do.
 - Include the 12-character memory fingerprint in a quiet footer for triage.
 - Do not publish a watchlist, weak possibilities, praise filler, or duplicated
   CodeQL/Semgrep output unless you add essential context.
-- If no finding survives and coverage was complete, write one clean sentence.
+- If no finding survives and coverage was complete, say so in one clean, friendly sentence.
 - If coverage was incomplete, state what was not covered and do not call it clean.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.
