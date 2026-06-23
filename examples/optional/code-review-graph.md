@@ -99,3 +99,42 @@ semantic search, documentation and issue ingestion, organization-wide lineage,
 or long-horizon knowledge workflows. Those are valid uses for CocoIndex or
 Cognee, but they add an indexing pipeline, model/embedding choices, storage, and
 operational policy that the first PR reviewer does not need.
+
+## Build decision and refinements (Codex-validated, MIN_SCORE 9)
+
+Decision: **graph-later, metrics-gated.** The graph is a later triage-quality
+enhancement, added only if review telemetry proves missing structural context is a
+recurring problem. It cannot fix coverage honesty, evidence quality, or publish
+gating.
+
+Note on the large-PR compaction noise (resolved separately, not via a read budget):
+the root cause was a mis-set `compression.threshold`. `codex_gpt55_autoraise: false`
+had dropped the gpt-5.5/Codex trigger from 85% back to the global 50% (~136K of the
+272K window), so even medium reviews compacted mid-run and emitted noisy
+"Compacting context" / "Session compressed" status comments. Fixed by setting
+`compression.threshold: 0.80` (~218K). A hard read-budget is therefore NOT needed to
+prevent compaction, and genuinely huge PRs are allowed to compact (the desired
+behaviour for them). **Triage-then-deep-dive** — risk-rank changed files, deep-read
+only the top few, publish only gate-surviving findings, state coverage honestly, and
+never lower the >=8/10 + >=0.85 bar — remains worthwhile as a soft review-quality
+aid for large PRs, but as guidance, not as a compaction control.
+
+When the graph is added (phase 1.5), additionally:
+
+- **Evidence-provenance gate — the single guardrail that matters most.** Every
+  published finding must carry an evidence object referencing only exact PR-head /
+  diff hunks or bounded PR-head file reads. The publication gate rejects any finding
+  whose evidence source is `graph`, `base_graph`, `impact_radius`, or anything not
+  tied to PR head/diff. Make it mechanical, not a prompt rule — it prevents
+  "evidence laundering" (the model turning a selector signal into a finding), the
+  highest-risk failure mode of adding a graph.
+- **Staleness governance.** Version every graph response with `base_sha`,
+  `indexed_at`, and `staleness_status`. If the indexed base does not match the PR
+  merge base within policy, degrade or disable graph selection for that run.
+
+Telemetry that gates the graph decision (collect first, via `review_runs`): missed
+caller/dependent/test-context rate, large-PR budget-exhaustion rate, candidate
+rejection reasons, and post-human false-negative samples. Add the graph only when
+these show diff + path/ownership/test heuristics are recurrently insufficient for
+specific miss classes (changed public APIs, transitive callers, framework
+registrations, test-neighbour discovery, renamed/moved symbols).

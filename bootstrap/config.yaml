@@ -11,10 +11,17 @@ display:
   busy_ack_enabled: false
   long_running_notifications: false
 
-# PR-sized contexts never reach Codex's 272K compaction threshold, so the
-# auto-raise feature is moot for reviews; disable it purely to keep its one-off
-# "auto-compaction raised to 85%" notice out of the PR comment stream.
+# gpt-5.5 on the Codex OAuth route is hard-capped at a 272K context window, and the
+# global compression default (0.50) compacts at ~136K — half the usable window. That
+# caused frequent mid-review compaction and its noisy "Compacting context" /
+# "Session compressed" PR comments on larger PRs. Set the trigger to 0.80 (~218K) so
+# normal and medium reviews never compact; only genuinely huge PRs (>~218K) compact,
+# which is acceptable for them and keeps more context (less lossy). Keep
+# codex_gpt55_autoraise off so its per-review "raised to 85%" notice never posts as a
+# comment — this explicit threshold gives the same high trigger without that notice.
+# (The gateway session-hygiene safety net stays fixed at 85%.)
 compression:
+  threshold: 0.80
   codex_gpt55_autoraise: false
 
 terminal:
