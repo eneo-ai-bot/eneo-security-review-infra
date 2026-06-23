@@ -181,10 +181,15 @@ ENEO_REVIEW_RUN_COMPLETE = {
         "properties": {
             "repository": {"type": "string"},
             "pr_number": {"type": "integer", "minimum": 1},
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_run_start for this review.",
+            },
             "status": {"type": "string", "enum": ["done", "failed"], "default": "done"},
             "findings_count": {"type": "integer", "minimum": 0},
         },
-        "required": ["repository", "pr_number", "status"],
+        "required": ["repository", "pr_number", "run_id", "status"],
         "additionalProperties": False,
     },
 }

@@ -28,27 +28,49 @@ class RunToolTests(unittest.TestCase):
     def call(self, handler, args):
         return json.loads(handler(args))
 
-    def test_start_then_complete(self):
-        start = self.call(
+    def start(self, pr=498, sha="a" * 40):
+        return self.call(
             tools.review_run_start,
-            {"repository": "eneo-ai/eneo", "pr_number": 498, "head_sha": "a" * 40},
+            {"repository": "eneo-ai/eneo", "pr_number": pr, "head_sha": sha},
         )
+
+    def test_start_then_complete(self):
+        start = self.start()
         self.assertEqual(start["status"], "running")
         self.assertIn("run_id", start)
         done = self.call(
             tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 498, "status": "done", "findings_count": 2},
+            {"repository": "eneo-ai/eneo", "pr_number": 498, "run_id": start["run_id"],
+             "status": "done", "findings_count": 2},
         )
         self.assertTrue(done["updated"])
         self.assertEqual(done["status"], "done")
         with memory_db.connect() as connection:
-            runs = memory_db.list_runs(connection, repository="eneo-ai/eneo")
-        self.assertEqual(runs[0]["findings_count"], 2)
+            self.assertEqual(memory_db.list_runs(connection)[0]["findings_count"], 2)
 
-    def test_complete_without_running_is_noop(self):
+    def test_overlapping_runs_complete_by_id(self):
+        a = self.start(pr=7, sha="a" * 40)
+        b = self.start(pr=7, sha="b" * 40)
+        self.call(
+            tools.review_run_complete,
+            {"repository": "eneo-ai/eneo", "pr_number": 7, "run_id": a["run_id"], "status": "done", "findings_count": 1},
+        )
+        with memory_db.connect() as connection:
+            runs = {r["id"]: r for r in memory_db.list_runs(connection)}
+        self.assertEqual(runs[a["run_id"]]["status"], "done")
+        self.assertEqual(runs[b["run_id"]]["status"], "running")
+
+    def test_missing_run_id_rejected(self):
         result = self.call(
             tools.review_run_complete,
             {"repository": "eneo-ai/eneo", "pr_number": 1, "status": "done"},
+        )
+        self.assertIn("error", result)
+
+    def test_unknown_run_id_is_noop(self):
+        result = self.call(
+            tools.review_run_complete,
+            {"repository": "eneo-ai/eneo", "pr_number": 1, "run_id": 999, "status": "done"},
         )
         self.assertFalse(result["updated"])
 
@@ -66,14 +88,21 @@ class RunToolTests(unittest.TestCase):
         )
         self.assertIn("error", result)
 
-    def test_bad_status_rejected(self):
-        self.call(
-            tools.review_run_start,
-            {"repository": "eneo-ai/eneo", "pr_number": 1, "head_sha": "a" * 40},
-        )
+    def test_bad_findings_count_is_input_error(self):
+        start = self.start(pr=3)
         result = self.call(
             tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 1, "status": "suppressed"},
+            {"repository": "eneo-ai/eneo", "pr_number": 3, "run_id": start["run_id"],
+             "status": "done", "findings_count": "lots"},
+        )
+        self.assertIn("error", result)
+        self.assertIn("findings_count", result["error"])
+
+    def test_bad_status_rejected(self):
+        start = self.start(pr=4)
+        result = self.call(
+            tools.review_run_complete,
+            {"repository": "eneo-ai/eneo", "pr_number": 4, "run_id": start["run_id"], "status": "suppressed"},
         )
         self.assertIn("error", result)
 

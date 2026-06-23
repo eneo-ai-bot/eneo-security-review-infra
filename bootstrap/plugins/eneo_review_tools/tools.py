@@ -545,21 +545,29 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
     try:
         repository = _allowlisted_repository(args.get("repository"))
         number = _pr_number(args.get("pr_number"))
+        run_id = args.get("run_id")
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            raise ToolInputError("run_id must be the positive integer returned by eneo_review_run_start")
         status = str(args.get("status", "done")).strip().lower()
         if status not in {"done", "failed"}:
             raise ToolInputError("status must be done or failed")
         findings_count = args.get("findings_count")
         if findings_count is not None:
-            findings_count = int(findings_count)
+            try:
+                findings_count = int(findings_count)
+            except (TypeError, ValueError):
+                raise ToolInputError("findings_count must be an integer")
             if findings_count < 0:
                 raise ToolInputError("findings_count must be zero or greater")
         with memory_db.connect() as connection:
             result = memory_db.complete_run(
-                connection, repository, number, None,
+                connection, run_id, repository=repository, pr_number=number,
                 status=status, findings_count=findings_count,
             )
         if result is None:
-            return _output({"updated": False, "note": "no running review run was found to complete"})
+            return _output(
+                {"updated": False, "note": "no running review run matched run_id for this repository and PR"}
+            )
         return _output(
             {"updated": True, "status": result["status"], "completed_at": result["completed_at"]}
         )

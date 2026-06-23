@@ -136,7 +136,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             trigger_user TEXT NOT NULL DEFAULT '',
             head_sha TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed')),
-            findings_count INTEGER,
+            findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
             posted_comment_id INTEGER,
             started_at TEXT NOT NULL,
             completed_at TEXT
@@ -753,57 +753,53 @@ def start_run(
 
 def complete_run(
     connection: sqlite3.Connection,
-    repository: str,
-    pr_number: int,
-    trigger_comment_id: int | None,
+    run_id: int,
     *,
+    repository: str | None = None,
+    pr_number: int | None = None,
     status: str = "done",
     findings_count: int | None = None,
     posted_comment_id: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Mark the most recent running run for (repository, pr_number, trigger_comment_id)
-    as done or failed. Returns None when no matching running run exists."""
-    repository = normalize_repository(repository)
+    """Mark one specific running run (by id) as done or failed, atomically. Completing
+    by id — not by latest-running — prevents one review from completing another when
+    reviews of the same pull request overlap. The optional repository/pr_number guard
+    further scopes the update. Returns None when no running run with that id (and guard)
+    exists, so a duplicate or losing completer is a clean no-op rather than a corruption."""
     if status not in {"done", "failed"}:
         raise ReviewMemoryError("status must be done or failed")
-    if trigger_comment_id is not None:
-        row = connection.execute(
-            """
-            SELECT id FROM review_runs
-            WHERE repository = ? AND pr_number = ? AND trigger_comment_id = ? AND status = 'running'
-            ORDER BY id DESC LIMIT 1
-            """,
-            (repository, pr_number, int(trigger_comment_id)),
-        ).fetchone()
-    else:
-        row = connection.execute(
-            """
-            SELECT id FROM review_runs
-            WHERE repository = ? AND pr_number = ? AND status = 'running'
-            ORDER BY id DESC LIMIT 1
-            """,
-            (repository, pr_number),
-        ).fetchone()
-    if not row:
-        return None
+    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+        raise ReviewMemoryError("run_id must be a positive integer")
+    if findings_count is not None and int(findings_count) < 0:
+        raise ReviewMemoryError("findings_count must be zero or greater")
+    conditions = ["id = ?", "status = 'running'"]
+    params: list[Any] = [run_id]
+    if repository is not None:
+        conditions.append("repository = ?")
+        params.append(normalize_repository(repository))
+    if pr_number is not None:
+        conditions.append("pr_number = ?")
+        params.append(int(pr_number))
     completed = isoformat(now)
     with connection:
-        connection.execute(
-            """
+        cursor = connection.execute(
+            f"""
             UPDATE review_runs
             SET status = ?, findings_count = ?, posted_comment_id = ?, completed_at = ?
-            WHERE id = ?
+            WHERE {" AND ".join(conditions)}
             """,
             (
                 status,
                 int(findings_count) if findings_count is not None else None,
                 int(posted_comment_id) if posted_comment_id is not None else None,
                 completed,
-                row["id"],
+                *params,
             ),
         )
-    return {"id": row["id"], "status": status, "findings_count": findings_count, "completed_at": completed}
+    if cursor.rowcount == 0:
+        return None
+    return {"id": run_id, "status": status, "findings_count": findings_count, "completed_at": completed}
 
 
 def list_runs(
@@ -859,7 +855,7 @@ def run_stats(
         completed = parse_time(item.get("completed_at"))
         if started is not None and completed is not None:
             durations.append((completed - started).total_seconds())
-        if item.get("findings_count") is not None:
+        if item.get("status") == "done" and item.get("findings_count") is not None:
             findings_total += int(item["findings_count"])
             completed_with_count += 1
     durations.sort()
