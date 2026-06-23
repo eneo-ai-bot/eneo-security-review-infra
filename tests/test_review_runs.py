@@ -83,6 +83,13 @@ class ReviewRunsTests(unittest.TestCase):
         with self.assertRaises(memory_db.ReviewMemoryError):
             memory_db.complete_run(self.connection, 0)
 
+    def test_negative_findings_count_rejected_for_any_db(self):
+        # Authoritative guard at the function layer (not reliant on the table CHECK,
+        # which only applies to freshly created databases).
+        run = memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40)
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.complete_run(self.connection, run["id"], findings_count=-1)
+
     def test_run_stats_avg_counts_only_done(self):
         a = memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40)
         memory_db.complete_run(self.connection, a["id"], status="done", findings_count=3)

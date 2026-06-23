@@ -771,6 +771,10 @@ def complete_run(
         raise ReviewMemoryError("status must be done or failed")
     if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
         raise ReviewMemoryError("run_id must be a positive integer")
+    # Validated here so the >= 0 invariant holds for every database, including a
+    # review_runs table created before the column CHECK existed. This function is the
+    # authoritative guard; the table-level CHECK is incremental defense-in-depth for
+    # freshly created databases only.
     if findings_count is not None and int(findings_count) < 0:
         raise ReviewMemoryError("findings_count must be zero or greater")
     conditions = ["id = ?", "status = 'running'"]
