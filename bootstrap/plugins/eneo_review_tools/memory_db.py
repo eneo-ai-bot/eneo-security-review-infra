@@ -825,6 +825,22 @@ def list_runs(
     return [dict(row) for row in rows]
 
 
+def run_is_stale(
+    run: dict[str, Any], *, now: datetime | None = None, stale_after_minutes: int = 30
+) -> bool:
+    """A run still marked 'running' well past a normal review duration is almost
+    certainly crashed or abandoned — its run_complete was never recorded (these tools
+    are best-effort telemetry the model calls). This is a read-only interpretation for
+    display and metrics; it never mutates the row."""
+    if run.get("status") != "running":
+        return False
+    started = parse_time(run.get("started_at"))
+    if started is None:
+        return False
+    moment = now or utc_now()
+    return (moment - started) > timedelta(minutes=max(1, int(stale_after_minutes)))
+
+
 def run_stats(
     connection: sqlite3.Connection,
     *,
@@ -851,10 +867,13 @@ def run_stats(
     durations: list[float] = []
     findings_total = 0
     completed_with_count = 0
+    stalled_running = 0
     for row in rows:
         item = dict(row)
         if item.get("status") in by_status:
             by_status[item["status"]] += 1
+        if run_is_stale(item, now=moment):
+            stalled_running += 1
         started = parse_time(item.get("started_at"))
         completed = parse_time(item.get("completed_at"))
         if started is not None and completed is not None:
@@ -876,6 +895,7 @@ def run_stats(
         "generated_at": isoformat(moment),
         "total": len(rows),
         "by_status": by_status,
+        "stalled_running": stalled_running,
         "time_to_answer_seconds": {"p50": _pct(50), "p95": _pct(95)},
         "avg_findings_per_completed_run": (
             round(findings_total / completed_with_count, 2) if completed_with_count else None

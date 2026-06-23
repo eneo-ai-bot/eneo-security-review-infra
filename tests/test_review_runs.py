@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins" / "eneo_review_tools"
@@ -102,6 +103,17 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertEqual(stats["by_status"]["failed"], 1)
         self.assertEqual(stats["avg_findings_per_completed_run"], 3.0)
         self.assertIsNotNone(stats["time_to_answer_seconds"]["p50"])
+
+    def test_stale_running_run_is_flagged(self):
+        old = memory_db.utc_now() - timedelta(minutes=45)
+        memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40, now=old)
+        memory_db.start_run(self.connection, "eneo-ai/eneo", 2, head_sha="b" * 40)  # fresh
+        stale = [r for r in memory_db.list_runs(self.connection) if memory_db.run_is_stale(r)]
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0]["pr_number"], 1)
+        stats = memory_db.run_stats(self.connection)
+        self.assertEqual(stats["stalled_running"], 1)
+        self.assertEqual(stats["by_status"]["running"], 2)
 
     def test_repo_scopes_runs(self):
         memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40)

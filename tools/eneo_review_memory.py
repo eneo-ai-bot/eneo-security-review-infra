@@ -69,8 +69,9 @@ def print_runs(runs):
         return
     for run in runs:
         findings = run["findings_count"] if run["findings_count"] is not None else "-"
+        status = "stalled" if memory_db.run_is_stale(run) else run["status"]
         print(
-            f"#{run['id']:<5} {run['status']:8} {run['repository']}#{run['pr_number']}  "
+            f"#{run['id']:<5} {status:8} {run['repository']}#{run['pr_number']}  "
             f"findings={findings}  started={run['started_at']}  "
             f"completed={run['completed_at'] or '-'}"
         )
@@ -79,8 +80,10 @@ def print_runs(runs):
 def print_run_stats(stats):
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
+    print("  (best-effort telemetry recorded by the reviewer; treat counts as approximate)")
     print(f"  total: {stats['total']}")
     print("  by status:  " + ", ".join(f"{k}={v}" for k, v in stats["by_status"].items()))
+    print(f"  stalled (running but likely crashed): {stats['stalled_running']}")
     tta = stats["time_to_answer_seconds"]
     print(f"  time to answer (s):  p50={tta['p50']}  p95={tta['p95']}")
     print(f"  avg findings / completed run:  {stats['avg_findings_per_completed_run']}")
