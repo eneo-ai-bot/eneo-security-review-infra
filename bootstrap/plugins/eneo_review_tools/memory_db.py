@@ -610,5 +610,86 @@ def export_state(connection: sqlite3.Connection) -> dict[str, Any]:
     return {"schema_version": 2, "exported_at": isoformat(), "findings": findings, "decisions": decisions}
 
 
+def compute_stats(
+    connection: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    expiring_within_days: int = 30,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Read-only summary of findings and human decisions for operator triage.
+
+    Active-suppression counts always go through active_suppression(), so expired
+    decisions, context-hash-invalid decisions, and non-suppressive states
+    (resolved / reopen) are never counted as active.
+    """
+    moment = now or utc_now()
+    repo = normalize_repository(repository) if repository else None
+    expiring_within_days = max(0, int(expiring_within_days))
+    expiry_cutoff = moment + timedelta(days=expiring_within_days)
+
+    params: list[Any] = []
+    where = ""
+    if repo:
+        where = "WHERE repository = ?"
+        params.append(repo)
+    rows = connection.execute(f"SELECT * FROM findings {where}", params).fetchall()
+
+    by_severity = {severity: 0 for severity in sorted(SEVERITIES)}
+    by_category = {category: 0 for category in sorted(CATEGORIES)}
+    latest_decision_by_type = {decision: 0 for decision in sorted(DECISIONS)}
+    findings_without_decision = 0
+    active_suppressions = 0
+    nearing_expiry = 0
+    repeats_after_decision = 0
+
+    for row in rows:
+        item = dict(row)
+        fingerprint = item["fingerprint"]
+        if item.get("severity") in by_severity:
+            by_severity[item["severity"]] += 1
+        if item.get("category") in by_category:
+            by_category[item["category"]] += 1
+
+        decision = latest_decision(connection, fingerprint)
+        if decision is None:
+            findings_without_decision += 1
+        elif decision["decision"] in latest_decision_by_type:
+            latest_decision_by_type[decision["decision"]] += 1
+
+        suppression = active_suppression(
+            connection, fingerprint, context_hash=item.get("context_hash"), now=moment
+        )
+        if suppression is not None:
+            active_suppressions += 1
+            expires = parse_time(suppression.get("expires_at"))
+            if expires is not None and expires <= expiry_cutoff:
+                nearing_expiry += 1
+
+        # Approximate "repeated after a human decided it": the finding was re-recorded
+        # (occurrences > 1) and its most recent decision was made at or before the last
+        # sighting. Timestamps are second-granular, so use <= to avoid missing same-second
+        # re-records; a decision made strictly after the last sighting is not counted.
+        if int(item.get("occurrences", 1) or 1) > 1 and decision is not None:
+            last_seen = parse_time(item.get("last_seen_at"))
+            decided_at = parse_time(decision.get("created_at"))
+            if last_seen is not None and decided_at is not None and decided_at <= last_seen:
+                repeats_after_decision += 1
+
+    return {
+        "repository": repo,
+        "generated_at": isoformat(moment),
+        "findings_total": len(rows),
+        "findings_without_decision": findings_without_decision,
+        "findings_by_severity": by_severity,
+        "findings_by_category": by_category,
+        "latest_decision_by_type": latest_decision_by_type,
+        "active_suppressions": active_suppressions,
+        "active_suppressions_expiring_within_days": expiring_within_days,
+        "active_suppressions_nearing_expiry": nearing_expiry,
+        "repeats_after_decision_approx": repeats_after_decision,
+    }
+
+
 def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)

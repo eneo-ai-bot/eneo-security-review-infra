@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -47,6 +46,23 @@ def print_table(items):
             )
 
 
+def print_stats(stats):
+    repo = stats.get("repository") or "(all repositories)"
+    print(f"Eneo review memory - {repo}  (as of {stats['generated_at']})")
+    print(f"  findings: {stats['findings_total']}  (no decision: {stats['findings_without_decision']})")
+    print("  by severity:  " + ", ".join(f"{k}={v}" for k, v in stats["findings_by_severity"].items()))
+    cats = ", ".join(f"{k}={v}" for k, v in stats["findings_by_category"].items() if v) or "(none)"
+    print(f"  by category:  {cats}")
+    decs = ", ".join(f"{k}={v}" for k, v in stats["latest_decision_by_type"].items() if v) or "(none)"
+    print(f"  latest decision:  {decs}")
+    print(
+        f"  active suppressions: {stats['active_suppressions']} "
+        f"(nearing expiry <={stats['active_suppressions_expiring_within_days']}d: "
+        f"{stats['active_suppressions_nearing_expiry']})"
+    )
+    print(f"  repeats after a human decision (approx): {stats['repeats_after_decision_approx']}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", help="Override ENEO_REVIEW_DB for this command.")
@@ -75,6 +91,11 @@ def main() -> int:
 
     export_parser = sub.add_parser("export", help="Export findings and decisions as JSON.")
     export_parser.add_argument("--output", help="Write to a file instead of stdout.")
+
+    stats_parser = sub.add_parser("stats", help="Summarize findings and human decisions.")
+    stats_parser.add_argument("--repo", help="Limit to owner/repository.")
+    stats_parser.add_argument("--expiring-within-days", type=int, default=30)
+    stats_parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
     with memory_db.connect(args.db) as connection:
@@ -143,6 +164,18 @@ def main() -> int:
                 print(destination)
             else:
                 print(content, end="")
+            return 0
+
+        if args.command == "stats":
+            stats = memory_db.compute_stats(
+                connection,
+                repository=args.repo,
+                expiring_within_days=args.expiring_within_days,
+            )
+            if args.json:
+                print(memory_db.json_dumps(stats))
+            else:
+                print_stats(stats)
             return 0
 
     return 1
