@@ -15,6 +15,7 @@ DEFAULT_DB_NAME = "review_memory.sqlite3"
 SEVERITY_SCORE_GATES = {"Critical": 8, "High": 8, "Medium": 7, "Low": 7}
 SEVERITIES = set(SEVERITY_SCORE_GATES)
 LOWER_PRIORITY_SEVERITIES = {"Medium", "Low"}
+MAX_FINDINGS_PER_REVIEW = 200
 CATEGORIES = {
     "security",
     "correctness",
@@ -563,20 +564,15 @@ def record_findings(
         raise ReviewMemoryError("head_sha must be an exact 40 to 64 character hexadecimal commit SHA")
     if not isinstance(findings, Sequence) or isinstance(findings, (str, bytes)):
         raise ReviewMemoryError("findings must be an array")
-    if len(findings) > 3:
-        raise ReviewMemoryError("at most three findings may be recorded per review")
-
+    if len(findings) > MAX_FINDINGS_PER_REVIEW:
+        raise ReviewMemoryError(
+            f"findings exceeds operational safety limit of {MAX_FINDINGS_PER_REVIEW}"
+        )
     normalized_hashes = {
         normalize_path(path): normalize_context_hash(value)
         for path, value in (context_hashes or {}).items()
     }
     validated = [_validated_finding(repository, raw) for raw in findings]
-    lower_priority = [
-        item for item in validated if item["severity"] in LOWER_PRIORITY_SEVERITIES
-    ]
-    if len(lower_priority) > 1:
-        raise ReviewMemoryError("at most one Medium or Low finding may be recorded per review")
-
     now = isoformat()
     results: list[dict[str, Any]] = []
     with connection:
@@ -634,23 +630,6 @@ def record_findings(
                     "decision": suppression,
                 }
             )
-        unsuppressed = {
-            item["fingerprint"] for item in results if not item["suppressed"]
-        }
-        has_lower_priority = any(
-            item["severity"] in LOWER_PRIORITY_SEVERITIES
-            for item in validated
-            if item["fingerprint"] in unsuppressed
-        )
-        has_high_priority = any(
-            item["severity"] not in LOWER_PRIORITY_SEVERITIES
-            for item in validated
-            if item["fingerprint"] in unsuppressed
-        )
-        if has_lower_priority and has_high_priority:
-            raise ReviewMemoryError(
-                "Medium or Low findings may not be recorded with unsuppressed Critical or High findings"
-            )
     return results
 
 
@@ -659,10 +638,15 @@ def memory_context(
     repository: str,
     paths: Iterable[str] | None = None,
     *,
+    pr_number: int | None = None,
     limit: int = 30,
 ) -> dict[str, Any]:
     repository = normalize_repository(repository)
     clean_paths = sorted({normalize_path(path) for path in (paths or []) if str(path).strip()})
+    if pr_number is not None:
+        pr_number = int(pr_number)
+        if pr_number < 1:
+            raise ReviewMemoryError("pr_number must be positive")
     limit = max(1, min(int(limit), 50))
 
     params: list[Any] = [repository]
@@ -690,6 +674,17 @@ def memory_context(
     latest_decisions = _latest_decisions(connection, (item["fingerprint"] for item in items))
     moment = utc_now()
 
+    def enrich(item: dict[str, Any], decisions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        decision = decisions.get(item["fingerprint"])
+        matches_last_seen = _active_suppression_from_decision(
+            decision, context_hash=item["context_hash"], now=moment
+        )
+        return {
+            **item,
+            "suppressed_for_last_seen_file_version": matches_last_seen is not None,
+            "latest_decision": decision,
+        }
+
     historical_suppressions: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
     for item in items:
@@ -712,13 +707,35 @@ def memory_context(
                     "warning": "Historical hint only; the final record tool checks the current file hash.",
                 }
             )
-        recent.append(
-            {
-                **item,
-                "suppressed_for_last_seen_file_version": matches_last_seen is not None,
-                "latest_decision": decision,
-            }
+        recent.append(enrich(item, latest_decisions))
+
+    repeat_review_findings: list[dict[str, Any]] = []
+    if pr_number is not None:
+        repeat_params: list[Any] = [repository, pr_number]
+        repeat_where = "repository = ? AND pr_number = ?"
+        if clean_paths:
+            placeholders = ",".join("?" for _ in clean_paths)
+            repeat_where += f" AND path IN ({placeholders})"
+            repeat_params.extend(clean_paths)
+        repeat_rows = connection.execute(
+            f"""
+            SELECT fingerprint, rule_id, path, line, symbol, anchor, title, severity,
+                   category, publication_score, confidence, context_hash, pr_number,
+                   head_sha, last_seen_at, occurrences
+            FROM findings
+            WHERE {repeat_where}
+            ORDER BY last_seen_at DESC
+            """,
+            repeat_params,
+        ).fetchall()
+        repeat_items = [dict(row) for row in repeat_rows]
+        repeat_decisions = _latest_decisions(
+            connection, (item["fingerprint"] for item in repeat_items)
         )
+        for item in repeat_items:
+            repeat_item = enrich(item, repeat_decisions)
+            if not repeat_item["suppressed_for_last_seen_file_version"]:
+                repeat_review_findings.append(repeat_item)
 
     return {
         "repository": repository,
@@ -730,6 +747,7 @@ def memory_context(
         ),
         "historical_suppressions": historical_suppressions,
         "recent_findings": recent,
+        "repeat_review_findings": repeat_review_findings,
     }
 
 

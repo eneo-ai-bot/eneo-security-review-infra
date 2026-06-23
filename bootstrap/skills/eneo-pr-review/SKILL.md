@@ -27,11 +27,13 @@ only the `eneo_review` tools available to this run.
    `eneo_review_run_start` with the repository, PR number, and exact head SHA; this
    is operational telemetry only and never affects findings or suppression. It
    returns a `run_id` — keep it for the matching `eneo_review_run_complete` call.
-2. Call `eneo_review_memory_context` with the changed paths. Re-examine
-   unsuppressed `recent_findings` from this PR under the AGENTS.md skeptical
+2. Call `eneo_review_memory_context` with the changed paths and current PR
+   number. Re-examine `repeat_review_findings` under the AGENTS.md skeptical
    gate before looking for novel findings; this is generation order, not
    publication priority. Use them as candidates, not proof. If one still holds,
-   reuse its exact `rule_id`, `symbol`, and `anchor`. A human decision is a
+   reuse its exact `rule_id`, `symbol`, and `anchor`. Treat other
+   `recent_findings` as same-path history only; publish them only when this diff
+   independently introduces or worsens the issue. A human decision is a
    suppression only when the final record tool confirms it still matches the
    current file version.
 3. Read the unified diff with `eneo_pr_diff`. Start with changed hunks. If the
@@ -45,46 +47,37 @@ only the `eneo_review` tools available to this run.
    no base and a deleted file has no head. If a read returns not-found, too large,
    or not a regular file, do not retry it or guess variants — inspect that path's
    changes with `eneo_pr_diff` and continue from the diff and overview evidence.
-4. **Pass 1, candidate review:** create at most eight candidates across security,
+4. **Pass 1, candidate review:** create every concrete candidate across security,
    correctness, reliability, contracts, tests, maintainability, performance, and
-   migrations. Include re-examined prior findings in that budget before novel
-   framings of the same code. Ignore style, naming, formatting, subjective
-   preferences, and concerns that are not introduced or worsened by this diff.
-5. **Pass 2, skeptical commit gate:** challenge each candidate. Start with the
-   cheapest falsifier: the guard, caller/callee, base behavior, framework
-   guarantee, transaction, relevant test, or data-flow fact that would disprove
-   the issue fastest. Record the disproof checks in the memory tool's
-   `disproof_checks` field. Reject anything with an equally plausible benign
-   explanation. Score survivors using AGENTS.md. Keep Critical/High for
-   important problems, and use Medium/Low only for concrete, actionable
-   lower-priority feedback when no Critical/High finding survived. The memory
-   tool enforces the exact score gates and lower-priority cap.
-6. Apply Ponytail to remediation. Ask in order: can the new code be deleted; can
-   stdlib/framework/database behavior solve it; can an existing Eneo abstraction
-   solve it; can one local change solve it; only then propose new machinery. Never
-   remove security, validation, data-loss handling, reliability, or accessibility.
-   Prefer a safe local fix; call out careful or risky remediation only when
-   unavoidable. Do not recommend deleting code unless you can explain why it exists
-   and why that reason no longer applies.
-7. Redact secret values. Call `eneo_review_memory_record` once with no more than
-   three survivors and the exact head SHA from the overview. The tool re-checks
-   PR state, changed paths, file versions, and human suppressions. Omit every item
+   migrations. Include re-examined repeat-review findings before novel framings
+   of the same code. Ignore style, naming, formatting, subjective preferences,
+   and concerns that are not introduced or worsened by this diff.
+5. **Pass 2, skeptical commit gate:** challenge each candidate under AGENTS.md.
+   Record the disproof checks in the memory tool's `disproof_checks` field.
+   Reject anything with an equally plausible benign explanation. Score survivors
+   using AGENTS.md. The memory tool enforces the exact score gates.
+6. Apply AGENTS.md and SOUL.md Ponytail remediation guidance. Prefer a safe local
+   fix; call out careful or risky remediation only when unavoidable. Do not
+   recommend deleting code unless you can explain why it exists and why that
+   reason no longer applies.
+7. Redact secret values. Call `eneo_review_memory_record` once with every
+   survivor and the exact head SHA from the overview. The tool re-checks PR
+   state, changed paths, file versions, and human suppressions. Omit every item
    returned with `suppressed: true`.
 8. Just before writing the final comment, call `eneo_review_run_complete` with the
-   `run_id` from run_start, status `done`, and `findings_count` set to the number of
-   findings you are publishing (use `failed` only if you could not complete the
-   review). Then return
-   only the final GitHub comment under AGENTS.md. Do not expose private
+   repository, PR number, `run_id` from run_start, status `done`, and
+   `findings_count` set to the number of findings you are publishing (use `failed`
+   only if you could not complete the review). Then return only the final GitHub
+   comment under AGENTS.md. Do not expose private
    chain-of-thought, candidate lists, rejected findings, scoring deliberation,
    provider notices, progress updates, or status chatter.
 
 ## Hard limits
 
-- At most three published findings.
-- If any Critical or High finding survives, do not publish Medium or Low. If only
-  lower-priority findings survive, publish at most one Medium or Low.
+- Publish every finding that survives AGENTS.md. Do not hide lower-priority
+  survivors; put Medium and Low details behind collapsed disclosure blocks.
 - The final comment must satisfy the loaded AGENTS.md GitHub comment contract,
-  including its visible prose budget and collapsed fix brief rules.
+  including its compactness, disclosure, and collapsed fix brief rules.
 - No watchlist, style feedback, praise filler, dependency shopping list,
   architecture rewrite, or generic best-practice lecture.
 - No shell, file edits, code execution, tests, GitHub writes through tools, or

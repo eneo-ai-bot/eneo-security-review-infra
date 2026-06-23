@@ -1,13 +1,17 @@
 # Eneo AI code and security reviewer
 
-## Minimal phase-one guide for Hetzner, Dokploy, Hermes Agent, Codex, GitHub comments, and durable false-positive memory
+This guide explains the deployed reviewer in this repository: a manual,
+maintainer-triggered Hermes Agent review for Eneo pull requests. An allowlisted
+maintainer comments exactly `@review`; GitHub Actions verifies the requester;
+Hermes runs Codex with only the `eneo_review` toolset; the plugin reads bounded
+PR context and records every surviving finding in SQLite; Hermes posts one
+structured GitHub comment back to the PR.
 
-**Documentation review date:** 22 June 2026  
-**Recommended phase:** manual, maintainer-triggered PR reviews  
-**Trigger:** an allowlisted maintainer comments exactly `@review` on a pull request  
-**Result:** one concise review comment is posted directly on that pull request
-
-This version intentionally postpones Mattermost, scheduled whole-repository audits, multi-model councils, autonomous fixes, and codebase indexing. Those can be added after the first reviewer demonstrates a useful acceptance rate.
+The reviewer is advisory. CI, CodeQL, dependency review, tests, type checks,
+human ownership, and migration checks remain the merge gates. The model cannot
+execute contributor code, write repository files, browse the web, delegate to
+subagents, or mutate GitHub except through Hermes' final configured
+`github_comment` delivery.
 
 ## 1. Recommended design
 
@@ -34,7 +38,7 @@ Hermes Agent on Dokploy
 Hermes native github_comment delivery
         |
         v
-one short, constructive PR comment
+one structured, constructive PR comment
 ```
 
 Hermes’ current webhook adapter supports HMAC verification, route-specific skills, idempotency, and `github_comment` delivery through the GitHub CLI. The official Docker image keeps mutable state under `/opt/data`, which is the right place for Codex OAuth state, configuration, plugins, sessions, and the SQLite review database.
@@ -62,9 +66,9 @@ Do not start with Claude, Codex, and Gemini all scanning the full diff independe
 
 The phase-one reviewer uses a small internal council pattern inside one Codex run:
 
-1. **Proposer pass:** produce at most eight candidate findings.
+1. **Proposer pass:** produce every concrete candidate finding tied to the diff.
 2. **Skeptic pass:** try to disprove every candidate by checking guards, callers, callees, base behavior, framework guarantees, transactions, and tests.
-3. **Editor pass:** publish at most three surviving findings in natural language.
+3. **Editor pass:** publish every surviving finding in natural language, with lower-priority details collapsed.
 
 A finding may be published only when it:
 
@@ -77,9 +81,9 @@ A finding may be published only when it:
   evidence, impact, causality, falsification, and remediation;
 - has a small, concrete fix rather than an architecture rewrite.
 
-Medium and Low findings are for actionable lower-priority feedback only. They
-are published only when no Critical or High finding survives, and at most one can
-appear in a review.
+Medium and Low findings are for actionable lower-priority feedback only. They are
+published when they survive the same evidence gate as higher-severity findings,
+but their details are collapsed so they do not crowd the main review.
 
 This mirrors the useful part of an iterative peer-review loop without making one model call another model or exposing internal deliberation to the developer.
 
@@ -105,10 +109,11 @@ The canonical live contract for the visible comment is
 `bootstrap/workspace/AGENTS.md`. In human terms, the comment is limited to:
 
 - one summary sentence;
-- at most three findings;
+- every surviving finding;
 - a short prose budget spent on evidence and the fix;
 - one compact section per finding;
-- one collapsed, copyable fix brief when findings exist.
+- collapsed details for Medium and Low findings;
+- one collapsed, copyable fix brief containing all findings when findings exist.
 
 Each finding contains:
 
@@ -135,7 +140,12 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 ````md
 ## Eneo AI code & security review
 
-I found one issue worth addressing before merge.
+I found two issues worth addressing before merge.
+
+| Severity | Category | Location | Finding | ID |
+| --- | --- | --- | --- | --- |
+| High / P1 important | security | `backend/src/intric/jobs/service.py:142` | Tenant context is dropped before the background job | `a1b2c3d4e5f6` |
+| Medium / P2 useful improvement | tests | `backend/tests/jobs/test_service.py:88` | Regression test misses the cross-tenant worker path | `b2c3d4e5f6a1` |
 
 ### Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security · **High / P1 important**
@@ -145,19 +155,35 @@ The new enqueue path passes the document ID but not the verified tenant ID. The 
 **Suggested change:** include the trusted tenant ID in the job payload and scope the worker lookup by both tenant and document ID. Add a regression test where a job created under tenant A cannot load tenant B's document.
 
 <details>
+<summary>Medium / P2 useful improvement · Regression test misses the cross-tenant worker path · backend/tests/jobs/test_service.py:88</summary>
+
+`backend/tests/jobs/test_service.py:88` · tests · **Medium / P2 useful improvement**
+
+The added test covers the happy path for a worker loading its own document, but it would also have passed before the tenant boundary fix because it never creates a second tenant with a conflicting document ID.
+
+**Suggested change:** add a regression case with tenant A and tenant B documents and assert that the worker created under tenant A cannot load tenant B's row.
+
+</details>
+
+<details>
 <summary>Copyable fix brief for a coding agent</summary>
 
 ```text
 Goal: Preserve the verified tenant boundary across the background job.
-Files: backend/src/intric/jobs/service.py and its worker/test modules.
-Changes: Carry tenant_id in the job payload and scope the worker lookup by tenant_id + document_id.
+Findings:
+1. High / P1 security - backend/src/intric/jobs/service.py:142 - Tenant context is dropped before the background job. Carry tenant_id in the job payload and scope the worker lookup by tenant_id + document_id.
+2. Medium / P2 tests - backend/tests/jobs/test_service.py:88 - Regression test misses the cross-tenant worker path. Add a two-tenant regression case proving tenant A cannot load tenant B's row.
+Files:
+- backend/src/intric/jobs/service.py
+- backend/tests/jobs/test_service.py
+Changes: Preserve tenant_id through enqueue and worker lookup; add the missing cross-tenant regression test.
 Constraints: Reuse the existing tenant-scoped repository/service; do not add a second authorization path.
 Verification: Add a regression test proving tenant A cannot load tenant B's document, then run the focused backend tests and strict Pyright for changed modules.
 ```
 
 </details>
 
-<sub>Eneo two-pass review · finding `a1b2c3d4e5f6`</sub>
+<sub>Eneo two-pass review · findings `a1b2c3d4e5f6`, `b2c3d4e5f6a1`</sub>
 ````
 
 The collapsed brief is simpler than uploading a generated Markdown file. The developer can copy it directly into Claude Code or Codex. A separate artifact can be added later if the team proves it is useful.
@@ -526,7 +552,7 @@ findings repeated after a prior human decision
 median visible comment length
 ```
 
-A reasonable early target is that developers act on at least half of the published findings. If acceptance is lower, tighten evidence and reduce the output cap before adding more models, more prompt text, or an index.
+A reasonable early target is that developers act on at least half of the published findings. If acceptance is lower, tighten the evidence gate and review severity calibration before adding more models, more prompt text, or an index.
 
 Do not make the AI review a required merge check during this phase. GitHub Actions failure should mean the reviewer infrastructure failed, not that the pull request is insecure.
 

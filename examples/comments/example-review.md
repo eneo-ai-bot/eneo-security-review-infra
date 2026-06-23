@@ -1,6 +1,11 @@
 ## Eneo AI code & security review
 
-I found one issue worth addressing before merge.
+I found two issues worth addressing before merge.
+
+| Severity | Category | Location | Finding | ID |
+| --- | --- | --- | --- | --- |
+| High / P1 important | security | `backend/src/intric/jobs/service.py:142` | Tenant context is dropped before the background job | `a1b2c3d4e5f6` |
+| Medium / P2 useful improvement | tests | `backend/tests/jobs/test_service.py:88` | Regression test misses the cross-tenant worker path | `b2c3d4e5f6a1` |
 
 ### Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security · **High / P1 important**
@@ -14,16 +19,35 @@ the worker lookup by both tenant and document ID. Add a regression test where a
 job created under tenant A cannot load tenant B's document.
 
 <details>
+<summary>Medium / P2 useful improvement · Regression test misses the cross-tenant worker path · backend/tests/jobs/test_service.py:88</summary>
+
+`backend/tests/jobs/test_service.py:88` · tests · **Medium / P2 useful improvement**
+
+The added test covers the happy path for a worker loading its own document, but it
+would also have passed before the tenant boundary fix because it never creates a
+second tenant with a conflicting document ID.
+
+**Suggested change:** add a regression case with tenant A and tenant B documents
+and assert that the worker created under tenant A cannot load tenant B's row.
+
+</details>
+
+<details>
 <summary>Copyable fix brief for a coding agent</summary>
 
 ```text
 Goal: Preserve the verified tenant boundary across the background job.
-Files: backend/src/intric/jobs/service.py and its worker/test modules.
-Changes: Carry tenant_id in the job payload and scope the worker lookup by tenant_id + document_id.
+Findings:
+1. High / P1 security - backend/src/intric/jobs/service.py:142 - Tenant context is dropped before the background job. Carry tenant_id in the job payload and scope the worker lookup by tenant_id + document_id.
+2. Medium / P2 tests - backend/tests/jobs/test_service.py:88 - Regression test misses the cross-tenant worker path. Add a two-tenant regression case proving tenant A cannot load tenant B's row.
+Files:
+- backend/src/intric/jobs/service.py
+- backend/tests/jobs/test_service.py
+Changes: Preserve tenant_id through enqueue and worker lookup; add the missing cross-tenant regression test.
 Constraints: Reuse the existing tenant-scoped repository/service; do not add a second authorization path.
 Verification: Add a regression test proving tenant A cannot load tenant B's document, then run the focused backend tests and strict Pyright for changed modules.
 ```
 
 </details>
 
-<sub>Eneo two-pass review · finding `a1b2c3d4e5f6`</sub>
+<sub>Eneo two-pass review · findings `a1b2c3d4e5f6`, `b2c3d4e5f6a1`</sub>

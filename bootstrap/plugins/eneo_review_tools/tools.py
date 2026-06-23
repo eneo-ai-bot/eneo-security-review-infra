@@ -447,8 +447,14 @@ def review_memory_context(args: dict[str, Any], **_: Any) -> str:
         if len(raw_paths) > 300:
             raise ToolInputError("paths exceeds 300 entries")
         paths = [_path(item) for item in raw_paths]
+        raw_pr_number = args.get("pr_number")
+        pr_number = _pr_number(raw_pr_number) if raw_pr_number is not None else None
         with closing(memory_db.connect()) as connection:
-            return _output(memory_db.memory_context(connection, repository, paths))
+            return _output(
+                memory_db.memory_context(
+                    connection, repository, paths, pr_number=pr_number
+                )
+            )
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
         return _error(str(exc))
     except Exception:

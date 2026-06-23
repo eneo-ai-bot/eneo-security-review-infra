@@ -39,12 +39,13 @@ class ReviewMemoryTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def record(self, line=42, context_hash="d" * 40):
+    def record(self, line=42, context_hash="d" * 40, pr_number=17, **overrides):
         finding = dict(self.finding, line=line)
+        finding.update(overrides)
         return memory_db.record_findings(
             self.connection,
             "Eneo/Platform",
-            17,
+            pr_number,
             "a" * 40,
             [finding],
             context_hashes={finding["path"]: context_hash},
@@ -118,7 +119,7 @@ class ReviewMemoryTests(unittest.TestCase):
     def test_context_returns_unsuppressed_recent_finding_for_reexamination(self):
         result = self.record()
         context = memory_db.memory_context(
-            self.connection, "eneo/platform", ["backend/api/documents.py"]
+            self.connection, "eneo/platform", ["backend/api/documents.py"], pr_number=17
         )
         self.assertEqual(context["historical_suppressions"], [])
         recent = context["recent_findings"]
@@ -127,6 +128,76 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(recent[0]["pr_number"], 17)
         self.assertFalse(recent[0]["suppressed_for_last_seen_file_version"])
         self.assertIsNone(recent[0]["latest_decision"])
+        self.assertEqual(context["repeat_review_findings"], recent)
+
+    def test_context_separates_same_pr_repeat_findings_from_cross_pr_history(self):
+        same_pr = self.record()
+        other_pr = self.record(
+            pr_number=99,
+            rule_id="tests.missing-regression",
+            category="tests",
+            severity="Medium",
+            publication_score=7,
+            anchor="document regression test",
+        )
+        context = memory_db.memory_context(
+            self.connection, "eneo/platform", ["backend/api/documents.py"], pr_number=17
+        )
+        self.assertEqual(
+            {item["fingerprint"] for item in context["recent_findings"]},
+            {same_pr["fingerprint"], other_pr["fingerprint"]},
+        )
+        self.assertEqual(len(context["repeat_review_findings"]), 1)
+        self.assertEqual(
+            context["repeat_review_findings"][0]["fingerprint"], same_pr["fingerprint"]
+        )
+        self.assertEqual(context["repeat_review_findings"][0]["pr_number"], 17)
+
+    def test_repeat_review_findings_are_not_truncated_by_recent_history_limit(self):
+        findings = []
+        context_hashes = {}
+        for index in range(35):
+            path = f"backend/api/repeat_{index}.py"
+            findings.append(
+                dict(
+                    self.finding,
+                    path=path,
+                    anchor=f"repeat route {index}",
+                    line=index + 1,
+                )
+            )
+            context_hashes[path] = f"{index:040x}"[-40:]
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            findings,
+            context_hashes=context_hashes,
+        )
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            [item["path"] for item in findings],
+            pr_number=17,
+        )
+        self.assertEqual(len(context["recent_findings"]), 30)
+        self.assertEqual(len(context["repeat_review_findings"]), 35)
+
+    def test_record_findings_rejects_runaway_batch(self):
+        findings = [
+            dict(self.finding, path=f"backend/api/runaway_{index}.py")
+            for index in range(memory_db.MAX_FINDINGS_PER_REVIEW + 1)
+        ]
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.record_findings(
+                self.connection,
+                "eneo/platform",
+                17,
+                "b" * 40,
+                findings,
+                context_hashes={},
+            )
 
     def test_fingerprint_prefix_can_be_used_for_human_triage(self):
         result = self.record()
@@ -198,7 +269,7 @@ class ReviewMemoryTests(unittest.TestCase):
                 context_hashes={low["path"]: "d" * 40},
             )
 
-    def test_lower_priority_findings_do_not_mix_with_high_priority(self):
+    def test_lower_priority_findings_can_mix_with_high_priority(self):
         medium = dict(
             self.finding,
             severity="Medium",
@@ -213,24 +284,19 @@ class ReviewMemoryTests(unittest.TestCase):
             path="backend/api/high.py",
             anchor="high",
         )
-        with self.assertRaises(memory_db.ReviewMemoryError):
-            memory_db.record_findings(
-                self.connection,
-                "eneo/platform",
-                1,
-                "b" * 40,
-                [high, medium],
-                context_hashes={
-                    high["path"]: "c" * 40,
-                    medium["path"]: "d" * 40,
-                },
-            )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            1,
+            "b" * 40,
+            [high, medium],
+            context_hashes={
+                high["path"]: "c" * 40,
+                medium["path"]: "d" * 40,
+            },
+        )
         self.assertEqual(
-            self.connection.execute(
-                "SELECT COUNT(*) FROM findings WHERE path IN (?, ?)",
-                (high["path"], medium["path"]),
-            ).fetchone()[0],
-            0,
+            {item["path"] for item in recorded}, {high["path"], medium["path"]}
         )
 
     def test_suppressed_high_does_not_block_one_medium(self):
@@ -278,7 +344,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertTrue(by_path[high["path"]]["suppressed"])
         self.assertFalse(by_path[medium["path"]]["suppressed"])
 
-    def test_only_one_lower_priority_finding_per_review(self):
+    def test_multiple_lower_priority_findings_are_allowed(self):
         medium = dict(
             self.finding,
             severity="Medium",
@@ -297,18 +363,18 @@ class ReviewMemoryTests(unittest.TestCase):
             path="backend/api/low.py",
             anchor="low",
         )
-        with self.assertRaises(memory_db.ReviewMemoryError):
-            memory_db.record_findings(
-                self.connection,
-                "eneo/platform",
-                1,
-                "b" * 40,
-                [medium, low],
-                context_hashes={
-                    medium["path"]: "c" * 40,
-                    low["path"]: "d" * 40,
-                },
-            )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            1,
+            "b" * 40,
+            [medium, low],
+            context_hashes={
+                medium["path"]: "c" * 40,
+                low["path"]: "d" * 40,
+            },
+        )
+        self.assertEqual({item["path"] for item in recorded}, {medium["path"], low["path"]})
 
     def test_legacy_severity_check_schema_migrates(self):
         self.connection.close()

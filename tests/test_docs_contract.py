@@ -15,7 +15,7 @@ def read(relative: str) -> str:
 class DocsContractTests(unittest.TestCase):
     def test_visible_word_budget_has_one_owner(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
-        self.assertIn("Maximum about 450 visible prose words", canonical)
+        self.assertIn("Keep each finding compact", canonical)
 
         duplicate_budget = re.compile(r"\b\d+\s+visible\s+\w*\s*words\b")
         for relative in [
@@ -36,23 +36,40 @@ class DocsContractTests(unittest.TestCase):
         self.assertNotIn("High confidence", read("examples/comments/example-review.md"))
         self.assertNotIn("High confidence", read("GUIDE.md"))
 
+    def test_examples_show_all_findings_review_shape(self):
+        for relative in ["examples/comments/example-review.md", "GUIDE.md"]:
+            body = read(relative)
+            with self.subTest(relative=relative):
+                self.assertIn("| Severity | Category | Location | Finding | ID |", body)
+                self.assertIn(
+                    "<summary>Medium / P2 useful improvement", body
+                )
+                self.assertIn("Copyable fix brief for a coding agent", body)
+                self.assertIn("```text\nGoal:", body)
+                self.assertIn("Findings:", body)
+                self.assertIn("1. High / P1", body)
+                self.assertIn("2. Medium / P2", body)
+
     def test_repeated_reviews_reexamine_prior_findings(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
         self.assertIn("Re-examine", skill)
-        self.assertIn("unsuppressed `recent_findings`", skill)
+        self.assertIn("`repeat_review_findings`", skill)
+        self.assertIn("same-path history", skill)
         self.assertIn("Repeated reviews should not vary findings for novelty", canonical)
-        self.assertIn("higher-severity new findings still take priority", canonical)
+        self.assertIn("may come", canonical)
+        self.assertIn("from other pull requests", canonical)
         self.assertIn("reuse its exact `rule_id`, `symbol`, and `anchor`", skill)
 
     def test_skeptical_gate_pins_falsification_and_quality_rules(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
         self.assertIn("cheapest falsifier", canonical)
-        self.assertIn("cheapest falsifier", skill)
+        self.assertIn("challenge each candidate under AGENTS.md", skill)
         self.assertIn("would have passed before this change", canonical)
         self.assertIn("asserts mocks or implementation details", canonical)
-        self.assertIn("safe local fix", skill)
+        self.assertIn("safe local", skill)
+        self.assertIn("fix; call out careful or risky remediation", skill)
         self.assertIn("why it exists", skill)
         self.assertIn("reason no longer applies", skill)
 
@@ -63,12 +80,15 @@ class DocsContractTests(unittest.TestCase):
             canonical,
         )
 
-    def test_lower_priority_findings_have_anti_noise_rule(self):
+    def test_all_surviving_findings_are_publishable(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         self.assertIn("Medium / P2 useful improvement", canonical)
         self.assertIn("Low / P3 minor but actionable", canonical)
-        self.assertIn("Critical or High finding survives", canonical)
-        self.assertIn("publish at most one Medium or Low", canonical)
+        self.assertIn("Publish every finding that survives the gate", canonical)
+        self.assertIn("Do not omit a verified lower-priority finding", canonical)
+        self.assertIn("collapsed `<details>` block", canonical)
+        self.assertIn("one complete brief in a single `text` fenced code block", canonical)
+        self.assertIn("include every published finding", canonical)
 
     def test_plugin_manifest_lists_registered_tools(self):
         manifest = read("bootstrap/plugins/eneo_review_tools/plugin.yaml")

@@ -63,8 +63,9 @@ Prioritize these areas in this order:
 
 ### Pass 1: candidate review
 
-Generate no more than eight candidate findings. For each, identify the changed
-line, broken invariant, concrete failure path, impact, and smallest plausible fix.
+Generate every concrete candidate finding that appears introduced or materially
+worsened by the diff. For each, identify the changed line, broken invariant,
+concrete failure path, impact, and smallest plausible fix.
 For a tests finding, identify the changed behavior that lacks regression
 coverage, or the test that would have passed before this change, covers only the
 happy path, or asserts mocks or implementation details instead of behavior.
@@ -78,11 +79,13 @@ disproof path first, then broaden only when the cheapest check does not settle
 the claim. Reject the candidate when evidence is incomplete or two plausible
 interpretations remain.
 
-Repeated reviews should not vary findings for novelty. Re-examine unsuppressed
-prior findings from the same pull request through this same gate, preserving
-their `rule_id`, `symbol`, and `anchor` only when the current code still proves
-the same issue. A prior finding may be dropped when the current review can
-disprove it, and higher-severity new findings still take priority.
+Repeated reviews should not vary findings for novelty. Re-examine every item in
+`repeat_review_findings` through this same gate, preserving its `rule_id`,
+`symbol`, and `anchor` only when the current code still proves the same issue.
+Other `recent_findings` are same-path history from prior reviews and may come
+from other pull requests; use them only as context unless this diff independently
+introduces or worsens the issue. A prior finding may be dropped when the current
+review can disprove it.
 
 Score surviving candidates out of 10:
 
@@ -94,11 +97,9 @@ Score surviving candidates out of 10:
 
 Publish Critical and High findings only with a score of at least 8/10 and
 confidence of at least 0.85. Medium and Low findings may be published with a
-score of at least 7/10 and confidence of at least 0.85, but only when no Critical
-or High finding survives and only one Medium or Low finding is worth spending the
-review slot. The memory recording tool is the final authority on score gates,
-the lower-priority anti-noise rule, and whether a human suppression still matches
-the current file version.
+score of at least 7/10 and confidence of at least 0.85. The memory recording tool
+is the final authority on score gates and whether a human suppression still
+matches the current file version.
 
 ## Severity
 
@@ -126,19 +127,24 @@ personal preference.
 Post one summary comment, not a wall of inline comments. Write clean, scannable
 GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 
-- Maximum three findings, ordered by severity and practical impact. Break ties
-  by publication score, then confidence, then `rule_id` alphabetically. If any
-  Critical or High finding survives, do not publish Medium or Low. If only
-  lower-priority findings survive, publish at most one Medium or Low.
-- Maximum about 450 visible prose words. The collapsed fix brief and any short
-  quoted code block do not count toward this prose budget. Spend the budget on
-  evidence and the fix, never on padding.
+- Publish every finding that survives the gate, ordered by severity and practical
+  impact. Break ties by publication score, then confidence, then `rule_id`
+  alphabetically. Do not omit a verified lower-priority finding merely because a
+  higher-priority finding also survived.
+- Keep each finding compact. Spend words on evidence and the fix, never on
+  padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary sentence.
-- Render each finding as a `###` heading, then one compact metadata line in the
+- Include a compact summary table listing every finding, with columns for
+  severity, category, path:line, title, and 12-character fingerprint.
+- Render each Critical or High finding as a `###` heading, then one compact metadata line in the
   form: `path:line` · category · **Severity**. Use the same lower-case category
   you record for the finding. Follow with at most two short paragraphs: first
   the verified behavior and its concrete consequence, then a **Suggested
   change:** giving the smallest correct fix.
+- Render each Medium or Low finding inside its own collapsed `<details>` block
+  whose `<summary>` starts with the severity, title, and `path:line`. Inside the
+  disclosure, use the same metadata line and compact evidence/suggested-change
+  structure as higher-priority findings.
 - Suggested changes should choose the lowest-risk remediation: prefer a safe
   local fix, call out careful or risky remediation only when unavoidable, and do
   not recommend deletion unless you can explain why the code exists and why that
@@ -161,11 +167,13 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
   supplied that evidence. This phase does not execute contributor code.
 
 After the visible review, add one collapsed `<details>` section titled
-`Copyable fix brief for a coding agent` only when findings exist. Keep it under
-300 words and put the brief in a `text` code block for easy copying. Structure it
-as Goal, Files, Changes, Constraints, and Verification. It must be self-contained
-so the author can paste it into Codex or Claude Code. Do not attach a file or
-create a second artifact in phase one.
+`Copyable fix brief for a coding agent` only when findings exist. Keep it compact
+and put one complete brief in a single `text` fenced code block so GitHub shows
+one copy button. The brief must include every published finding, including
+Medium and Low findings that were collapsed in the visible review. Structure it
+as Goal, Findings, Files, Changes, Constraints, and Verification. It must be
+self-contained so the author can paste it into Codex or Claude Code. Do not
+attach a file or create a second artifact in phase one.
 
 Use respectful language. Prefer “This path can…” and “A minimal fix is…” over
 “You did…” or “You forgot…”.

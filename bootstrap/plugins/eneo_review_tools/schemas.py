@@ -83,6 +83,14 @@ ENEO_REVIEW_MEMORY_CONTEXT = {
                 "items": {"type": "string"},
                 "maxItems": 300,
             },
+            "pr_number": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "Current pull request number. When provided, the tool also returns "
+                    "repeat_review_findings scoped to this PR."
+                ),
+            },
         },
         "required": ["repository", "paths"],
         "additionalProperties": False,
@@ -92,10 +100,10 @@ ENEO_REVIEW_MEMORY_CONTEXT = {
 ENEO_REVIEW_MEMORY_RECORD = {
     "name": "eneo_review_memory_record",
     "description": (
-        "Record up to three two-pass, evidence-gated findings. Returns stable fingerprints and "
+        "Record two-pass, evidence-gated findings. Returns stable fingerprints and "
         "whether a human suppression still matches the current trusted file hash. The schema is a "
         "coarse boundary; the memory database is authoritative for per-severity score gates and "
-        "the Medium/Low anti-noise rule. This tool cannot create suppression decisions."
+        "human suppressions. This tool cannot create suppression decisions."
     ),
     "parameters": {
         "type": "object",
@@ -109,7 +117,7 @@ ENEO_REVIEW_MEMORY_RECORD = {
             },
             "findings": {
                 "type": "array",
-                "maxItems": 3,
+                "maxItems": memory_db.MAX_FINDINGS_PER_REVIEW,
                 "items": {
                     "type": "object",
                     "properties": {

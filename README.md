@@ -1,14 +1,20 @@
-# Eneo Hermes PR reviewer, phase one
+# Eneo Hermes PR reviewer
 
-This starter deploys one Hermes Agent reviewer on a Hetzner VPS through Dokploy.
+This repository contains the deployable Eneo PR reviewer: a locked-down Hermes
+Agent gateway, an Eneo-specific review contract, bounded GitHub read tools, and a
+SQLite registry for findings and human feedback.
+
 A trusted maintainer writes exactly `@review` on an open pull request. GitHub
-Actions validates the requester and sends a signed webhook. Hermes uses Codex
-through ChatGPT OAuth, performs a two-pass code and security review, records the
-surviving findings in SQLite, removes matching human-approved suppressions, and
-posts one concise comment directly on the pull request.
+Actions validates the requester and sends a signed webhook to Hermes. Hermes uses
+Codex through ChatGPT OAuth, reads only bounded PR context through the bundled
+plugin, runs a two-pass evidence review, records every surviving finding in
+SQLite, removes matching human-approved suppressions, and posts one structured PR
+comment.
 
-Mattermost, scheduled whole-codebase audits, multi-model councils, autonomous
-fixes, and codebase indexing are intentionally outside this first phase.
+The comment includes a summary table, expanded Critical/High findings, collapsed
+Medium/Low findings, fingerprints for feedback, and one copyable all-findings fix
+brief for a coding agent. The reviewer does not get a shell, file-write tool,
+general GitHub write tool, web browser, delegation, or code execution.
 
 ## What is included
 
@@ -23,7 +29,7 @@ fixes, and codebase indexing are intentionally outside this first phase.
   history in SQLite.
 - Human-only decisions for false positives, accepted risks, duplicates,
   resolutions, and reopenings.
-- An optional, disabled phase-1.5 note for `code-review-graph`.
+- An optional, disabled later-design note for `code-review-graph`.
 
 ## Review flow
 
@@ -45,7 +51,7 @@ Hermes + Codex
 SQLite finding/suppression check
         |
         v
-one short GitHub PR comment
+one structured GitHub PR comment
 ```
 
 The model does not receive a general shell, repository write tool, or arbitrary
@@ -177,10 +183,13 @@ On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 @review
 ```
 
-Hermes reviews the current head and posts one short, scannable PR comment. A
-normal result has at most three findings. When findings exist, one collapsed
-**Copyable fix brief for a coding agent** gives the author a compact prompt that
-can be pasted into Codex or Claude Code.
+Hermes reviews the current head and posts one structured PR comment. It
+publishes every finding that survives the evidence gate. Medium and Low findings
+are collapsed behind GitHub disclosure arrows so lower-priority feedback is
+available without making the main review hard to scan. When findings exist, one
+collapsed **Copyable fix brief for a coding agent** contains every published
+finding in a single fenced code block that can be copied into Codex or Claude
+Code.
 
 The reviewer covers:
 
@@ -213,9 +222,9 @@ This test will post a real comment when the PR and credentials are valid.
 
 ## 6. How the two-pass review works
 
-The first pass creates no more than eight candidates. The second pass tries to
-reject each candidate by checking nearby guards, callers, callees, base behavior,
-framework guarantees, transactions, and relevant tests.
+The first pass creates every concrete candidate it can tie to the diff. The
+second pass tries to reject each candidate by checking nearby guards, callers,
+callees, base behavior, framework guarantees, transactions, and relevant tests.
 
 A finding is publishable only when all of the following hold:
 
@@ -228,9 +237,10 @@ A finding is publishable only when all of the following hold:
   for Medium/Low;
 - the proposed remediation is the smallest change that actually holds.
 
-Medium and Low findings are reserved for concrete, actionable feedback when no
-Critical or High finding survived. The reviewer may publish at most one Medium or
-Low finding, so lower-priority feedback cannot become a watchlist.
+Medium and Low findings are reserved for concrete, actionable feedback. They are
+published when they survive the same evidence gate as higher-severity findings,
+but their details are collapsed in the visible review to keep the comment
+scannable.
 
 This is a lightweight council pattern inside one Codex run: proposer first,
 skeptic second, editor last. The passes share the same PR context and the second
@@ -374,8 +384,8 @@ median visible comment length
 ```
 
 A good early target is that developers act on at least half of published
-findings. If the acceptance rate is lower, tighten evidence and reduce the cap
-before adding more models or more context systems.
+findings. If the acceptance rate is lower, tighten the evidence gate and review
+severity calibration before adding more models or more context systems.
 
 Do not make this a required merge check until the team has reviewed its behavior.
 It is an AI code and security review, not a replacement for CodeQL, dependency
