@@ -224,8 +224,13 @@ A finding is publishable only when all of the following hold:
 - it has a concrete failure or exploit path;
 - benign explanations were actively checked;
 - confidence is at least `0.85`;
-- the internal evidence score is at least `8/10`;
+- the internal evidence score is at least `8/10` for Critical/High or `7/10`
+  for Medium/Low;
 - the proposed remediation is the smallest change that actually holds.
+
+Medium and Low findings are reserved for concrete, actionable feedback when no
+Critical or High finding survived. The reviewer may publish at most one Medium or
+Low finding, so lower-priority feedback cannot become a watchlist.
 
 This is a lightweight council pattern inside one Codex run: proposer first,
 skeptic second, editor last. The passes share the same PR context and the second

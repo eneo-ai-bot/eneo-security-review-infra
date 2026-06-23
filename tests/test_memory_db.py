@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -144,6 +145,287 @@ class ReviewMemoryTests(unittest.TestCase):
                 [weak],
                 context_hashes={weak["path"]: "c" * 40},
             )
+
+    def test_medium_and_low_use_lower_score_gate(self):
+        medium = dict(
+            self.finding,
+            severity="Medium",
+            publication_score=7,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/medium.py",
+            anchor="medium",
+        )
+        low = dict(
+            self.finding,
+            severity="Low",
+            publication_score=7,
+            rule_id="maintainability.small-cleanup",
+            category="maintainability",
+            path="backend/api/low.py",
+            anchor="low",
+        )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            1,
+            "b" * 40,
+            [medium],
+            context_hashes={medium["path"]: "c" * 40},
+        )
+        self.assertEqual(recorded[0]["path"], medium["path"])
+
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.record_findings(
+                self.connection,
+                "eneo/platform",
+                1,
+                "b" * 40,
+                [dict(low, publication_score=6)],
+                context_hashes={low["path"]: "d" * 40},
+            )
+
+    def test_lower_priority_findings_do_not_mix_with_high_priority(self):
+        medium = dict(
+            self.finding,
+            severity="Medium",
+            publication_score=7,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/medium.py",
+            anchor="medium",
+        )
+        high = dict(
+            self.finding,
+            path="backend/api/high.py",
+            anchor="high",
+        )
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.record_findings(
+                self.connection,
+                "eneo/platform",
+                1,
+                "b" * 40,
+                [high, medium],
+                context_hashes={
+                    high["path"]: "c" * 40,
+                    medium["path"]: "d" * 40,
+                },
+            )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM findings WHERE path IN (?, ?)",
+                (high["path"], medium["path"]),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_suppressed_high_does_not_block_one_medium(self):
+        high = dict(
+            self.finding,
+            path="backend/api/high.py",
+            anchor="high",
+        )
+        first = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            1,
+            "b" * 40,
+            [high],
+            context_hashes={high["path"]: "c" * 40},
+        )[0]
+        memory_db.add_decision(
+            self.connection,
+            first["fingerprint"],
+            "false_positive",
+            "Covered by a verified guard.",
+            "github:alice",
+        )
+        medium = dict(
+            self.finding,
+            severity="Medium",
+            publication_score=7,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/medium.py",
+            anchor="medium",
+        )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            1,
+            "b" * 40,
+            [high, medium],
+            context_hashes={
+                high["path"]: "c" * 40,
+                medium["path"]: "d" * 40,
+            },
+        )
+        by_path = {item["path"]: item for item in recorded}
+        self.assertTrue(by_path[high["path"]]["suppressed"])
+        self.assertFalse(by_path[medium["path"]]["suppressed"])
+
+    def test_only_one_lower_priority_finding_per_review(self):
+        medium = dict(
+            self.finding,
+            severity="Medium",
+            publication_score=7,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/medium.py",
+            anchor="medium",
+        )
+        low = dict(
+            self.finding,
+            severity="Low",
+            publication_score=7,
+            rule_id="maintainability.small-cleanup",
+            category="maintainability",
+            path="backend/api/low.py",
+            anchor="low",
+        )
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.record_findings(
+                self.connection,
+                "eneo/platform",
+                1,
+                "b" * 40,
+                [medium, low],
+                context_hashes={
+                    medium["path"]: "c" * 40,
+                    low["path"]: "d" * 40,
+                },
+            )
+
+    def test_legacy_severity_check_schema_migrates(self):
+        self.connection.close()
+        db = str(Path(self.temp.name) / "legacy.sqlite3")
+        created = memory_db.isoformat()
+        raw = sqlite3.connect(db)
+        raw.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE findings (
+                fingerprint TEXT PRIMARY KEY,
+                repository TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                line INTEGER,
+                symbol TEXT NOT NULL DEFAULT '',
+                anchor TEXT NOT NULL,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK (severity IN ('Critical', 'High')),
+                category TEXT NOT NULL DEFAULT 'correctness',
+                publication_score INTEGER NOT NULL DEFAULT 8,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                context_hash TEXT NOT NULL DEFAULT '',
+                pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                disproof_checks TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                smallest_fix TEXT NOT NULL,
+                introduced_by_diff INTEGER NOT NULL CHECK (introduced_by_diff IN (0, 1)),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL,
+                decision TEXT NOT NULL CHECK (
+                    decision IN ('false_positive', 'accepted_risk', 'duplicate', 'resolved', 'reopen')
+                ),
+                reason TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                context_hash TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            );
+            CREATE TABLE review_comment_links (
+                review_comment_id INTEGER PRIMARY KEY,
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                context_hash TEXT NOT NULL DEFAULT '',
+                head_sha TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            );
+            """
+        )
+        fingerprint = memory_db.compute_fingerprint(
+            "eneo/platform", "tenant.missing-scope", "backend/api/documents.py",
+            "create_document", "POST /v1/documents:create",
+        )
+        raw.execute(
+            """
+            INSERT INTO findings (
+                fingerprint, repository, rule_id, path, line, symbol, anchor, title,
+                severity, category, publication_score, confidence, context_hash, pr_number,
+                head_sha, evidence, disproof_checks, impact, smallest_fix,
+                introduced_by_diff, first_seen_at, last_seen_at, occurrences
+            ) VALUES (?, 'eneo/platform', 'tenant.missing-scope', 'backend/api/documents.py',
+                42, 'create_document', 'POST /v1/documents:create',
+                'Document creation omits tenant scope', 'High', 'security', 9, 0.93,
+                ?, 17, ?, 'evidence', 'checks', 'impact', 'fix', 1, ?, ?, 1)
+            """,
+            (fingerprint, "d" * 40, "a" * 40, created, created),
+        )
+        raw.execute(
+            """
+            INSERT INTO decisions (
+                fingerprint, decision, reason, actor, context_hash, created_at, expires_at
+            ) VALUES (?, 'false_positive', 'reason', 'github:alice', ?, ?, NULL)
+            """,
+            (fingerprint, "d" * 40, created),
+        )
+        raw.execute(
+            """
+            INSERT INTO review_comment_links (
+                review_comment_id, repository, pr_number, fingerprint, context_hash,
+                head_sha, created_at
+            ) VALUES (111, 'eneo/platform', 17, ?, ?, ?, ?)
+            """,
+            (fingerprint, "d" * 40, "a" * 40, created),
+        )
+        raw.commit()
+        raw.close()
+
+        self.connection = memory_db.connect(db)
+        schema = self.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'findings'"
+        ).fetchone()["sql"]
+        self.assertNotIn("severity IN ('Critical', 'High')", schema)
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 1
+        )
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM review_comment_links").fetchone()[0],
+            1,
+        )
+        self.assertEqual(self.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        memory_db.init_schema(self.connection)
+        self.assertEqual(self.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        medium = dict(
+            self.finding,
+            severity="Medium",
+            publication_score=7,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/medium.py",
+            anchor="medium",
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            18,
+            "b" * 40,
+            [medium],
+            context_hashes={medium["path"]: "e" * 40},
+        )
 
     def test_missing_line_is_rejected(self):
         invalid = dict(self.finding)

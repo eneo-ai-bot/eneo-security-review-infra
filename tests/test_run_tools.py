@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 PLUGINS = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
@@ -45,7 +46,7 @@ class RunToolTests(unittest.TestCase):
         )
         self.assertTrue(done["updated"])
         self.assertEqual(done["status"], "done")
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             self.assertEqual(memory_db.list_runs(connection)[0]["findings_count"], 2)
 
     def test_overlapping_runs_complete_by_id(self):
@@ -55,7 +56,7 @@ class RunToolTests(unittest.TestCase):
             tools.review_run_complete,
             {"repository": "eneo-ai/eneo", "pr_number": 7, "run_id": a["run_id"], "status": "done", "findings_count": 1},
         )
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             runs = {r["id"]: r for r in memory_db.list_runs(connection)}
         self.assertEqual(runs[a["run_id"]]["status"], "done")
         self.assertEqual(runs[b["run_id"]]["status"], "running")

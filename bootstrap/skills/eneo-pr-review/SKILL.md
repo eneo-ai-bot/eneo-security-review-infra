@@ -48,8 +48,10 @@ only the `eneo_review` tools available to this run.
 5. **Pass 2, skeptical commit gate:** challenge each candidate. Inspect the guard,
    caller/callee, base behavior, framework guarantee, transaction, and relevant
    tests. Write down the disproof checks. Reject anything with an equally
-   plausible benign explanation. Score survivors using AGENTS.md and retain only
-   score >=8 and confidence >=0.85.
+   plausible benign explanation. Score survivors using AGENTS.md. Keep
+   Critical/High for important problems, and use Medium/Low only for concrete,
+   actionable lower-priority feedback when no Critical/High finding survived.
+   The memory tool enforces the exact score gates and lower-priority cap.
 6. Apply Ponytail to remediation. Ask in order: can the new code be deleted; can
    stdlib/framework/database behavior solve it; can an existing Eneo abstraction
    solve it; can one local change solve it; only then propose new machinery. Never
@@ -69,6 +71,8 @@ only the `eneo_review` tools available to this run.
 ## Hard limits
 
 - At most three published findings.
+- If any Critical or High finding survives, do not publish Medium or Low. If only
+  lower-priority findings survive, publish at most one Medium or Low.
 - The final comment must satisfy the loaded AGENTS.md GitHub comment contract,
   including its visible prose budget and collapsed fix brief rules.
 - No watchlist, style feedback, praise filler, dependency shopping list,

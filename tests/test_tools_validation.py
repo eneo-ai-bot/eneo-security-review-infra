@@ -13,7 +13,7 @@ from unittest.mock import patch
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from eneo_review_tools import tools  # noqa: E402
+from eneo_review_tools import memory_db, schemas, tools  # noqa: E402
 
 
 class _FakeResponse:
@@ -66,6 +66,12 @@ class ToolValidationTests(unittest.TestCase):
         with patch.dict(os.environ, {"ENEO_ALLOWED_REPOSITORIES": ""}, clear=False):
             result = json.loads(tools.pr_overview({"repository": "eneo/platform", "pr_number": 1}))
         self.assertIn("deny by default", result["error"])
+
+    def test_schema_severities_come_from_memory_owner(self):
+        severity_schema = schemas.ENEO_REVIEW_MEMORY_RECORD["parameters"]["properties"][
+            "findings"
+        ]["items"]["properties"]["severity"]
+        self.assertEqual(severity_schema["enum"], sorted(memory_db.SEVERITIES))
 
     def test_non_allowlisted_repository_is_denied_before_network(self):
         with patch.dict(os.environ, self.env, clear=False):

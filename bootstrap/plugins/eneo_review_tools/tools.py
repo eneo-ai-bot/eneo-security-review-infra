@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -446,7 +447,7 @@ def review_memory_context(args: dict[str, Any], **_: Any) -> str:
         if len(raw_paths) > 300:
             raise ToolInputError("paths exceeds 300 entries")
         paths = [_path(item) for item in raw_paths]
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             return _output(memory_db.memory_context(connection, repository, paths))
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
         return _error(str(exc))
@@ -499,7 +500,7 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
                 else head_sha
             )
 
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             recorded = memory_db.record_findings(
                 connection,
                 repository,
@@ -530,7 +531,7 @@ def review_run_start(args: dict[str, Any], **_: Any) -> str:
         head_sha = str(args.get("head_sha", "")).strip().lower()
         if not _SHA_RE.fullmatch(head_sha):
             raise ToolInputError("head_sha must be an exact 40 to 64 character hexadecimal commit SHA")
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             run = memory_db.start_run(connection, repository, number, head_sha=head_sha)
         return _output(
             {"run_id": run["id"], "status": run["status"], "started_at": run["started_at"]}
@@ -559,7 +560,7 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
                 raise ToolInputError("findings_count must be an integer")
             if findings_count < 0:
                 raise ToolInputError("findings_count must be zero or greater")
-        with memory_db.connect() as connection:
+        with closing(memory_db.connect()) as connection:
             result = memory_db.complete_run(
                 connection, run_id, repository=repository, pr_number=number,
                 status=status, findings_count=findings_count,

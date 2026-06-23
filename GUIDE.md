@@ -73,8 +73,13 @@ A finding may be published only when it:
 - has a concrete failure or exploit path;
 - survives active attempts to find a benign explanation;
 - has confidence of at least `0.85`;
-- scores at least `8/10` on evidence, impact, causality, falsification, and remediation;
+- scores at least `8/10` for Critical/High or `7/10` for Medium/Low on
+  evidence, impact, causality, falsification, and remediation;
 - has a small, concrete fix rather than an architecture rewrite.
+
+Medium and Low findings are for actionable lower-priority feedback only. They
+are published only when no Critical or High finding survives, and at most one can
+appear in a review.
 
 This mirrors the useful part of an iterative peer-review loop without making one model call another model or exposing internal deliberation to the developer.
 
@@ -133,7 +138,7 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 I found one issue worth addressing before merge.
 
 ### Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · security · **High / important**
+`backend/src/intric/jobs/service.py:142` · security · **High / P1 important**
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 

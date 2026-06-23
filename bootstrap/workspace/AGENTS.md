@@ -81,38 +81,54 @@ Score surviving candidates out of 10:
 - falsification effort and remaining certainty: 0-2
 - concrete minimal remediation: 0-1
 
-Publish only a score of at least 8/10 and confidence of at least 0.85. The memory
-recording tool is the final authority on whether a human suppression still
-matches the current file version.
+Publish Critical and High findings only with a score of at least 8/10 and
+confidence of at least 0.85. Medium and Low findings may be published with a
+score of at least 7/10 and confidence of at least 0.85, but only when no Critical
+or High finding survives and only one Medium or Low finding is worth spending the
+review slot. The memory recording tool is the final authority on score gates,
+the lower-priority anti-noise rule, and whether a human suppression still matches
+the current file version.
 
 ## Severity
 
-**Critical / must fix** requires a plausible path to cross-tenant access,
+**Critical / P0 must fix** requires a plausible path to cross-tenant access,
 authentication bypass, administrative/system privilege escalation, arbitrary
 code or tool execution, major data loss, or exposure of production secrets.
 
-**High / important** requires a concrete correctness, reliability, security,
+**High / P1 important** requires a concrete correctness, reliability, security,
 contract, migration, performance, test, or maintainability problem likely to
 cause production defects, data integrity loss, serious operational cost, or an
 expensive and avoidable future change. Do not use High for taste, formatting,
 minor cleanup, speculative architecture, or generic best practice.
+
+**Medium / P2 useful improvement** is for concrete, diff-caused feedback with a
+clear future change cost, test gap, contract ambiguity, DX issue, or maintainable
+small fix that is useful to the author but not important enough to call High.
+
+**Low / P3 minor but actionable** is for a small, evidence-backed improvement with a
+specific fix that a reviewer would still appreciate seeing. Do not use Low for
+style, naming, formatting, vague possibilities, generic best practice, or
+personal preference.
 
 ## GitHub comment contract
 
 Post one summary comment, not a wall of inline comments. Write clean, scannable
 GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 
-- Maximum three findings, ordered by severity and practical impact.
+- Maximum three findings, ordered by severity and practical impact. If any
+  Critical or High finding survives, do not publish Medium or Low. If only
+  lower-priority findings survive, publish at most one Medium or Low.
 - Maximum about 450 visible prose words. The collapsed fix brief and any short
   quoted code block do not count toward this prose budget. Spend the budget on
   evidence and the fix, never on padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary sentence.
 - Render each finding as a `###` heading, then one compact metadata line in the
   form: `path:line` · category · <emoji> **Severity**, where the emoji is 🔴 for
-  **Critical / must fix** or 🟠 for **High / important**. Use one lower-case
-  category from the finding schema. Follow with at most two short
-  paragraphs: first the verified behavior and its concrete consequence, then a
-  **Suggested change:** giving the smallest correct fix.
+  **Critical / P0 must fix**, 🟠 for **High / P1 important**, 🟡 for
+  **Medium / P2 useful improvement**, or 🔵 for **Low / P3 minor but actionable**.
+  Use one lower-case category from the finding schema. Follow with at most two
+  short paragraphs: first the verified behavior and its concrete consequence,
+  then a **Suggested change:** giving the smallest correct fix.
 - When it sharpens the point, include one short fenced code block (about ten lines
   at most) showing the exact offending lines or the minimal fix. Quote real code
   only; never present invented or paraphrased code as a quote.

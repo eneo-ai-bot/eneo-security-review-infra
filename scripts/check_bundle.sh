@@ -7,8 +7,14 @@ PYTHONPATH="$ROOT/bootstrap/plugins" python3 -m unittest discover -s "$ROOT/test
 
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
+import shutil
+import subprocess
 import sys
-import yaml
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
 
 root = Path(sys.argv[1])
 for relative in [
@@ -18,10 +24,25 @@ for relative in [
     "examples/github/ai-review-request.yml",
 ]:
     path = root / relative
-    with path.open(encoding="utf-8") as handle:
-        value = yaml.safe_load(handle)
-    if not isinstance(value, dict):
-        raise SystemExit(f"{relative} did not parse to a YAML mapping")
+    if yaml is not None:
+        with path.open(encoding="utf-8") as handle:
+            value = yaml.safe_load(handle)
+        if not isinstance(value, dict):
+            raise SystemExit(f"{relative} did not parse to a YAML mapping")
+    else:
+        ruby = shutil.which("ruby")
+        if not ruby:
+            raise SystemExit("PyYAML is not installed and ruby is unavailable for YAML validation")
+        subprocess.run(
+            [
+                ruby,
+                "-ryaml",
+                "-e",
+                "v = YAML.safe_load(File.read(ARGV[0]), aliases: true); exit(v.is_a?(Hash) ? 0 : 1)",
+                str(path),
+            ],
+            check=True,
+        )
     print(f"YAML OK: {relative}")
 PY
 

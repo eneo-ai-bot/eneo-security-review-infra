@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SEVERITIES = {"Critical", "High"}
+SEVERITY_SCORE_GATES = {"Critical": 8, "High": 8, "Medium": 7, "Low": 7}
+SEVERITIES = set(SEVERITY_SCORE_GATES)
+LOWER_PRIORITY_SEVERITIES = {"Medium", "Low"}
 CATEGORIES = {
     "security",
     "correctness",
@@ -25,8 +27,12 @@ CATEGORIES = {
 }
 DECISIONS = {"false_positive", "accepted_risk", "duplicate", "resolved", "reopen"}
 SUPPRESSIVE_DECISIONS = {"false_positive", "accepted_risk", "duplicate"}
+# Decisions an in-PR maintainer reply may produce. accepted_risk is a governance
+# decision (acknowledging a real risk) and is deliberately excluded — it routes to a
+# stronger CODEOWNER/two-person path, not the lightweight feedback loop.
+FEEDBACK_DECISIONS = {"false_positive", "reopen"}
 MIN_CONFIDENCE = 0.85
-MIN_PUBLICATION_SCORE = 8
+MIN_PUBLICATION_SCORE = min(SEVERITY_SCORE_GATES.values())
 _RULE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
@@ -77,6 +83,87 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, ddl:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+def _findings_has_legacy_severity_check(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'findings'"
+    ).fetchone()
+    sql = str((row["sql"] if isinstance(row, sqlite3.Row) else row[0]) if row else "")
+    return "severity IN ('Critical', 'High')" in sql
+
+
+def _migrate_findings_severity_check(connection: sqlite3.Connection) -> None:
+    if not _findings_has_legacy_severity_check(connection):
+        return
+
+    columns = """
+        fingerprint, repository, rule_id, path, line, symbol, anchor, title, severity,
+        category, publication_score, confidence, context_hash, pr_number, head_sha,
+        evidence, disproof_checks, impact, smallest_fix, introduced_by_diff,
+        first_seen_at, last_seen_at, occurrences
+    """
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN")
+        connection.execute("DROP TABLE IF EXISTS findings_migration")
+        connection.execute(
+            """
+            CREATE TABLE findings_migration (
+                fingerprint TEXT PRIMARY KEY,
+                repository TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                line INTEGER,
+                symbol TEXT NOT NULL DEFAULT '',
+                anchor TEXT NOT NULL,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'correctness',
+                publication_score INTEGER NOT NULL DEFAULT 8,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                context_hash TEXT NOT NULL DEFAULT '',
+                pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                disproof_checks TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                smallest_fix TEXT NOT NULL,
+                introduced_by_diff INTEGER NOT NULL CHECK (introduced_by_diff IN (0, 1)),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        connection.execute(
+            f"INSERT INTO findings_migration ({columns}) SELECT {columns} FROM findings"
+        )
+        connection.execute("DROP TABLE findings")
+        connection.execute("ALTER TABLE findings_migration RENAME TO findings")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_repository_path
+                ON findings(repository, path, last_seen_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_repository_seen
+                ON findings(repository, last_seen_at DESC)
+            """
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    broken = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if broken:
+        raise ReviewMemoryError("findings severity migration left broken foreign keys")
+
+
 def init_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -89,7 +176,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             symbol TEXT NOT NULL DEFAULT '',
             anchor TEXT NOT NULL,
             title TEXT NOT NULL,
-            severity TEXT NOT NULL CHECK (severity IN ('Critical', 'High')),
+            severity TEXT NOT NULL,
             category TEXT NOT NULL DEFAULT 'correctness',
             publication_score INTEGER NOT NULL DEFAULT 8,
             confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
@@ -144,6 +231,46 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
             ON review_runs(repository, started_at DESC);
+
+        -- Authority mapping: which finding a posted inline review comment belongs to.
+        -- Stored at publish time; the sole source for routing a threaded reply back to a
+        -- finding. The comment footer text is never trusted for this.
+        CREATE TABLE IF NOT EXISTS review_comment_links (
+            review_comment_id INTEGER PRIMARY KEY,
+            repository TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            context_hash TEXT NOT NULL DEFAULT '',
+            head_sha TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+        );
+
+        -- Idempotency / replay protection: every processed feedback event id is recorded
+        -- once, so a duplicate or replayed delivery is a clean no-op.
+        CREATE TABLE IF NOT EXISTS processed_feedback_events (
+            event_id TEXT PRIMARY KEY,
+            processed_at TEXT NOT NULL
+        );
+
+        -- Append-only audit trail for decisions recorded via in-PR feedback. One row per
+        -- recorded feedback decision, linked to the decisions row it produced.
+        CREATE TABLE IF NOT EXISTS decision_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id INTEGER NOT NULL,
+            actor_user_id TEXT NOT NULL,
+            actor_login TEXT NOT NULL DEFAULT '',
+            author_association TEXT NOT NULL DEFAULT '',
+            allowlist_version TEXT NOT NULL DEFAULT '',
+            review_comment_id INTEGER,
+            source_comment_id INTEGER,
+            source_comment_url TEXT NOT NULL DEFAULT '',
+            classifier_version TEXT NOT NULL DEFAULT '',
+            classifier_output TEXT NOT NULL DEFAULT '',
+            hmac_key_version TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (decision_id) REFERENCES decisions(id)
+        );
         """
     )
     # Non-destructive migration from the first starter bundle.
@@ -151,6 +278,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "findings", "publication_score", "INTEGER NOT NULL DEFAULT 8")
     _ensure_column(connection, "findings", "context_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "decisions", "context_hash", "TEXT NOT NULL DEFAULT ''")
+    connection.commit()
+    _migrate_findings_severity_check(connection)
     connection.commit()
 
 
@@ -265,11 +394,63 @@ def latest_decision(connection: sqlite3.Connection, fingerprint: str) -> dict[st
     return dict(row) if row else None
 
 
+def _latest_decisions(
+    connection: sqlite3.Connection, fingerprints: Iterable[str]
+) -> dict[str, dict[str, Any]]:
+    unique = sorted({str(value) for value in fingerprints if value})
+    if not unique:
+        return {}
+
+    output: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(unique), 500):
+        chunk = unique[offset : offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = connection.execute(
+            f"""
+            SELECT d.id, d.fingerprint, d.decision, d.reason, d.actor,
+                   d.context_hash, d.created_at, d.expires_at
+            FROM decisions d
+            JOIN (
+                SELECT fingerprint, MAX(id) AS id
+                FROM decisions
+                WHERE fingerprint IN ({placeholders})
+                GROUP BY fingerprint
+            ) latest ON latest.id = d.id
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            item = dict(row)
+            output[item["fingerprint"]] = item
+    return output
+
+
 def _current_context_hash(connection: sqlite3.Connection, fingerprint: str) -> str:
     row = connection.execute(
         "SELECT context_hash FROM findings WHERE fingerprint = ?", (fingerprint,)
     ).fetchone()
     return str(row["context_hash"] or "") if row else ""
+
+
+def _active_suppression_from_decision(
+    decision: dict[str, Any] | None,
+    *,
+    context_hash: str | None,
+    now: datetime,
+) -> dict[str, Any] | None:
+    if not decision or decision["decision"] not in SUPPRESSIVE_DECISIONS:
+        return None
+    expires = parse_time(decision.get("expires_at"))
+    if expires is not None and expires <= now:
+        return None
+
+    current_hash = context_hash or ""
+    decision_hash = str(decision.get("context_hash") or "")
+    # A suppression is deliberately narrow: it applies only to the exact file
+    # version that a human reviewed. Any later file change forces re-validation.
+    if not current_hash or not decision_hash or current_hash != decision_hash:
+        return None
+    return decision
 
 
 def active_suppression(
@@ -282,17 +463,11 @@ def active_suppression(
     decision = latest_decision(connection, fingerprint)
     if not decision or decision["decision"] not in SUPPRESSIVE_DECISIONS:
         return None
-    expires = parse_time(decision.get("expires_at"))
-    if expires is not None and expires <= (now or utc_now()):
-        return None
 
     current_hash = context_hash or _current_context_hash(connection, fingerprint)
-    decision_hash = str(decision.get("context_hash") or "")
-    # A suppression is deliberately narrow: it applies only to the exact file
-    # version that a human reviewed. Any later file change forces re-validation.
-    if not current_hash or not decision_hash or current_hash != decision_hash:
-        return None
-    return decision
+    return _active_suppression_from_decision(
+        decision, context_hash=current_hash, now=now or utc_now()
+    )
 
 
 def _validated_finding(repository: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -306,7 +481,9 @@ def _validated_finding(repository: str, raw: dict[str, Any]) -> dict[str, Any]:
     title = _clean_text(raw.get("title"), field="title", maximum=180)
     severity = str(raw.get("severity", "")).strip().title()
     if severity not in SEVERITIES:
-        raise ReviewMemoryError("severity must be Critical or High")
+        raise ReviewMemoryError(
+            f"severity must be one of: {', '.join(sorted(SEVERITIES))}"
+        )
 
     category = str(raw.get("category", "")).strip().lower()
     if category not in CATEGORIES:
@@ -316,8 +493,11 @@ def _validated_finding(repository: str, raw: dict[str, Any]) -> dict[str, Any]:
         publication_score = int(raw.get("publication_score"))
     except (TypeError, ValueError) as exc:
         raise ReviewMemoryError("publication_score must be an integer") from exc
-    if publication_score < MIN_PUBLICATION_SCORE or publication_score > 10:
-        raise ReviewMemoryError("publication_score must be between 8 and 10")
+    minimum_score = SEVERITY_SCORE_GATES[severity]
+    if publication_score < minimum_score or publication_score > 10:
+        raise ReviewMemoryError(
+            f"publication_score for {severity} must be between {minimum_score} and 10"
+        )
 
     try:
         confidence = float(raw.get("confidence"))
@@ -390,11 +570,17 @@ def record_findings(
         normalize_path(path): normalize_context_hash(value)
         for path, value in (context_hashes or {}).items()
     }
+    validated = [_validated_finding(repository, raw) for raw in findings]
+    lower_priority = [
+        item for item in validated if item["severity"] in LOWER_PRIORITY_SEVERITIES
+    ]
+    if len(lower_priority) > 1:
+        raise ReviewMemoryError("at most one Medium or Low finding may be recorded per review")
+
     now = isoformat()
     results: list[dict[str, Any]] = []
     with connection:
-        for raw in findings:
-            item = _validated_finding(repository, raw)
+        for item in validated:
             context_hash = normalized_hashes.get(item["path"], "")
             if not context_hash:
                 raise ReviewMemoryError(f"missing trusted context hash for {item['path']}")
@@ -448,6 +634,23 @@ def record_findings(
                     "decision": suppression,
                 }
             )
+        unsuppressed = {
+            item["fingerprint"] for item in results if not item["suppressed"]
+        }
+        has_lower_priority = any(
+            item["severity"] in LOWER_PRIORITY_SEVERITIES
+            for item in validated
+            if item["fingerprint"] in unsuppressed
+        )
+        has_high_priority = any(
+            item["severity"] not in LOWER_PRIORITY_SEVERITIES
+            for item in validated
+            if item["fingerprint"] in unsuppressed
+        )
+        if has_lower_priority and has_high_priority:
+            raise ReviewMemoryError(
+                "Medium or Low findings may not be recorded with unsuppressed Critical or High findings"
+            )
     return results
 
 
@@ -483,13 +686,16 @@ def memory_context(
         params,
     ).fetchall()
 
+    items = [dict(row) for row in rows]
+    latest_decisions = _latest_decisions(connection, (item["fingerprint"] for item in items))
+    moment = utc_now()
+
     historical_suppressions: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
-    for row in rows:
-        item = dict(row)
-        decision = latest_decision(connection, item["fingerprint"])
-        matches_last_seen = active_suppression(
-            connection, item["fingerprint"], context_hash=item["context_hash"]
+    for item in items:
+        decision = latest_decisions.get(item["fingerprint"])
+        matches_last_seen = _active_suppression_from_decision(
+            decision, context_hash=item["context_hash"], now=moment
         )
         if matches_last_seen:
             historical_suppressions.append(
@@ -527,6 +733,51 @@ def memory_context(
     }
 
 
+def _insert_decision(
+    connection: sqlite3.Connection,
+    *,
+    fingerprint: str,
+    decision: str,
+    reason: str,
+    actor: str,
+    context_hash: str,
+    expires_days: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if decision in SUPPRESSIVE_DECISIONS and not context_hash:
+        raise ReviewMemoryError("finding has no trusted file hash; re-run the review before suppressing")
+
+    expires_at: str | None = None
+    moment = now or utc_now()
+    if decision in SUPPRESSIVE_DECISIONS:
+        days = 180 if expires_days is None else int(expires_days)
+        if days < 1 or days > 3650:
+            raise ReviewMemoryError("expires_days must be between 1 and 3650")
+        expires_at = isoformat(moment + timedelta(days=days))
+    elif expires_days is not None:
+        raise ReviewMemoryError("expires_days only applies to suppressive decisions")
+
+    created_at = isoformat(moment)
+    cursor = connection.execute(
+        """
+        INSERT INTO decisions (
+            fingerprint, decision, reason, actor, context_hash, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fingerprint, decision, reason, actor, context_hash, created_at, expires_at),
+    )
+    return {
+        "id": cursor.lastrowid,
+        "fingerprint": fingerprint,
+        "decision": decision,
+        "reason": reason,
+        "actor": actor,
+        "context_hash": context_hash,
+        "created_at": created_at,
+        "expires_at": expires_at,
+    }
+
+
 def add_decision(
     connection: sqlite3.Connection,
     fingerprint: str,
@@ -549,38 +800,236 @@ def add_decision(
     if not row:
         raise ReviewMemoryError("unknown fingerprint; record the finding before deciding it")
     context_hash = str(row["context_hash"] or "")
-    if decision in SUPPRESSIVE_DECISIONS and not context_hash:
-        raise ReviewMemoryError("finding has no trusted file hash; re-run the review before suppressing")
 
-    expires_at: str | None = None
-    if decision in SUPPRESSIVE_DECISIONS:
-        days = 180 if expires_days is None else int(expires_days)
-        if days < 1 or days > 3650:
-            raise ReviewMemoryError("expires_days must be between 1 and 3650")
-        expires_at = isoformat(utc_now() + timedelta(days=days))
-    elif expires_days is not None:
-        raise ReviewMemoryError("expires_days only applies to suppressive decisions")
-
-    created_at = isoformat()
     with connection:
-        cursor = connection.execute(
+        return _insert_decision(
+            connection,
+            fingerprint=fingerprint,
+            decision=decision,
+            reason=reason,
+            actor=actor,
+            context_hash=context_hash,
+            expires_days=expires_days,
+        )
+
+
+def link_review_comment(
+    connection: sqlite3.Connection,
+    *,
+    review_comment_id: int,
+    repository: str,
+    pr_number: int,
+    fingerprint: str,
+    context_hash: str,
+    head_sha: str = "",
+    now: datetime | None = None,
+) -> None:
+    """Record, at publish time, that a posted inline review comment belongs to a finding.
+    This mapping — not the comment's footer text — is the sole authority for routing a
+    later threaded reply back to the exact finding it concerns."""
+    repository = normalize_repository(repository)
+    fingerprint = resolve_fingerprint(connection, fingerprint)
+    review_comment_id = int(review_comment_id)
+    pr_number = int(pr_number)
+    context_hash = normalize_context_hash(context_hash) if context_hash else ""
+    head_sha = _clean_text(head_sha, field="head_sha", maximum=64, required=False)
+    with connection:
+        existing = connection.execute(
             """
-            INSERT INTO decisions (
-                fingerprint, decision, reason, actor, context_hash, created_at, expires_at
+            SELECT repository, pr_number, fingerprint, context_hash, head_sha
+            FROM review_comment_links
+            WHERE review_comment_id = ?
+            """,
+            (review_comment_id,),
+        ).fetchone()
+        if existing:
+            current = dict(existing)
+            if current == {
+                "repository": repository,
+                "pr_number": pr_number,
+                "fingerprint": fingerprint,
+                "context_hash": context_hash,
+                "head_sha": head_sha,
+            }:
+                return
+            raise ReviewMemoryError("review_comment_id is already linked to a different finding")
+        connection.execute(
+            """
+            INSERT INTO review_comment_links (
+                review_comment_id, repository, pr_number, fingerprint, context_hash,
+                head_sha, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (fingerprint, decision, reason, actor, context_hash, created_at, expires_at),
+            (
+                review_comment_id,
+                repository,
+                pr_number,
+                fingerprint,
+                context_hash,
+                head_sha,
+                isoformat(now),
+            ),
         )
-    return {
-        "id": cursor.lastrowid,
-        "fingerprint": fingerprint,
-        "decision": decision,
-        "reason": reason,
-        "actor": actor,
-        "context_hash": context_hash,
-        "created_at": created_at,
-        "expires_at": expires_at,
-    }
+
+
+def finding_for_review_comment(
+    connection: sqlite3.Connection, review_comment_id: int
+) -> dict[str, Any] | None:
+    """Look up the finding a posted inline review comment maps to. Returns None when the
+    comment is not a recognized finding thread (so feedback on it is a clean no-op)."""
+    row = connection.execute(
+        "SELECT * FROM review_comment_links WHERE review_comment_id = ?",
+        (int(review_comment_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def feedback_event(connection: sqlite3.Connection, event_id: str) -> dict[str, Any] | None:
+    event_id = _clean_text(event_id, field="event_id", maximum=200)
+    row = connection.execute(
+        "SELECT event_id, processed_at FROM processed_feedback_events WHERE event_id = ?",
+        (event_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def record_feedback_decision(
+    connection: sqlite3.Connection,
+    *,
+    event_id: str,
+    review_comment_id: int,
+    decision: str,
+    reason: str,
+    actor_user_id: str,
+    actor_login: str = "",
+    author_association: str = "",
+    allowlist_version: str = "",
+    source_comment_id: int | None = None,
+    source_comment_url: str = "",
+    classifier_version: str = "",
+    classifier_output: str = "",
+    hmac_key_version: str = "",
+    expires_days: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Deterministically record a human feedback decision (v1: false_positive or reopen)
+    from a reply in an inline review-comment thread. The thread (review_comment_id), via
+    the stored mapping, identifies the finding — the caller never picks it. Returns:
+      - None: the event was already processed (replay) or the comment is not a known
+        finding thread (clean no-op);
+      - {"status": "stale", ...}: a false_positive whose finding's file changed since the
+        comment was posted (do not suppress a version the human did not review);
+      - {"status": "recorded", ...}: the decision + finding details for the bot confirmation.
+    Raises for an out-of-scope decision (e.g. accepted_risk — a governance decision).
+    Call with no open transaction; this function owns the BEGIN IMMEDIATE boundary."""
+    decision = decision.strip().lower()
+    if decision not in FEEDBACK_DECISIONS:
+        raise ReviewMemoryError(
+            f"feedback decision must be one of: {', '.join(sorted(FEEDBACK_DECISIONS))}"
+        )
+    event_id = _clean_text(event_id, field="event_id", maximum=200)
+    actor_user_id = _clean_text(actor_user_id, field="actor_user_id", maximum=64)
+    reason = _clean_multiline(reason, field="reason", maximum=2000)
+    actor_login = _clean_text(actor_login, field="actor_login", maximum=200, required=False)
+    author_association = _clean_text(
+        author_association, field="author_association", maximum=80, required=False
+    )
+    allowlist_version = _clean_text(
+        allowlist_version, field="allowlist_version", maximum=200, required=False
+    )
+    source_comment_url = _clean_text(
+        source_comment_url, field="source_comment_url", maximum=500, required=False
+    )
+    classifier_version = _clean_text(
+        classifier_version, field="classifier_version", maximum=100, required=False
+    )
+    classifier_output = _clean_text(
+        classifier_output, field="classifier_output", maximum=500, required=False
+    )
+    hmac_key_version = _clean_text(
+        hmac_key_version, field="hmac_key_version", maximum=100, required=False
+    )
+    review_comment_id = int(review_comment_id)
+    source_comment_id = int(source_comment_id) if source_comment_id is not None else None
+
+    # Event claim, context check, decision, and audit commit or roll back together.
+    # Otherwise a crash can permanently consume a maintainer's feedback.
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        link = finding_for_review_comment(connection, review_comment_id)
+        if link is None:
+            connection.rollback()
+            return None  # not a recognized finding thread; do not fill idempotency storage.
+
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO processed_feedback_events (event_id, processed_at)
+            VALUES (?, ?)
+            """,
+            (event_id, isoformat(now)),
+        )
+        if cursor.rowcount == 0:
+            connection.rollback()
+            return None
+
+        fingerprint = link["fingerprint"]
+        linked_hash = str(link["context_hash"] or "")
+        current_hash = _current_context_hash(connection, fingerprint)
+
+        # A false_positive may only suppress the exact file version the human reviewed.
+        if decision == "false_positive" and (not linked_hash or linked_hash != current_hash):
+            connection.commit()
+            return {"status": "stale", "fingerprint": fingerprint}
+
+        actor = f"github-id:{actor_user_id}"
+        result = _insert_decision(
+            connection,
+            fingerprint=fingerprint,
+            decision=decision,
+            reason=reason,
+            actor=actor,
+            context_hash=current_hash,
+            expires_days=expires_days,
+            now=now,
+        )
+        connection.execute(
+            """
+            INSERT INTO decision_audit (
+                decision_id, actor_user_id, actor_login, author_association, allowlist_version,
+                review_comment_id, source_comment_id, source_comment_url, classifier_version,
+                classifier_output, hmac_key_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result["id"],
+                actor_user_id,
+                actor_login,
+                author_association,
+                allowlist_version,
+                review_comment_id,
+                source_comment_id,
+                source_comment_url,
+                classifier_version,
+                classifier_output,
+                hmac_key_version,
+                isoformat(now),
+            ),
+        )
+        finding = connection.execute(
+            "SELECT title FROM findings WHERE fingerprint = ?", (fingerprint,)
+        ).fetchone()
+        connection.commit()
+        return {
+            "status": "recorded",
+            "decision": result["decision"],
+            "fingerprint": fingerprint,
+            "title": finding["title"] if finding else "",
+            "context_hash": result["context_hash"],
+            "expires_at": result["expires_at"],
+        }
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def list_findings(
@@ -651,6 +1100,8 @@ def compute_stats(
         where = "WHERE repository = ?"
         params.append(repo)
     rows = connection.execute(f"SELECT * FROM findings {where}", params).fetchall()
+    items = [dict(row) for row in rows]
+    latest_decisions = _latest_decisions(connection, (item["fingerprint"] for item in items))
 
     by_severity = {severity: 0 for severity in sorted(SEVERITIES)}
     by_category = {category: 0 for category in sorted(CATEGORIES)}
@@ -660,22 +1111,21 @@ def compute_stats(
     nearing_expiry = 0
     repeats_after_decision = 0
 
-    for row in rows:
-        item = dict(row)
+    for item in items:
         fingerprint = item["fingerprint"]
         if item.get("severity") in by_severity:
             by_severity[item["severity"]] += 1
         if item.get("category") in by_category:
             by_category[item["category"]] += 1
 
-        decision = latest_decision(connection, fingerprint)
+        decision = latest_decisions.get(fingerprint)
         if decision is None:
             findings_without_decision += 1
         elif decision["decision"] in latest_decision_by_type:
             latest_decision_by_type[decision["decision"]] += 1
 
-        suppression = active_suppression(
-            connection, fingerprint, context_hash=item.get("context_hash"), now=moment
+        suppression = _active_suppression_from_decision(
+            decision, context_hash=item.get("context_hash"), now=moment
         )
         if suppression is not None:
             active_suppressions += 1
@@ -696,7 +1146,7 @@ def compute_stats(
     return {
         "repository": repo,
         "generated_at": isoformat(moment),
-        "findings_total": len(rows),
+        "findings_total": len(items),
         "findings_without_decision": findings_without_decision,
         "findings_by_severity": by_severity,
         "findings_by_category": by_category,

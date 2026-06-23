@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -107,7 +108,7 @@ def main() -> int:
     sys.path.insert(0, str(plugin_dir))
     import memory_db  # type: ignore
 
-    with memory_db.connect():
+    with closing(memory_db.connect()):
         pass
 
     if not args.skip_plugin_enable:

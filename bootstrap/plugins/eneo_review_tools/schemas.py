@@ -1,5 +1,7 @@
 """JSON schemas exposed to the review model."""
 
+from . import memory_db
+
 ENEO_PR_OVERVIEW = {
     "name": "eneo_pr_overview",
     "description": (
@@ -90,9 +92,10 @@ ENEO_REVIEW_MEMORY_CONTEXT = {
 ENEO_REVIEW_MEMORY_RECORD = {
     "name": "eneo_review_memory_record",
     "description": (
-        "Record up to three two-pass, evidence-gated Critical or High findings. Returns stable "
-        "fingerprints and whether a human suppression still matches the current trusted file hash. "
-        "This tool cannot create suppression decisions."
+        "Record up to three two-pass, evidence-gated findings. Returns stable fingerprints and "
+        "whether a human suppression still matches the current trusted file hash. The schema is a "
+        "coarse boundary; the memory database is authoritative for per-severity score gates and "
+        "the Medium/Low anti-noise rule. This tool cannot create suppression decisions."
     ),
     "parameters": {
         "type": "object",
@@ -123,9 +126,17 @@ ENEO_REVIEW_MEMORY_RECORD = {
                         "symbol": {"type": "string"},
                         "anchor": {"type": "string"},
                         "title": {"type": "string"},
-                        "severity": {"type": "string", "enum": ["Critical", "High"]},
-                        "publication_score": {"type": "integer", "minimum": 8, "maximum": 10},
-                        "confidence": {"type": "number", "minimum": 0.85, "maximum": 1.0},
+                        "severity": {"type": "string", "enum": sorted(memory_db.SEVERITIES)},
+                        "publication_score": {
+                            "type": "integer",
+                            "minimum": memory_db.MIN_PUBLICATION_SCORE,
+                            "maximum": 10,
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": memory_db.MIN_CONFIDENCE,
+                            "maximum": 1.0,
+                        },
                         "evidence": {"type": "string"},
                         "disproof_checks": {"type": "string"},
                         "impact": {"type": "string"},

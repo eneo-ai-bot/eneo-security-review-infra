@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import closing
 from pathlib import Path
 
 
@@ -133,7 +134,7 @@ def main() -> int:
     runs_parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
-    with memory_db.connect(args.db) as connection:
+    with closing(memory_db.connect(args.db)) as connection:
         if args.command == "init":
             print(f"Ready: {memory_db.database_path(args.db)}")
             return 0

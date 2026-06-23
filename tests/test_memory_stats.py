@@ -60,14 +60,20 @@ class ReviewStatsTests(unittest.TestCase):
         self.assertEqual(stats["active_suppressions"], 0)
         self.assertEqual(stats["repeats_after_decision_approx"], 0)
         self.assertEqual(sum(stats["latest_decision_by_type"].values()), 0)
-        self.assertEqual(stats["findings_by_severity"], {"Critical": 0, "High": 0})
+        self.assertEqual(
+            stats["findings_by_severity"],
+            {"Critical": 0, "High": 0, "Low": 0, "Medium": 0},
+        )
 
     def test_counts_by_severity_and_category(self):
         self._record(path="backend/a.py", anchor="A", severity="Critical", category="security")
         self._record(path="backend/b.py", anchor="B", severity="High", category="performance")
         stats = memory_db.compute_stats(self.connection, repository="eneo/platform")
         self.assertEqual(stats["findings_total"], 2)
-        self.assertEqual(stats["findings_by_severity"], {"Critical": 1, "High": 1})
+        self.assertEqual(
+            stats["findings_by_severity"],
+            {"Critical": 1, "High": 1, "Low": 0, "Medium": 0},
+        )
         self.assertEqual(stats["findings_by_category"]["security"], 1)
         self.assertEqual(stats["findings_by_category"]["performance"], 1)
 
