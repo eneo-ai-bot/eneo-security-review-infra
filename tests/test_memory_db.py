@@ -181,6 +181,22 @@ class ReviewMemoryTests(unittest.TestCase):
                 context_hashes={invalid["path"]: "c" * 40},
             )
 
+    def test_export_state_round_trips_findings_and_decisions(self):
+        result = self.record()
+        memory_db.add_decision(
+            self.connection,
+            result["fingerprint"],
+            "false_positive",
+            "PostgreSQL RLS enforces tenant scope for this application role.",
+            "github:alice",
+            expires_days=180,
+        )
+        state = memory_db.export_state(self.connection)
+        self.assertEqual(state["schema_version"], 2)
+        self.assertEqual(len(state["findings"]), 1)
+        self.assertEqual(len(state["decisions"]), 1)
+        self.assertEqual(state["findings"][0]["fingerprint"], result["fingerprint"])
+
 
 if __name__ == "__main__":
     unittest.main()
