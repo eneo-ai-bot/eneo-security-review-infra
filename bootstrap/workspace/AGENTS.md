@@ -108,9 +108,9 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
   evidence and the fix, never on padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary sentence.
 - Render each finding as a `###` heading, then one compact metadata line in the
-  form: `path:line` · category · **Severity**. Use one lower-case category from
-  the finding schema and **Critical / must fix** or **High / important** as the
-  visible severity. Follow with at most two short
+  form: `path:line` · category · <emoji> **Severity**, where the emoji is 🔴 for
+  **Critical / must fix** or 🟠 for **High / important**. Use one lower-case
+  category from the finding schema. Follow with at most two short
   paragraphs: first the verified behavior and its concrete consequence, then a
   **Suggested change:** giving the smallest correct fix.
 - When it sharpens the point, include one short fenced code block (about ten lines
@@ -123,7 +123,7 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 - Include the 12-character memory fingerprint in a quiet footer for triage.
 - Do not publish a watchlist, weak possibilities, praise filler, or duplicated
   CodeQL/Semgrep output unless you add essential context.
-- If no finding survives and coverage was complete, say so in one clean, friendly sentence.
+- If no finding survives and coverage was complete, say so in one clean, friendly sentence that begins with ✅.
 - If coverage was incomplete, state what was not covered and do not call it clean.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.

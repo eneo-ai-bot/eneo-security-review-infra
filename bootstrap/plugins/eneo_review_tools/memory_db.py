@@ -127,6 +127,23 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_decisions_fingerprint
             ON decisions(fingerprint, id DESC);
+
+        CREATE TABLE IF NOT EXISTS review_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repository TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            trigger_comment_id INTEGER,
+            trigger_user TEXT NOT NULL DEFAULT '',
+            head_sha TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed')),
+            findings_count INTEGER,
+            posted_comment_id INTEGER,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
+            ON review_runs(repository, started_at DESC);
         """
     )
     # Non-destructive migration from the first starter bundle.
@@ -688,6 +705,181 @@ def compute_stats(
         "active_suppressions_expiring_within_days": expiring_within_days,
         "active_suppressions_nearing_expiry": nearing_expiry,
         "repeats_after_decision_approx": repeats_after_decision,
+    }
+
+
+def start_run(
+    connection: sqlite3.Connection,
+    repository: str,
+    pr_number: int,
+    *,
+    trigger_comment_id: int | None = None,
+    trigger_user: str = "",
+    head_sha: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Record the start of a review run. Operational telemetry only — this is a
+    separate table from findings/decisions and never affects suppression."""
+    repository = normalize_repository(repository)
+    if not isinstance(pr_number, int) or pr_number < 1:
+        raise ReviewMemoryError("pr_number must be positive")
+    started = isoformat(now)
+    with connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO review_runs (
+                repository, pr_number, trigger_comment_id, trigger_user, head_sha,
+                status, started_at
+            ) VALUES (?, ?, ?, ?, ?, 'running', ?)
+            """,
+            (
+                repository,
+                pr_number,
+                int(trigger_comment_id) if trigger_comment_id is not None else None,
+                _clean_text(trigger_user, field="trigger_user", maximum=200, required=False),
+                _clean_text(head_sha, field="head_sha", maximum=64, required=False),
+                started,
+            ),
+        )
+    return {
+        "id": cursor.lastrowid,
+        "repository": repository,
+        "pr_number": pr_number,
+        "trigger_comment_id": trigger_comment_id,
+        "status": "running",
+        "started_at": started,
+    }
+
+
+def complete_run(
+    connection: sqlite3.Connection,
+    repository: str,
+    pr_number: int,
+    trigger_comment_id: int | None,
+    *,
+    status: str = "done",
+    findings_count: int | None = None,
+    posted_comment_id: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Mark the most recent running run for (repository, pr_number, trigger_comment_id)
+    as done or failed. Returns None when no matching running run exists."""
+    repository = normalize_repository(repository)
+    if status not in {"done", "failed"}:
+        raise ReviewMemoryError("status must be done or failed")
+    if trigger_comment_id is not None:
+        row = connection.execute(
+            """
+            SELECT id FROM review_runs
+            WHERE repository = ? AND pr_number = ? AND trigger_comment_id = ? AND status = 'running'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (repository, pr_number, int(trigger_comment_id)),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT id FROM review_runs
+            WHERE repository = ? AND pr_number = ? AND status = 'running'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (repository, pr_number),
+        ).fetchone()
+    if not row:
+        return None
+    completed = isoformat(now)
+    with connection:
+        connection.execute(
+            """
+            UPDATE review_runs
+            SET status = ?, findings_count = ?, posted_comment_id = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                int(findings_count) if findings_count is not None else None,
+                int(posted_comment_id) if posted_comment_id is not None else None,
+                completed,
+                row["id"],
+            ),
+        )
+    return {"id": row["id"], "status": status, "findings_count": findings_count, "completed_at": completed}
+
+
+def list_runs(
+    connection: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 500))
+    params: list[Any] = []
+    where = ""
+    if repository:
+        where = "WHERE repository = ?"
+        params.append(normalize_repository(repository))
+    params.append(limit)
+    rows = connection.execute(
+        f"SELECT * FROM review_runs {where} ORDER BY started_at DESC, id DESC LIMIT ?", params
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def run_stats(
+    connection: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    days: int = 30,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Read-only operational metrics over review_runs: counts by status, time-to-answer
+    percentiles, and average findings per completed run."""
+    moment = now or utc_now()
+    repo = normalize_repository(repository) if repository else None
+    days = max(1, int(days))
+    since = isoformat(moment - timedelta(days=days))
+    params: list[Any] = [since]
+    where = "WHERE started_at >= ?"
+    if repo:
+        where += " AND repository = ?"
+        params.append(repo)
+    rows = connection.execute(
+        f"SELECT status, started_at, completed_at, findings_count FROM review_runs {where}", params
+    ).fetchall()
+
+    by_status = {"running": 0, "done": 0, "failed": 0}
+    durations: list[float] = []
+    findings_total = 0
+    completed_with_count = 0
+    for row in rows:
+        item = dict(row)
+        if item.get("status") in by_status:
+            by_status[item["status"]] += 1
+        started = parse_time(item.get("started_at"))
+        completed = parse_time(item.get("completed_at"))
+        if started is not None and completed is not None:
+            durations.append((completed - started).total_seconds())
+        if item.get("findings_count") is not None:
+            findings_total += int(item["findings_count"])
+            completed_with_count += 1
+    durations.sort()
+
+    def _pct(p: float) -> float | None:
+        if not durations:
+            return None
+        index = min(len(durations) - 1, int(round((p / 100.0) * (len(durations) - 1))))
+        return round(durations[index], 1)
+
+    return {
+        "repository": repo,
+        "window_days": days,
+        "generated_at": isoformat(moment),
+        "total": len(rows),
+        "by_status": by_status,
+        "time_to_answer_seconds": {"p50": _pct(50), "p95": _pct(95)},
+        "avg_findings_per_completed_run": (
+            round(findings_total / completed_with_count, 2) if completed_with_count else None
+        ),
     }
 
 
