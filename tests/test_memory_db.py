@@ -115,6 +115,19 @@ class ReviewMemoryTests(unittest.TestCase):
             context["historical_suppressions"][0]["decision"], "accepted_risk"
         )
 
+    def test_context_returns_unsuppressed_recent_finding_for_reexamination(self):
+        result = self.record()
+        context = memory_db.memory_context(
+            self.connection, "eneo/platform", ["backend/api/documents.py"]
+        )
+        self.assertEqual(context["historical_suppressions"], [])
+        recent = context["recent_findings"]
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["fingerprint"], result["fingerprint"])
+        self.assertEqual(recent[0]["pr_number"], 17)
+        self.assertFalse(recent[0]["suppressed_for_last_seen_file_version"])
+        self.assertIsNone(recent[0]["latest_decision"])
+
     def test_fingerprint_prefix_can_be_used_for_human_triage(self):
         result = self.record()
         prefix = result["fingerprint"][:12]

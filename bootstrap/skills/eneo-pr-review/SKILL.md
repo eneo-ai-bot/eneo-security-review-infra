@@ -27,9 +27,13 @@ only the `eneo_review` tools available to this run.
    `eneo_review_run_start` with the repository, PR number, and exact head SHA; this
    is operational telemetry only and never affects findings or suppression. It
    returns a `run_id` — keep it for the matching `eneo_review_run_complete` call.
-2. Call `eneo_review_memory_context` with the changed paths. Use prior findings
-   as context, not as proof. A human decision is a suppression only when the
-   final record tool confirms it still matches the current file version.
+2. Call `eneo_review_memory_context` with the changed paths. Re-examine
+   unsuppressed `recent_findings` from this PR under the AGENTS.md skeptical
+   gate before looking for novel findings; this is generation order, not
+   publication priority. Use them as candidates, not proof. If one still holds,
+   reuse its exact `rule_id`, `symbol`, and `anchor`. A human decision is a
+   suppression only when the final record tool confirms it still matches the
+   current file version.
 3. Read the unified diff with `eneo_pr_diff`. Start with changed hunks. If the
    full diff is truncated, use path-specific diff reads. Call `eneo_pr_file` for
    bounded head or base ranges only when needed to establish causality, inspect
@@ -43,19 +47,25 @@ only the `eneo_review` tools available to this run.
    changes with `eneo_pr_diff` and continue from the diff and overview evidence.
 4. **Pass 1, candidate review:** create at most eight candidates across security,
    correctness, reliability, contracts, tests, maintainability, performance, and
-   migrations. Ignore style, naming, formatting, subjective preferences, and
-   concerns that are not introduced or worsened by this diff.
-5. **Pass 2, skeptical commit gate:** challenge each candidate. Inspect the guard,
-   caller/callee, base behavior, framework guarantee, transaction, and relevant
-   tests. Write down the disproof checks. Reject anything with an equally
-   plausible benign explanation. Score survivors using AGENTS.md. Keep
-   Critical/High for important problems, and use Medium/Low only for concrete,
-   actionable lower-priority feedback when no Critical/High finding survived.
-   The memory tool enforces the exact score gates and lower-priority cap.
+   migrations. Include re-examined prior findings in that budget before novel
+   framings of the same code. Ignore style, naming, formatting, subjective
+   preferences, and concerns that are not introduced or worsened by this diff.
+5. **Pass 2, skeptical commit gate:** challenge each candidate. Start with the
+   cheapest falsifier: the guard, caller/callee, base behavior, framework
+   guarantee, transaction, relevant test, or data-flow fact that would disprove
+   the issue fastest. Record the disproof checks in the memory tool's
+   `disproof_checks` field. Reject anything with an equally plausible benign
+   explanation. Score survivors using AGENTS.md. Keep Critical/High for
+   important problems, and use Medium/Low only for concrete, actionable
+   lower-priority feedback when no Critical/High finding survived. The memory
+   tool enforces the exact score gates and lower-priority cap.
 6. Apply Ponytail to remediation. Ask in order: can the new code be deleted; can
    stdlib/framework/database behavior solve it; can an existing Eneo abstraction
    solve it; can one local change solve it; only then propose new machinery. Never
    remove security, validation, data-loss handling, reliability, or accessibility.
+   Prefer a safe local fix; call out careful or risky remediation only when
+   unavoidable. Do not recommend deleting code unless you can explain why it exists
+   and why that reason no longer applies.
 7. Redact secret values. Call `eneo_review_memory_record` once with no more than
    three survivors and the exact head SHA from the overview. The tool re-checks
    PR state, changed paths, file versions, and human suppressions. Omit every item
