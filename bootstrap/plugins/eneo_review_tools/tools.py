@@ -521,3 +521,49 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
         return _error(str(exc))
     except Exception:
         return _error("unexpected memory write failure")
+
+
+def review_run_start(args: dict[str, Any], **_: Any) -> str:
+    try:
+        repository = _allowlisted_repository(args.get("repository"))
+        number = _pr_number(args.get("pr_number"))
+        head_sha = str(args.get("head_sha", "")).strip().lower()
+        if not _SHA_RE.fullmatch(head_sha):
+            raise ToolInputError("head_sha must be an exact 40 to 64 character hexadecimal commit SHA")
+        with memory_db.connect() as connection:
+            run = memory_db.start_run(connection, repository, number, head_sha=head_sha)
+        return _output(
+            {"run_id": run["id"], "status": run["status"], "started_at": run["started_at"]}
+        )
+    except (ToolInputError, memory_db.ReviewMemoryError) as exc:
+        return _error(str(exc))
+    except Exception:
+        return _error("unexpected run-start failure")
+
+
+def review_run_complete(args: dict[str, Any], **_: Any) -> str:
+    try:
+        repository = _allowlisted_repository(args.get("repository"))
+        number = _pr_number(args.get("pr_number"))
+        status = str(args.get("status", "done")).strip().lower()
+        if status not in {"done", "failed"}:
+            raise ToolInputError("status must be done or failed")
+        findings_count = args.get("findings_count")
+        if findings_count is not None:
+            findings_count = int(findings_count)
+            if findings_count < 0:
+                raise ToolInputError("findings_count must be zero or greater")
+        with memory_db.connect() as connection:
+            result = memory_db.complete_run(
+                connection, repository, number, None,
+                status=status, findings_count=findings_count,
+            )
+        if result is None:
+            return _output({"updated": False, "note": "no running review run was found to complete"})
+        return _output(
+            {"updated": True, "status": result["status"], "completed_at": result["completed_at"]}
+        )
+    except (ToolInputError, memory_db.ReviewMemoryError) as exc:
+        return _error(str(exc))
+    except Exception:
+        return _error("unexpected run-complete failure")

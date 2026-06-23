@@ -63,6 +63,29 @@ def print_stats(stats):
     print(f"  repeats after a human decision (approx): {stats['repeats_after_decision_approx']}")
 
 
+def print_runs(runs):
+    if not runs:
+        print("No review runs.")
+        return
+    for run in runs:
+        findings = run["findings_count"] if run["findings_count"] is not None else "-"
+        print(
+            f"#{run['id']:<5} {run['status']:8} {run['repository']}#{run['pr_number']}  "
+            f"findings={findings}  started={run['started_at']}  "
+            f"completed={run['completed_at'] or '-'}"
+        )
+
+
+def print_run_stats(stats):
+    repo = stats.get("repository") or "(all repositories)"
+    print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
+    print(f"  total: {stats['total']}")
+    print("  by status:  " + ", ".join(f"{k}={v}" for k, v in stats["by_status"].items()))
+    tta = stats["time_to_answer_seconds"]
+    print(f"  time to answer (s):  p50={tta['p50']}  p95={tta['p95']}")
+    print(f"  avg findings / completed run:  {stats['avg_findings_per_completed_run']}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", help="Override ENEO_REVIEW_DB for this command.")
@@ -96,6 +119,15 @@ def main() -> int:
     stats_parser.add_argument("--repo", help="Limit to owner/repository.")
     stats_parser.add_argument("--expiring-within-days", type=int, default=30)
     stats_parser.add_argument("--json", action="store_true")
+
+    runs_parser = sub.add_parser("runs", help="List recent review runs, or --stats for run metrics.")
+    runs_parser.add_argument("--repo", help="Limit to owner/repository.")
+    runs_parser.add_argument("--limit", type=int, default=50)
+    runs_parser.add_argument(
+        "--stats", action="store_true", help="Show aggregate run metrics instead of a list."
+    )
+    runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
+    runs_parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
     with memory_db.connect(args.db) as connection:
@@ -176,6 +208,21 @@ def main() -> int:
                 print(memory_db.json_dumps(stats))
             else:
                 print_stats(stats)
+            return 0
+
+        if args.command == "runs":
+            if args.stats:
+                run_metrics = memory_db.run_stats(connection, repository=args.repo, days=args.days)
+                if args.json:
+                    print(memory_db.json_dumps(run_metrics))
+                else:
+                    print_run_stats(run_metrics)
+            else:
+                runs = memory_db.list_runs(connection, repository=args.repo, limit=args.limit)
+                if args.json:
+                    print(memory_db.json_dumps(runs))
+                else:
+                    print_runs(runs)
             return 0
 
     return 1

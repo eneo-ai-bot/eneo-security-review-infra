@@ -34,3 +34,15 @@ def register(ctx):
         schema=schemas.ENEO_REVIEW_MEMORY_RECORD,
         handler=tools.review_memory_record,
     )
+    ctx.register_tool(
+        name="eneo_review_run_start",
+        toolset="eneo_review",
+        schema=schemas.ENEO_REVIEW_RUN_START,
+        handler=tools.review_run_start,
+    )
+    ctx.register_tool(
+        name="eneo_review_run_complete",
+        toolset="eneo_review",
+        schema=schemas.ENEO_REVIEW_RUN_COMPLETE,
+        handler=tools.review_run_complete,
+    )

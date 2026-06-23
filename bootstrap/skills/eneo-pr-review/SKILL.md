@@ -23,7 +23,9 @@ only the `eneo_review` tools available to this run.
    allowlisted, the PR is closed, or it is a draft. If the changed-file list is
    incomplete, more than 100 files changed, or additions plus deletions exceed
    5,000, return a concise incomplete-review comment. Do not record partial
-   findings or claim the PR is clean.
+   findings or claim the PR is clean. After it succeeds, call
+   `eneo_review_run_start` with the repository, PR number, and exact head SHA; this
+   is operational telemetry only and never affects findings or suppression.
 2. Call `eneo_review_memory_context` with the changed paths. Use prior findings
    as context, not as proof. A human decision is a suppression only when the
    final record tool confirms it still matches the current file version.
@@ -55,7 +57,10 @@ only the `eneo_review` tools available to this run.
    three survivors and the exact head SHA from the overview. The tool re-checks
    PR state, changed paths, file versions, and human suppressions. Omit every item
    returned with `suppressed: true`.
-8. Return only the final GitHub comment under AGENTS.md. Do not expose private
+8. Just before writing the final comment, call `eneo_review_run_complete` with
+   status `done` and `findings_count` set to the number of findings you are
+   publishing (use `failed` only if you could not complete the review). Then return
+   only the final GitHub comment under AGENTS.md. Do not expose private
    chain-of-thought, candidate lists, rejected findings, scoring deliberation,
    provider notices, progress updates, or status chatter.
 

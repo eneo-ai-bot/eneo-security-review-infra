@@ -145,3 +145,46 @@ ENEO_REVIEW_MEMORY_RECORD = {
         "additionalProperties": False,
     },
 }
+
+ENEO_REVIEW_RUN_START = {
+    "name": "eneo_review_run_start",
+    "description": (
+        "Record that an Eneo review run has started. Operational telemetry only — it does not "
+        "affect findings or suppression. Call once, immediately after eneo_pr_overview returns the "
+        "head SHA and before reviewing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string", "description": "GitHub owner/repository."},
+            "pr_number": {"type": "integer", "minimum": 1},
+            "head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40,64}$",
+                "description": "Exact pull-request head commit SHA from eneo_pr_overview.",
+            },
+        },
+        "required": ["repository", "pr_number", "head_sha"],
+        "additionalProperties": False,
+    },
+}
+
+ENEO_REVIEW_RUN_COMPLETE = {
+    "name": "eneo_review_run_complete",
+    "description": (
+        "Record that the Eneo review run has finished. Operational telemetry only. Call once as the "
+        "final action, after recording findings and writing the review (or if the review must abort). "
+        "findings_count is the number of findings published in the review comment."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string"},
+            "pr_number": {"type": "integer", "minimum": 1},
+            "status": {"type": "string", "enum": ["done", "failed"], "default": "done"},
+            "findings_count": {"type": "integer", "minimum": 0},
+        },
+        "required": ["repository", "pr_number", "status"],
+        "additionalProperties": False,
+    },
+}
