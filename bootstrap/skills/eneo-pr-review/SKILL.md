@@ -35,8 +35,9 @@ only the `eneo_review` tools available to this run.
    guessed path. Use `side: head` for added or modified files and for any
    unchanged caller, callee, or test you read for context; use `side: base` only
    to compare the prior version of a modified or deleted file. An added file has
-   no base and a deleted file has no head. If a read returns not-found, do not
-   retry it or guess variants — continue from the diff and overview evidence.
+   no base and a deleted file has no head. If a read returns not-found, too large,
+   or not a regular file, do not retry it or guess variants — inspect that path's
+   changes with `eneo_pr_diff` and continue from the diff and overview evidence.
 4. **Pass 1, candidate review:** create at most eight candidates across security,
    correctness, reliability, contracts, tests, maintainability, performance, and
    migrations. Ignore style, naming, formatting, subjective preferences, and

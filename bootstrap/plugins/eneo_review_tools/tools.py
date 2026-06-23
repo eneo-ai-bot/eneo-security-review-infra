@@ -297,6 +297,21 @@ def pr_diff(args: dict[str, Any], **_: Any) -> str:
         return _error("unexpected diff failure")
 
 
+# GitHub's Contents API only base64-encodes files up to 1 MB. Larger files are fetched from the
+# Git Blob API up to this cap; beyond it the reviewer is pointed at eneo_pr_diff rather than
+# pulling megabytes into a bounded review.
+_MAX_FILE_BYTES = 5_000_000
+
+
+def _decode_base64_content(value: dict[str, Any]) -> bytes:
+    if value.get("encoding") != "base64" or not isinstance(value.get("content"), str):
+        raise ToolInputError("GitHub returned non-base64 file content")
+    try:
+        return base64.b64decode(value["content"], validate=False)
+    except Exception as exc:
+        raise ToolInputError("GitHub returned invalid file content") from exc
+
+
 def _file_at_revision(repository: str, path: str, revision: str) -> bytes:
     owner_repo = urllib.parse.quote(repository, safe="/")
     encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
@@ -313,13 +328,36 @@ def _file_at_revision(repository: str, path: str, revision: str) -> bytes:
             "guessed paths."
         ) from exc
     if not isinstance(value, dict) or value.get("type") != "file":
-        raise ToolInputError("the requested path is not a regular file")
-    if value.get("encoding") != "base64" or not isinstance(value.get("content"), str):
-        raise ToolInputError("the file is too large or unavailable through the bounded contents API")
-    try:
-        return base64.b64decode(value["content"], validate=False)
-    except Exception as exc:
-        raise ToolInputError("GitHub returned invalid file content") from exc
+        raise ToolInputError(
+            "the requested path is not a regular file (it may be a directory, submodule, or "
+            "symlink); do not retry"
+        )
+    if value.get("encoding") == "base64":
+        return _decode_base64_content(value)
+    # Files larger than 1 MB are not base64-encoded by the Contents API; fetch the bytes from the
+    # Git Blob API using the blob SHA the metadata still provides, bounded by _MAX_FILE_BYTES.
+    blob_sha = str(value.get("sha") or "").strip().lower()
+    if not _SHA_RE.fullmatch(blob_sha):
+        raise ToolInputError("GitHub did not return a blob reference for this file")
+    if int(value.get("size") or 0) > _MAX_FILE_BYTES:
+        raise ToolInputError(
+            "the file exceeds the bounded read size; inspect its changed lines with eneo_pr_diff "
+            "for this path instead, and do not retry this read."
+        )
+    # Raw media type returns the file bytes directly (no base64/JSON wrapper to budget),
+    # so the cap is a clean raw-byte limit and `truncated` guards an oversized blob even if
+    # the Contents API `size` was wrong.
+    data, truncated, _ = _request(
+        f"/repos/{owner_repo}/git/blobs/{blob_sha}",
+        accept="application/vnd.github.raw+json",
+        max_bytes=_MAX_FILE_BYTES + 4096,
+    )
+    if truncated or len(data) > _MAX_FILE_BYTES:
+        raise ToolInputError(
+            "the file exceeds the bounded read size; inspect its changed lines with eneo_pr_diff "
+            "for this path instead, and do not retry this read."
+        )
+    return data
 
 
 def pr_file(args: dict[str, Any], **_: Any) -> str:
