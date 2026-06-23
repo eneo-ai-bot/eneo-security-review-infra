@@ -108,7 +108,7 @@ The review should feel like a thoughtful colleague, not a scanner dump.
 The canonical live contract for the visible comment is
 `bootstrap/workspace/AGENTS.md`. In human terms, the comment is limited to:
 
-- one summary sentence;
+- one summary sentence that names the non-zero severity counts;
 - every surviving finding;
 - a short prose budget spent on evidence and the fix;
 - one compact section per finding;
@@ -117,11 +117,12 @@ The canonical live contract for the visible comment is
 
 Each finding contains:
 
-- a short descriptive heading;
-- `path:line`, category, and severity;
+- a short severity-prefixed heading;
+- `path:line` and category;
 - the verified behavior and concrete consequence;
-- the smallest practical correction;
-- a quiet 12-character fingerprint for later triage.
+- the smallest practical correction.
+
+The review footer contains quiet 12-character fingerprints for later triage.
 
 The reviewer must not post:
 
@@ -132,6 +133,7 @@ The reviewer must not post:
 - the same issue repeated as separate evidence, impact, and recommendation essays;
 - claims that tests ran or passed when the agent did not run them;
 - “safe to merge,” “approved,” or `GREEN_LIGHT` language, because the review is not exhaustive.
+- “blocking” or “merge-blocking” language, because the review is advisory.
 
 Use wording such as “This path can…” and “A minimal fix is…”, not “You forgot…” or “You should obviously…”.
 
@@ -140,24 +142,19 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 ````md
 ## Eneo AI code & security review
 
-I found two issues worth addressing before merge.
+I found one High / P1 and one Medium / P2 finding that survived the evidence gate.
 
-| Severity | Category | Location | Finding | ID |
-| --- | --- | --- | --- | --- |
-| High / P1 important | security | `backend/src/intric/jobs/service.py:142` | Tenant context is dropped before the background job | `a1b2c3d4e5f6` |
-| Medium / P2 useful improvement | tests | `backend/tests/jobs/test_service.py:88` | Regression test misses the cross-tenant worker path | `b2c3d4e5f6a1` |
-
-### Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · security · **High / P1 important**
+### High / P1 important - Tenant context is dropped before the background job
+`backend/src/intric/jobs/service.py:142` · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 
 **Suggested change:** include the trusted tenant ID in the job payload and scope the worker lookup by both tenant and document ID. Add a regression test where a job created under tenant A cannot load tenant B's document.
 
 <details>
-<summary>Medium / P2 useful improvement · Regression test misses the cross-tenant worker path · backend/tests/jobs/test_service.py:88</summary>
+<summary>Medium / P2 useful improvement - Regression test misses the cross-tenant worker path - backend/tests/jobs/test_service.py:88</summary>
 
-`backend/tests/jobs/test_service.py:88` · tests · **Medium / P2 useful improvement**
+`backend/tests/jobs/test_service.py:88` · tests
 
 The added test covers the happy path for a worker loading its own document, but it would also have passed before the tenant boundary fix because it never creates a second tenant with a conflicting document ID.
 

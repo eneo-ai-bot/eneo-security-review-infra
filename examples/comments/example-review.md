@@ -1,14 +1,9 @@
 ## Eneo AI code & security review
 
-I found two issues worth addressing before merge.
+I found one High / P1 and one Medium / P2 finding that survived the evidence gate.
 
-| Severity | Category | Location | Finding | ID |
-| --- | --- | --- | --- | --- |
-| High / P1 important | security | `backend/src/intric/jobs/service.py:142` | Tenant context is dropped before the background job | `a1b2c3d4e5f6` |
-| Medium / P2 useful improvement | tests | `backend/tests/jobs/test_service.py:88` | Regression test misses the cross-tenant worker path | `b2c3d4e5f6a1` |
-
-### Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · security · **High / P1 important**
+### High / P1 important - Tenant context is dropped before the background job
+`backend/src/intric/jobs/service.py:142` · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The
 worker later reloads the row by primary key, so the authorization boundary from
@@ -19,9 +14,9 @@ the worker lookup by both tenant and document ID. Add a regression test where a
 job created under tenant A cannot load tenant B's document.
 
 <details>
-<summary>Medium / P2 useful improvement · Regression test misses the cross-tenant worker path · backend/tests/jobs/test_service.py:88</summary>
+<summary>Medium / P2 useful improvement - Regression test misses the cross-tenant worker path - backend/tests/jobs/test_service.py:88</summary>
 
-`backend/tests/jobs/test_service.py:88` · tests · **Medium / P2 useful improvement**
+`backend/tests/jobs/test_service.py:88` · tests
 
 The added test covers the happy path for a worker loading its own document, but it
 would also have passed before the tenant boundary fix because it never creates a

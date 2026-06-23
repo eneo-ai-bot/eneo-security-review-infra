@@ -28,11 +28,17 @@ class DocsContractTests(unittest.TestCase):
 
     def test_visible_examples_use_category_and_severity(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
-        metadata = "`backend/src/intric/jobs/service.py:142` · security · **High / P1 important**"
-        self.assertIn("`path:line` · category · **Severity**", canonical)
+        metadata = "`backend/src/intric/jobs/service.py:142` · security"
+        heading = "### High / P1 important - Tenant context is dropped before the background job"
+        self.assertIn("`path:line` · category", canonical)
+        self.assertIn("`### Severity - Title`", canonical)
         self.assertNotIn("<emoji>", canonical)
+        self.assertIn(heading, read("examples/comments/example-review.md"))
+        self.assertIn(heading, read("GUIDE.md"))
         self.assertIn(metadata, read("examples/comments/example-review.md"))
         self.assertIn(metadata, read("GUIDE.md"))
+        self.assertNotIn("· **High / P1 important**", read("examples/comments/example-review.md"))
+        self.assertNotIn("· **High / P1 important**", read("GUIDE.md"))
         self.assertNotIn("High confidence", read("examples/comments/example-review.md"))
         self.assertNotIn("High confidence", read("GUIDE.md"))
 
@@ -40,9 +46,13 @@ class DocsContractTests(unittest.TestCase):
         for relative in ["examples/comments/example-review.md", "GUIDE.md"]:
             body = read(relative)
             with self.subTest(relative=relative):
-                self.assertIn("| Severity | Category | Location | Finding | ID |", body)
                 self.assertIn(
-                    "<summary>Medium / P2 useful improvement", body
+                    "I found one High / P1 and one Medium / P2 finding that survived the evidence gate.",
+                    body,
+                )
+                self.assertNotIn("| Severity | Category | Location | Finding | ID |", body)
+                self.assertIn(
+                    "<summary>Medium / P2 useful improvement - Regression test misses", body
                 )
                 self.assertIn("Copyable fix brief for a coding agent", body)
                 self.assertIn("```text\nGoal:", body)
@@ -79,6 +89,14 @@ class DocsContractTests(unittest.TestCase):
             "never call the PR `safe to merge`, `approved`, or `GREEN_LIGHT`",
             canonical,
         )
+        self.assertIn("Do not call findings `blocking` or `merge-blocking`", canonical)
+
+    def test_comment_summary_replaces_metadata_table(self):
+        canonical = read("bootstrap/workspace/AGENTS.md")
+        self.assertIn("names the non-zero severity counts", canonical)
+        self.assertIn("Do not include a top-level per-finding table", canonical)
+        self.assertIn("Long paths and memory", canonical)
+        self.assertNotIn("summary table listing every finding", canonical)
 
     def test_all_surviving_findings_are_publishable(self):
         canonical = read("bootstrap/workspace/AGENTS.md")

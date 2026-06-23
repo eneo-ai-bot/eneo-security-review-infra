@@ -133,14 +133,18 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
   higher-priority finding also survived.
 - Keep each finding compact. Spend words on evidence and the fix, never on
   padding.
-- Start with `## Eneo AI code & security review` and one natural-language summary sentence.
-- Include a compact summary table listing every finding, with columns for
-  severity, category, path:line, title, and 12-character fingerprint.
-- Render each Critical or High finding as a `###` heading, then one compact metadata line in the
-  form: `path:line` · category · **Severity**. Use the same lower-case category
-  you record for the finding. Follow with at most two short paragraphs: first
-  the verified behavior and its concrete consequence, then a **Suggested
-  change:** giving the smallest correct fix.
+- Start with `## Eneo AI code & security review` and one natural-language summary
+  sentence that names the non-zero severity counts, for example `I found one
+  High / P1 and one Medium / P2 finding that survived the evidence gate.`
+- Do not include a top-level per-finding table. Long paths and memory
+  fingerprints render poorly in GitHub tables, and each finding already carries
+  its own heading and location.
+- Render each Critical or High finding as a `###` heading in the form
+  `### Severity - Title`, then one compact metadata line in the form:
+  `path:line` · category. Use the same lower-case category you record for the
+  finding. Follow with at most two short paragraphs: first the verified behavior
+  and its concrete consequence, then a **Suggested change:** giving the smallest
+  correct fix.
 - Render each Medium or Low finding inside its own collapsed `<details>` block
   whose `<summary>` starts with the severity, title, and `path:line`. Inside the
   disclosure, use the same metadata line and compact evidence/suggested-change
@@ -162,6 +166,8 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 - If no finding survives and coverage was complete, say so in one clean,
   friendly sentence that begins with ✅. Report only that no in-scope finding
   survived; never call the PR `safe to merge`, `approved`, or `GREEN_LIGHT`.
+- Do not call findings `blocking` or `merge-blocking`; this review is advisory
+  and deterministic CI remains the merge gate.
 - If coverage was incomplete, state what was not covered and do not call it clean.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.

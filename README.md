@@ -11,10 +11,11 @@ plugin, runs a two-pass evidence review, records every surviving finding in
 SQLite, removes matching human-approved suppressions, and posts one structured PR
 comment.
 
-The comment includes a summary table, expanded Critical/High findings, collapsed
-Medium/Low findings, fingerprints for feedback, and one copyable all-findings fix
-brief for a coding agent. The reviewer does not get a shell, file-write tool,
-general GitHub write tool, web browser, delegation, or code execution.
+The comment includes a short severity-count summary, expanded Critical/High
+findings, collapsed Medium/Low findings, quiet fingerprints for feedback, and
+one copyable all-findings fix brief for a coding agent. The reviewer does not
+get a shell, file-write tool, general GitHub write tool, web browser,
+delegation, or code execution.
 
 ## What is included
 
