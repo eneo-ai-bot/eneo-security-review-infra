@@ -32,7 +32,7 @@ platform_toolsets:
     - eneo_review
 
 agent:
-  max_turns: 24
+  max_turns: 90  # Hermes default; 24 was too low and truncated thorough two-pass reviews
   reasoning_effort: xhigh
   disabled_toolsets:
     - browser
