@@ -187,12 +187,17 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
   only in hidden metadata needed for feedback routing.
 - Do not publish a watchlist, weak possibilities, praise filler, or duplicated
   CodeQL/Semgrep output unless you add essential context.
+- Coverage is complete only when every changed file was at least diff-reviewed,
+  and every path treated as risk-relevant was deep-read enough to prove or
+  disprove the candidate. Risk-ranked large-PR review is valid, but skipped,
+  skimmed, truncated, or unavailable paths make coverage incomplete.
 - If no finding survives and coverage was complete, say so in one clean,
   friendly sentence that begins with ✅. Report only that no in-scope finding
   survived; never call the PR `safe to merge`, `approved`, or `GREEN_LIGHT`.
 - Do not call findings `blocking` or `merge-blocking`; this review is advisory
   and deterministic CI remains the merge gate.
-- If coverage was incomplete, state what was not covered and do not call it clean.
+- If coverage was incomplete, state what was not covered, name representative
+  skipped or skimmed path groups, and do not call it clean.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.
 

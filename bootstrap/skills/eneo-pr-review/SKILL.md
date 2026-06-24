@@ -20,10 +20,13 @@ only the `eneo_review` tools available to this run.
 ## Procedure
 
 1. Call `eneo_pr_overview`. Stop with a short error when the repository is not
-   allowlisted, the PR is closed, or it is a draft. If the changed-file list is
-   incomplete, more than 100 files changed, or additions plus deletions exceed
-   5,000, return a concise incomplete-review comment. Do not record partial
-   findings or claim the PR is clean. After it succeeds, call
+   allowlisted, the PR is closed, or it is a draft. Do not reject a PR because
+   it is large. For large PRs, review by risk-ranking changed files, reading the
+   unified diff first, then deep-reading the highest-risk paths and any files
+   needed to prove or disprove a candidate. Follow AGENTS.md for the complete
+   vs incomplete coverage contract. Do not record partial findings that cannot
+   be validated by the record tool, and never claim the PR is clean when
+   coverage was incomplete. After overview succeeds, call
    `eneo_review_run_start` with the repository, PR number, and exact head SHA; this
    is operational telemetry only and never affects findings or suppression. It
    returns a `run_id` — keep it for the matching `eneo_review_run_complete` call.

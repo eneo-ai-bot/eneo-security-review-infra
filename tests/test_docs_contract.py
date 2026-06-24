@@ -166,6 +166,30 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("    - code_execution\n", config)
         self.assertNotIn("review-learning", skill)
 
+    def test_large_prs_are_not_rejected_by_fixed_size_budget(self):
+        canonical = read("bootstrap/workspace/AGENTS.md")
+        skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
+        canonical_words = re.sub(r"\s+", " ", canonical)
+        self.assertIn("Do not reject a PR because", skill)
+        self.assertIn("it is large", skill)
+        self.assertIn("risk-ranking changed files", skill)
+        self.assertIn("Follow AGENTS.md for the complete", skill)
+        self.assertIn("coverage was incomplete", skill)
+        self.assertIn(
+            "Coverage is complete only when every changed file was at least diff-reviewed",
+            canonical_words,
+        )
+        self.assertIn("every path treated as risk-relevant was deep-read", canonical_words)
+        self.assertIn(
+            "skipped, skimmed, truncated, or unavailable paths make coverage incomplete",
+            canonical_words,
+        )
+        self.assertIn("If coverage was incomplete", canonical_words)
+        self.assertIn("do not call it clean", canonical_words)
+        self.assertNotIn("5,000", skill)
+        self.assertNotIn("more than 100 files changed", skill)
+        self.assertNotIn("additions plus deletions exceed", skill)
+
     def test_plugin_manifest_lists_registered_tools(self):
         manifest = read("bootstrap/plugins/eneo_review_tools/plugin.yaml")
         registered = set(
