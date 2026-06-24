@@ -1123,6 +1123,16 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 1
         )
+        decision = self.connection.execute(
+            "SELECT observation_id FROM decisions"
+        ).fetchone()
+        self.assertIsNone(decision["observation_id"])
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM finding_observations"
+            ).fetchone()[0],
+            1,
+        )
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM review_comment_links").fetchone()[0],
             1,

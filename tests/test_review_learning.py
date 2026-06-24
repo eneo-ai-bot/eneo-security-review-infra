@@ -17,6 +17,7 @@ from eneo_review_learning import (
     build_learning_report,
     render_markdown,
 )
+from eneo_review_export import SUPPORTED_SCHEMA_VERSIONS
 from memory_validation import DECISIONS, REVIEW_FEEDBACK_CATEGORIES
 import memory_db
 
@@ -178,6 +179,78 @@ class ReviewLearningReportTests(unittest.TestCase):
 
         self.assertEqual(handled_decisions, set(DECISIONS))
         self.assertEqual(handled_feedback, set(REVIEW_FEEDBACK_CATEGORIES))
+        self.assertIn(memory_db.SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS)
+
+    def test_decision_chain_uses_latest_effective_state_once(self) -> None:
+        report = build_learning_report(
+            state_with(
+                observations=[observation()],
+                decisions=[
+                    {
+                        "id": 1,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "false_positive",
+                        "reason": "Earlier false positive.",
+                    },
+                    {
+                        "id": 2,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "reopen",
+                        "reason": "The guard changed.",
+                    },
+                    {
+                        "id": 3,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "false_positive",
+                        "reason": "Latest reviewed guard disproves it again.",
+                    },
+                ],
+            )
+        )
+
+        self.assertEqual(len(report.decision_candidates), 1)
+        candidate = report.decision_candidates[0]
+        self.assertEqual(candidate.source_id, "decision:3")
+        self.assertEqual(
+            candidate.related_event_ids,
+            ("decision:1", "decision:2", "decision:3"),
+        )
+        self.assertEqual(
+            candidate.decision_chain,
+            ("false_positive", "reopen", "false_positive"),
+        )
+        markdown = render_markdown(report)
+        self.assertIn("Decision chain: false_positive -> reopen -> false_positive", markdown)
+
+    def test_resolved_latest_decision_supersedes_previous_candidate(self) -> None:
+        report = build_learning_report(
+            state_with(
+                observations=[observation()],
+                decisions=[
+                    {
+                        "id": 1,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "false_positive",
+                        "reason": "Initial reviewer miss.",
+                    },
+                    {
+                        "id": 2,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "resolved",
+                        "reason": "Fixed with a regression test.",
+                    },
+                ],
+            )
+        )
+
+        self.assertEqual(report.decision_candidates, ())
+        self.assertEqual(len(report.positive_patterns), 1)
+        self.assertEqual(report.positive_patterns[0].source_id, "decision:2")
 
     def test_unclassified_values_are_reported_not_silently_dropped(self) -> None:
         report = build_learning_report(
