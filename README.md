@@ -293,29 +293,51 @@ Mark a verified false positive:
 
 ```bash
 eneo-review-memory decide a1b2c3d4e5f6 false_positive \
+  --latest \
   --actor "github:alice" \
   --reason "The tenant-scoped repository binds tenant_id before this query." \
   --expires-days 180
+```
+
+Prefer an exact observation id or PR-local reference when available:
+
+```bash
+eneo-review-memory decide a1b2c3d4e5f6 false_positive \
+  --observation-id 418 \
+  --actor "github:alice" \
+  --reason "The tenant-scoped repository binds tenant_id before this query." \
+  --expires-days 180
+
+eneo-review-memory decide a1b2c3d4e5f6 resolved \
+  --repo eneo-ai/eneo \
+  --pr 240 \
+  --local-reference F2 \
+  --actor "github:alice" \
+  --reason "Fixed in the latest commit."
 ```
 
 Other decisions:
 
 ```bash
 eneo-review-memory decide <fingerprint> accepted_risk \
+  --latest \
   --actor "github:alice" \
   --reason "Approved during the migration window." \
   --expires-days 30
 
 eneo-review-memory decide <fingerprint> duplicate \
+  --latest \
   --actor "github:alice" \
   --reason "Tracked by finding 0123456789ab." \
   --expires-days 180
 
 eneo-review-memory decide <fingerprint> resolved \
+  --latest \
   --actor "github:alice" \
   --reason "Fixed in PR #456."
 
 eneo-review-memory decide <fingerprint> reopen \
+  --latest \
   --actor "github:alice" \
   --reason "The trusted guard changed."
 ```

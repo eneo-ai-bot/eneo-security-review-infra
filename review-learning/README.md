@@ -46,8 +46,9 @@ eneo-review-memory coach-export \
 ```
 
 Coach exports contain stable event ids, exact observation provenance, bounded
-`*_untrusted` text fields, and a snapshot hash. They omit actors, source URLs,
-and raw database rows. Output files are written atomically with mode `0600`.
+`*_untrusted` text fields, an exact snapshot hash, and an event-set hash for
+deduping equivalent evidence across exports. They omit actors, source URLs, and
+raw database rows. Output files are written atomically with mode `0600`.
 
 Validate replay fixtures before relying on them:
 
@@ -55,9 +56,8 @@ Validate replay fixtures before relying on them:
 eneo-review-memory validate-replay review-learning/replay
 ```
 
-Replay fixtures are strict JSON-compatible YAML. This keeps validation on the
-standard library path and fails loudly instead of silently accepting a partial
-YAML parse.
+Replay fixtures are strict JSON files. This keeps validation on the standard
+library path and fails loudly instead of silently accepting a partial YAML parse.
 
 The report reads explicit human decisions and any populated
 `review_quality_feedback` rows. In the current bundle, review-quality feedback

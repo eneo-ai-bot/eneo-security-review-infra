@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "bootstrap" / "plugins" / "eneo_review_tools"))
 
 from eneo_review_learning import (
+    CONTRADICTORY_DECISIONS,
     DECISION_POLICIES,
     POSITIVE_DECISIONS,
     POSITIVE_FEEDBACK,
@@ -18,7 +19,7 @@ from eneo_review_learning import (
     render_markdown,
 )
 from eneo_review_export import SUPPORTED_SCHEMA_VERSIONS
-from memory_validation import DECISIONS, REVIEW_FEEDBACK_CATEGORIES
+from memory_validation import DECISIONS, REVIEW_FEEDBACK_CATEGORIES, SUPPRESSIVE_DECISIONS
 import memory_db
 
 
@@ -179,6 +180,7 @@ class ReviewLearningReportTests(unittest.TestCase):
 
         self.assertEqual(handled_decisions, set(DECISIONS))
         self.assertEqual(handled_feedback, set(REVIEW_FEEDBACK_CATEGORIES))
+        self.assertEqual(CONTRADICTORY_DECISIONS, set(SUPPRESSIVE_DECISIONS))
         self.assertIn(memory_db.SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS)
 
     def test_decision_chain_uses_latest_effective_state_once(self) -> None:
@@ -225,7 +227,7 @@ class ReviewLearningReportTests(unittest.TestCase):
         markdown = render_markdown(report)
         self.assertIn("Decision chain: false_positive -> reopen -> false_positive", markdown)
 
-    def test_resolved_latest_decision_supersedes_previous_candidate(self) -> None:
+    def test_resolved_after_false_positive_remains_investigation_candidate(self) -> None:
         report = build_learning_report(
             state_with(
                 observations=[observation()],
@@ -248,9 +250,71 @@ class ReviewLearningReportTests(unittest.TestCase):
             )
         )
 
+        self.assertEqual(len(report.decision_candidates), 1)
+        self.assertEqual(report.positive_patterns, ())
+        candidate = report.decision_candidates[0]
+        self.assertEqual(candidate.source_id, "decision:2")
+        self.assertEqual(candidate.source_value, "resolved")
+        self.assertEqual(candidate.suggested_route, "contradictory_outcome")
+        self.assertEqual(candidate.decision_chain, ("false_positive", "resolved"))
+
+    def test_same_fingerprint_in_different_observations_stays_separate(self) -> None:
+        report = build_learning_report(
+            state_with(
+                observations=[
+                    observation(id=1, pr_number=17, head_sha="a" * 40),
+                    observation(id=2, pr_number=99, head_sha="b" * 40),
+                ],
+                decisions=[
+                    {
+                        "id": 1,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "false_positive",
+                        "reason": "Existing guard disproves it in PR 17.",
+                    },
+                    {
+                        "id": 2,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 2,
+                        "decision": "resolved",
+                        "reason": "Fixed in PR 99.",
+                    },
+                ],
+            )
+        )
+
+        self.assertEqual(len(report.decision_candidates), 1)
+        self.assertEqual(len(report.positive_patterns), 1)
+        self.assertEqual(report.decision_candidates[0].pr_number, 17)
+        self.assertEqual(report.positive_patterns[0].pr_number, 99)
+
+    def test_reopen_then_resolved_is_positive_lifecycle_not_contradiction(self) -> None:
+        report = build_learning_report(
+            state_with(
+                observations=[observation()],
+                decisions=[
+                    {
+                        "id": 1,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "reopen",
+                        "reason": "The issue is real after recheck.",
+                    },
+                    {
+                        "id": 2,
+                        "fingerprint": "abcdef1234567890",
+                        "observation_id": 1,
+                        "decision": "resolved",
+                        "reason": "Fixed with a regression test.",
+                    },
+                ],
+            )
+        )
+
         self.assertEqual(report.decision_candidates, ())
         self.assertEqual(len(report.positive_patterns), 1)
-        self.assertEqual(report.positive_patterns[0].source_id, "decision:2")
+        self.assertEqual(report.positive_patterns[0].decision_chain, ("reopen", "resolved"))
 
     def test_unclassified_values_are_reported_not_silently_dropped(self) -> None:
         report = build_learning_report(
@@ -355,6 +419,7 @@ class ReviewLearningReportTests(unittest.TestCase):
                     "false_positive",
                     "Existing repository constructor binds tenant scope.",
                     "github:alice",
+                    latest=True,
                 )
                 memory_db.record_findings(
                     connection,

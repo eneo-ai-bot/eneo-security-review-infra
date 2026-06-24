@@ -161,6 +161,12 @@ QUALITY_POLICIES: Final[dict[str, SignalPolicy]] = {
 
 POSITIVE_DECISIONS: Final = {"resolved"}
 POSITIVE_FEEDBACK: Final = {"useful"}
+CONTRADICTORY_DECISIONS: Final = {
+    "false_positive",
+    "intentional_by_design",
+    "accepted_risk",
+    "duplicate",
+}
 
 
 def build_learning_report(
@@ -183,17 +189,31 @@ def build_learning_report(
         if not matches_repository(repository, episode.provenance, episode.latest):
             continue
         if decision in POSITIVE_DECISIONS:
-            positive_patterns.append(
-                _decision_signal(
-                    episode,
-                    SignalPolicy(
-                        "medium",
-                        "positive_pattern",
-                        "Treat as a fixed-finding example only when the root "
-                        "cause is independently confirmed by a regression test.",
-                    ),
+            if _has_contradictory_chain(episode):
+                decision_candidates.append(
+                    _decision_signal(
+                        episode,
+                        SignalPolicy(
+                            "medium",
+                            "contradictory_outcome",
+                            "Investigate why the same observation moved through a "
+                            "human decision and later resolved before changing "
+                            "reviewer policy.",
+                        ),
+                    )
                 )
-            )
+            else:
+                positive_patterns.append(
+                    _decision_signal(
+                        episode,
+                        SignalPolicy(
+                            "medium",
+                            "positive_pattern",
+                            "Treat as a fixed-finding example only when the root "
+                            "cause is independently confirmed by a regression test.",
+                        ),
+                    )
+                )
         elif decision in DECISION_POLICIES:
             decision_candidates.append(
                 _decision_signal(episode, DECISION_POLICIES[decision])
@@ -314,17 +334,24 @@ def _decision_episodes(
     grouped: dict[str, list[tuple[int, Mapping[str, object]]]] = {}
     for index, row in enumerate(rows(state, "decisions")):
         fingerprint = required_string(row, "fingerprint")
-        grouped.setdefault(fingerprint, []).append((index, row))
+        observation_id = optional_int(row, "observation_id")
+        key = (
+            f"observation:{observation_id}"
+            if observation_id is not None
+            else f"legacy:{fingerprint}"
+        )
+        grouped.setdefault(key, []).append((index, row))
 
     episodes: list[DecisionEpisode] = []
-    for fingerprint in sorted(grouped):
-        ordered = tuple(
-            row
-            for _, row in sorted(grouped[fingerprint], key=_decision_order_key)
-        )
+    for key in sorted(grouped):
+        ordered_items = tuple(sorted(grouped[key], key=_decision_order_key))
+        ordered = tuple(row for _, row in ordered_items)
         latest = ordered[-1]
+        fingerprint = required_string(latest, "fingerprint")
         provenance = provenance_for_decision(latest, provenances)
-        event_ids = tuple(_decision_event_id(row, index) for index, row in enumerate(ordered))
+        event_ids = tuple(
+            _decision_event_id(row, index) for index, row in ordered_items
+        )
         episodes.append(
             DecisionEpisode(
                 fingerprint=fingerprint,
@@ -350,6 +377,14 @@ def _decision_event_id(row: Mapping[str, object], fallback_index: int) -> str:
     if decision_id is not None:
         return f"decision:{decision_id}"
     return f"decision:unidentified:{fallback_index + 1}"
+
+
+def _has_contradictory_chain(episode: DecisionEpisode) -> bool:
+    latest = required_string(episode.latest, "decision")
+    if latest not in POSITIVE_DECISIONS:
+        return False
+    earlier = episode.decision_chain[:-1]
+    return any(decision in CONTRADICTORY_DECISIONS for decision in earlier)
 
 
 def _decision_signal(

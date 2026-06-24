@@ -37,17 +37,17 @@ class FeedbackDecisionTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def record_finding(self, context_hash="d" * 40):
+    def record_finding(self, context_hash="d" * 40, pr_number=498, head_sha="a" * 40):
         recorded = memory_db.record_findings(
-            self.connection, "eneo-ai/eneo", 498, "a" * 40, [dict(self.finding)],
+            self.connection, "eneo-ai/eneo", pr_number, head_sha, [dict(self.finding)],
             context_hashes={self.finding["path"]: context_hash},
         )[0]
         return recorded["fingerprint"], context_hash
 
-    def link(self, fingerprint, context_hash, comment_id=111):
+    def link(self, fingerprint, context_hash, comment_id=111, pr_number=498, head_sha="a" * 40):
         memory_db.link_review_comment(
             self.connection, review_comment_id=comment_id, repository="eneo-ai/eneo",
-            pr_number=498, fingerprint=fingerprint, context_hash=context_hash, head_sha="a" * 40,
+            pr_number=pr_number, fingerprint=fingerprint, context_hash=context_hash, head_sha=head_sha,
         )
 
     def feedback(self, **kw):
@@ -116,16 +116,63 @@ class FeedbackDecisionTests(unittest.TestCase):
             memory_db.feedback_event(self.connection, "evt-2")["outcome"], "no_mapping"
         )
 
-    def test_stale_when_file_changed(self):
+    def test_late_feedback_records_old_observation_without_suppressing_new_file(self):
         fp, _ = self.record_finding(context_hash="d" * 40)
         self.link(fp, "d" * 40)
-        self.record_finding(context_hash="e" * 40)  # file changed since the comment
+        self.record_finding(context_hash="e" * 40, head_sha="b" * 40)
+
         result = self.feedback(event_id="evt-3")
-        self.assertEqual(result["status"], "stale")
+        self.assertEqual(result["status"], "recorded")
         self.assertEqual(
-            memory_db.feedback_event(self.connection, "evt-3")["outcome"], "stale"
+            memory_db.feedback_event(self.connection, "evt-3")["outcome"], "recorded"
         )
         self.assertIsNone(memory_db.active_suppression(self.connection, fp))
+
+    def test_suppressive_feedback_without_linked_hash_is_stale(self):
+        fp, _ = self.record_finding(context_hash="d" * 40)
+        self.link(fp, "", comment_id=222)
+
+        result = self.feedback(event_id="evt-empty-hash", review_comment_id=222)
+
+        self.assertEqual(result["status"], "stale")
+        self.assertEqual(result["fingerprint"], fp)
+        self.assertEqual(
+            memory_db.feedback_event(self.connection, "evt-empty-hash")["outcome"],
+            "stale",
+        )
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
+
+    def test_later_same_fingerprint_in_other_pr_does_not_make_feedback_stale(self):
+        fp, _ = self.record_finding(
+            context_hash="d" * 40,
+            pr_number=498,
+            head_sha="a" * 40,
+        )
+        self.link(fp, "d" * 40, pr_number=498, head_sha="a" * 40)
+        self.record_finding(
+            context_hash="e" * 40,
+            pr_number=777,
+            head_sha="b" * 40,
+        )
+
+        result = self.feedback(event_id="evt-cross-pr")
+
+        self.assertEqual(result["status"], "recorded")
+        decision = self.connection.execute(
+            """
+            SELECT d.context_hash, d.observation_id, fo.pr_number
+            FROM decisions d
+            JOIN finding_observations fo ON fo.id = d.observation_id
+            WHERE d.id = ?
+            """,
+            (result["decision_id"],),
+        ).fetchone()
+        self.assertEqual(decision["context_hash"], "d" * 40)
+        self.assertEqual(decision["pr_number"], 498)
+        self.assertEqual(
+            memory_db.feedback_event(self.connection, "evt-cross-pr")["outcome"],
+            "recorded",
+        )
 
     def test_reopen_restores(self):
         fp, ch = self.record_finding()

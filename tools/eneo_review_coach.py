@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Final
+from typing import Final, cast
 
 from eneo_review_export import optional_int, optional_string, rows, schema_version
 from eneo_review_learning import LearningSignal, build_learning_report
@@ -14,6 +14,7 @@ from eneo_review_learning import LearningSignal, build_learning_report
 COACH_SCHEMA_VERSION: Final = 1
 MAX_UNTRUSTED_TEXT: Final = 1000
 MAX_SHORT_TEXT: Final = 240
+MAX_DECISION_CHAIN: Final = 20
 
 
 def build_coach_export(
@@ -65,8 +66,9 @@ def build_coach_export(
             "This export is advisory input for a private coach only; it is not reviewer policy.",
         ],
     }
+    event_set_id = _event_set_id(payload)
     snapshot_id = _snapshot_id(payload)
-    return {"snapshot_id": snapshot_id, **payload}
+    return {"snapshot_id": snapshot_id, "event_set_id": event_set_id, **payload}
 
 
 def dumps_coach_export(payload: Mapping[str, object]) -> str:
@@ -86,9 +88,13 @@ def _signal_event(group: str, signal: LearningSignal) -> dict[str, object]:
         "reviewer_title_untrusted": _bounded_text(signal.title, MAX_SHORT_TEXT),
         "next_step_untrusted": _bounded_text(signal.next_step, MAX_UNTRUSTED_TEXT),
         "related_event_ids": list(signal.related_event_ids),
+        "related_event_ids_total": len(signal.related_event_ids),
     }
     if signal.decision_chain:
-        event["decision_chain"] = list(signal.decision_chain)
+        event["decision_chain_total"] = len(signal.decision_chain)
+        event["decision_chain"] = list(signal.decision_chain[-MAX_DECISION_CHAIN:])
+    if len(signal.related_event_ids) > MAX_DECISION_CHAIN:
+        event["related_event_ids"] = list(signal.related_event_ids[-MAX_DECISION_CHAIN:])
     if signal.provenance is not None:
         event["source"] = {
             "repository_untrusted": _bounded_text(
@@ -136,5 +142,26 @@ def _max_row_id(state: Mapping[str, object], key: str) -> int:
 
 def _snapshot_id(payload: Mapping[str, object]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _event_set_id(payload: Mapping[str, object]) -> str:
+    cursor = payload.get("cursor")
+    cursor_identity: object = None
+    if isinstance(cursor, Mapping):
+        cursor_map = cast(Mapping[str, object], cursor)
+        cursor_identity = {
+            "after_decision_id": cursor_map.get("after_decision_id"),
+            "after_feedback_id": cursor_map.get("after_feedback_id"),
+        }
+    stable_payload = {
+        "schema_version": payload.get("schema_version"),
+        "source_schema_version": payload.get("source_schema_version"),
+        "repository_untrusted": payload.get("repository_untrusted"),
+        "cursor": cursor_identity,
+        "events": payload.get("events"),
+    }
+    canonical = json.dumps(stable_payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"

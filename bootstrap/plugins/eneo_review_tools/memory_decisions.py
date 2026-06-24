@@ -148,6 +148,70 @@ def latest_observation_id_for_fingerprint(
     return int(row["id"]) if row else None
 
 
+def _observation_for_id(
+    connection: sqlite3.Connection, observation_id: int
+) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT * FROM finding_observations WHERE id = ?",
+        (int(observation_id),),
+    ).fetchone()
+    if not row:
+        raise ReviewMemoryError("decision observation_id does not exist")
+    return dict(row)
+
+
+def _latest_observation_for_fingerprint(
+    connection: sqlite3.Connection, fingerprint: str
+) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT *
+        FROM finding_observations
+        WHERE fingerprint = ?
+        ORDER BY observed_at DESC, id DESC
+        LIMIT 1
+        """,
+        (fingerprint,),
+    ).fetchone()
+    if not row:
+        raise ReviewMemoryError(
+            "finding has no recorded observation; re-run the review before deciding it"
+        )
+    return dict(row)
+
+
+def _latest_observation_for_local_reference(
+    connection: sqlite3.Connection,
+    *,
+    repository: str,
+    pr_number: int,
+    local_reference: str,
+) -> dict[str, Any]:
+    repository = normalize_repository(repository)
+    reference = clean_text(
+        local_reference, field="local_reference", maximum=12
+    ).upper()
+    row = connection.execute(
+        """
+        SELECT fo.*
+        FROM pr_finding_references refs
+        JOIN finding_observations fo
+          ON fo.repository = refs.repository
+         AND fo.pr_number = refs.pr_number
+         AND fo.fingerprint = refs.fingerprint
+        WHERE refs.repository = ?
+          AND refs.pr_number = ?
+          AND refs.local_reference = ?
+        ORDER BY fo.observed_at DESC, fo.id DESC
+        LIMIT 1
+        """,
+        (repository, int(pr_number), reference),
+    ).fetchone()
+    if not row:
+        raise ReviewMemoryError("unknown local finding reference for this pull request")
+    return dict(row)
+
+
 def observation_id_for_context(
     connection: sqlite3.Connection,
     *,
@@ -271,8 +335,13 @@ def add_decision(
     *,
     expires_days: int | None = None,
     adr_id: str = "",
+    observation_id: int | None = None,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    local_reference: str = "",
+    latest: bool = False,
 ) -> dict[str, Any]:
-    fingerprint = resolve_fingerprint(connection, fingerprint)
+    raw_fingerprint = fingerprint.strip()
     decision = decision.strip().lower()
     if decision not in DECISIONS:
         raise ReviewMemoryError(
@@ -281,19 +350,46 @@ def add_decision(
     reason = clean_multiline(reason, field="reason", maximum=2000)
     actor = clean_text(actor, field="actor", maximum=200)
 
-    row = connection.execute(
-        "SELECT context_hash FROM findings WHERE fingerprint = ?", (fingerprint,)
-    ).fetchone()
-    if not row:
+    target_count = sum(
+        [
+            observation_id is not None,
+            bool(local_reference),
+            bool(latest),
+        ]
+    )
+    if target_count != 1:
         raise ReviewMemoryError(
-            "unknown fingerprint; record the finding before deciding it"
+            "decide requires exactly one target: observation_id, local_reference, or latest"
         )
-    context_hash = str(row["context_hash"] or "")
-    observation_id = latest_observation_id_for_fingerprint(connection, fingerprint)
-    if observation_id is None:
-        raise ReviewMemoryError(
-            "finding has no recorded observation; re-run the review before deciding it"
+
+    if observation_id is not None:
+        observation = _observation_for_id(connection, observation_id)
+    elif local_reference:
+        if repository is None or pr_number is None:
+            raise ReviewMemoryError(
+                "local_reference decisions require repository and pr_number"
+            )
+        observation = _latest_observation_for_local_reference(
+            connection,
+            repository=repository,
+            pr_number=pr_number,
+            local_reference=local_reference,
         )
+    else:
+        if not raw_fingerprint:
+            raise ReviewMemoryError("latest decisions require a fingerprint")
+        observation = _latest_observation_for_fingerprint(
+            connection, resolve_fingerprint(connection, raw_fingerprint)
+        )
+
+    fingerprint = str(observation["fingerprint"])
+    if raw_fingerprint:
+        resolved = resolve_fingerprint(connection, raw_fingerprint)
+        if resolved != fingerprint:
+            raise ReviewMemoryError(
+                "decision target observation belongs to a different finding"
+            )
+    context_hash = str(observation["context_hash"] or "")
 
     with connection:
         return insert_decision(
@@ -303,7 +399,7 @@ def add_decision(
             reason=reason,
             actor=actor,
             context_hash=context_hash,
-            observation_id=observation_id,
+            observation_id=int(observation["id"]),
             adr_id=adr_id,
             expires_days=expires_days,
         )

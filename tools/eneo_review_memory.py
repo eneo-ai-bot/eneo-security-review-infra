@@ -136,7 +136,10 @@ def main() -> int:
     show_parser.add_argument("fingerprint")
 
     decide_parser = sub.add_parser("decide", help="Append a human triage decision.")
-    decide_parser.add_argument("fingerprint")
+    decide_parser.add_argument(
+        "fingerprint",
+        help="Finding fingerprint or prefix used to verify the explicit target.",
+    )
     decide_parser.add_argument(
         "decision",
         choices=sorted(memory_db.DECISIONS),
@@ -144,6 +147,29 @@ def main() -> int:
     decide_parser.add_argument("--reason", required=True)
     decide_parser.add_argument("--actor", required=True)
     decide_parser.add_argument("--expires-days", type=int)
+    decide_parser.add_argument(
+        "--observation-id",
+        type=int,
+        help="Exact finding_observations.id to attach this decision to.",
+    )
+    decide_parser.add_argument(
+        "--repo",
+        help="Repository for a PR-local finding reference target.",
+    )
+    decide_parser.add_argument(
+        "--pr",
+        type=int,
+        help="Pull request number for a PR-local finding reference target.",
+    )
+    decide_parser.add_argument(
+        "--local-reference",
+        help="PR-local finding reference such as F1.",
+    )
+    decide_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="Explicitly target the latest observation for the fingerprint.",
+    )
 
     export_parser = sub.add_parser("export", help="Export findings and decisions as JSON.")
     export_parser.add_argument("--output", help="Write to a file instead of stdout.")
@@ -181,7 +207,7 @@ def main() -> int:
     replay_parser.add_argument(
         "path",
         type=Path,
-        help="Replay fixture file or directory containing *.yaml fixtures.",
+        help="Replay fixture file or directory containing *.json fixtures.",
     )
 
     coach_parser = sub.add_parser(
@@ -287,14 +313,22 @@ def main() -> int:
             return 0
 
         if args.command == "decide":
-            result = memory_db.add_decision(
-                connection,
-                args.fingerprint,
-                args.decision,
-                args.reason,
-                args.actor,
-                expires_days=args.expires_days,
-            )
+            try:
+                result = memory_db.add_decision(
+                    connection,
+                    args.fingerprint,
+                    args.decision,
+                    args.reason,
+                    args.actor,
+                    expires_days=args.expires_days,
+                    observation_id=args.observation_id,
+                    repository=args.repo,
+                    pr_number=args.pr,
+                    local_reference=args.local_reference or "",
+                    latest=args.latest,
+                )
+            except memory_db.ReviewMemoryError as exc:
+                raise SystemExit(str(exc)) from exc
             print(memory_db.json_dumps(result))
             return 0
 

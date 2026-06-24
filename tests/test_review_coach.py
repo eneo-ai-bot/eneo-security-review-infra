@@ -114,6 +114,72 @@ class CoachExportTests(unittest.TestCase):
         self.assertTrue(event["human_reason_untrusted"].endswith("..."))
         self.assertEqual(decoded["snapshot_id"], json.loads(dumps_coach_export(payload))["snapshot_id"])
 
+    def test_event_set_id_ignores_export_timestamp(self) -> None:
+        first_state = state_with_signals()
+        second_state = state_with_signals()
+        first_state["exported_at"] = "2026-06-24T00:00:00Z"
+        second_state["exported_at"] = "2026-06-25T00:00:00Z"
+
+        first = build_coach_export(first_state)
+        second = build_coach_export(second_state)
+
+        self.assertNotEqual(first["snapshot_id"], second["snapshot_id"])
+        self.assertEqual(first["event_set_id"], second["event_set_id"])
+
+    def test_event_set_id_ignores_unemitted_unrelated_repository_rows(self) -> None:
+        first_state = state_with_signals()
+        second_state = state_with_signals()
+        second_state["finding_observations"].append(
+            {
+                "id": 99,
+                "repository": "other/repo",
+                "pr_number": 7,
+                "head_sha": "b" * 40,
+                "fingerprint": "feedfacefeed",
+                "title": "Other repo finding",
+                "path": "backend/other.py",
+            }
+        )
+        second_state["decisions"].append(
+            {
+                "id": 99,
+                "fingerprint": "feedfacefeed",
+                "observation_id": 99,
+                "decision": "false_positive",
+                "reason": "Unrelated repo signal.",
+            }
+        )
+
+        first = build_coach_export(first_state, repository="eneo-ai/eneo")
+        second = build_coach_export(second_state, repository="eneo-ai/eneo")
+
+        self.assertEqual(first["cursor"]["max_decision_id"], 2)
+        self.assertEqual(second["cursor"]["max_decision_id"], 99)
+        self.assertEqual(first["events"], second["events"])
+        self.assertEqual(first["event_set_id"], second["event_set_id"])
+
+    def test_decision_chain_is_capped_but_total_is_preserved(self) -> None:
+        state = state_with_signals()
+        state["decisions"] = [
+            {
+                "id": index,
+                "fingerprint": "abcdef1234567890",
+                "observation_id": 11,
+                "decision": "reopen" if index < 25 else "false_positive",
+                "reason": f"decision {index}",
+            }
+            for index in range(1, 26)
+        ]
+
+        payload = build_coach_export(state)
+        event = payload["events"][0]
+
+        self.assertEqual(event["decision_chain_total"], 25)
+        self.assertEqual(len(event["decision_chain"]), 20)
+        self.assertEqual(event["decision_chain"][-1], "false_positive")
+        self.assertEqual(event["related_event_ids_total"], 25)
+        self.assertEqual(event["related_event_ids"][0], "decision:6")
+
     def test_coach_export_collapses_untrusted_reason_whitespace(self) -> None:
         payload = build_coach_export(state_with_signals("line one\n\tline two"))
         event = next(

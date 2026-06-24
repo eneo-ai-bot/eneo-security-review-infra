@@ -538,8 +538,9 @@ review-quality sections are expected. Scrub reports before moving useful
 candidates into `review-learning/reports/` as versioned artifacts.
 Coach exports are the private LLM input format. They include only allowlisted
 fields, stable event ids, exact observation provenance, bounded `*_untrusted`
-text, and a snapshot hash; they omit actors, source URLs, and raw rows. Replay
-fixtures are strict JSON-compatible YAML and separate advisory model
+text, a snapshot hash, and an event-set hash for deduping equivalent evidence;
+they omit actors, source URLs, and raw rows. Replay fixtures are strict JSON
+files and separate advisory model
 expectations from deterministic test-backed invariants.
 New decisions are tied to the exact finding observation that the human judged,
 so a later PR that re-observes the same fingerprint cannot rewrite the learning
@@ -576,15 +577,34 @@ Mark a verified false positive:
 
 ```bash
 eneo-review-memory decide a1b2c3d4e5f6 false_positive \
+  --latest \
   --actor "github:alice" \
   --reason "The tenant-scoped repository binds tenant_id before this query." \
   --expires-days 180
+```
+
+Prefer an exact observation id or PR-local reference when available:
+
+```bash
+eneo-review-memory decide a1b2c3d4e5f6 false_positive \
+  --observation-id 418 \
+  --actor "github:alice" \
+  --reason "The tenant-scoped repository binds tenant_id before this query." \
+  --expires-days 180
+
+eneo-review-memory decide a1b2c3d4e5f6 resolved \
+  --repo eneo-ai/eneo \
+  --pr 240 \
+  --local-reference F2 \
+  --actor "github:alice" \
+  --reason "Fixed in the latest commit."
 ```
 
 Record an accepted temporary risk:
 
 ```bash
 eneo-review-memory decide a1b2c3d4e5f6 accepted_risk \
+  --latest \
   --actor "github:alice" \
   --reason "Approved only for the migration window." \
   --expires-days 30
@@ -594,6 +614,7 @@ Mark resolved:
 
 ```bash
 eneo-review-memory decide a1b2c3d4e5f6 resolved \
+  --latest \
   --actor "github:alice" \
   --reason "Fixed in PR #456."
 ```
@@ -602,6 +623,7 @@ Reopen after the trusted guard changes:
 
 ```bash
 eneo-review-memory decide a1b2c3d4e5f6 reopen \
+  --latest \
   --actor "github:alice" \
   --reason "The repository scoping contract changed."
 ```

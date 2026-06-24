@@ -26,7 +26,7 @@ VALID_FIXTURE = """{
     "required_root_causes": [
       {
         "rule_id": "migration.ambiguous-model-resolution",
-        "severity": {"minimum": "High", "maximum": "High"},
+        "severity": {"highest_allowed": "High", "lowest_allowed": "High"},
         "semantic_claim": "tenant mapping ignores provider identity"
       }
     ],
@@ -55,7 +55,7 @@ class ReplayValidationTests(unittest.TestCase):
 
     def test_unknown_key_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "fixture.yaml"
+            path = Path(temp) / "fixture.json"
             path.write_text(
                 VALID_FIXTURE.replace('"advisory_notes"', '"surprise": true, "advisory_notes"'),
                 encoding="utf-8",
@@ -66,7 +66,7 @@ class ReplayValidationTests(unittest.TestCase):
 
     def test_invalid_test_reference_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "fixture.yaml"
+            path = Path(temp) / "fixture.json"
             path.write_text(
                 VALID_FIXTURE.replace(
                     "test_fingerprint_is_stable_across_line_moves",
@@ -80,7 +80,7 @@ class ReplayValidationTests(unittest.TestCase):
 
     def test_missing_exact_sha_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "fixture.yaml"
+            path = Path(temp) / "fixture.json"
             path.write_text(
                 VALID_FIXTURE.replace(
                     '"base_sha": "43edef11a5959162e98ba2fc9d06b2ccf940cf65",',
@@ -92,12 +92,25 @@ class ReplayValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing keys: base_sha"):
                 validate_replay_path(path)
 
-    def test_non_json_compatible_yaml_fails_loudly(self) -> None:
+    def test_non_json_fixture_fails_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "fixture.yaml"
+            path = Path(temp) / "fixture.json"
             path.write_text("id: yaml-only\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "JSON-compatible YAML"):
+            with self.assertRaisesRegex(ValueError, "must be JSON"):
+                validate_replay_path(path)
+
+    def test_empty_replay_directory_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "contains no replay fixtures"):
+                validate_replay_path(Path(temp))
+
+    def test_yaml_extension_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "fixture.yaml"
+            path.write_text(VALID_FIXTURE, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, ".json replay fixture"):
                 validate_replay_path(path)
 
 

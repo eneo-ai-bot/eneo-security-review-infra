@@ -8,7 +8,6 @@ from typing import Any
 
 try:
     from .memory_decisions import (
-        current_context_hash_for_fingerprint,
         insert_decision,
         observation_id_for_context,
     )
@@ -24,7 +23,6 @@ try:
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from memory_decisions import (
-        current_context_hash_for_fingerprint,
         insert_decision,
         observation_id_for_context,
     )
@@ -221,20 +219,6 @@ def record_feedback_decision(
 
         fingerprint = link["fingerprint"]
         linked_hash = str(link["context_hash"] or "")
-        current_hash = current_context_hash_for_fingerprint(connection, fingerprint)
-
-        # A suppression may only apply to the exact file version the human reviewed.
-        if decision in {"false_positive", "intentional_by_design"} and (
-            not linked_hash or linked_hash != current_hash
-        ):
-            connection.execute(
-                "UPDATE processed_feedback_events SET outcome = 'stale' WHERE event_id = ?",
-                (event_id,),
-            )
-            connection.commit()
-            return {"status": "stale", "fingerprint": fingerprint}
-
-        actor = f"github-id:{actor_user_id}"
         observation_id = observation_id_for_context(
             connection,
             repository=link["repository"],
@@ -247,13 +231,33 @@ def record_feedback_decision(
             raise ReviewMemoryError(
                 "review comment link does not resolve to a recorded finding observation"
             )
+        observation = connection.execute(
+            "SELECT context_hash FROM finding_observations WHERE id = ?",
+            (observation_id,),
+        ).fetchone()
+        if observation is None:
+            raise ReviewMemoryError(
+                "review comment link does not resolve to a recorded finding observation"
+            )
+        observation_hash = str(observation["context_hash"] or "")
+
+        # A link without a trusted hash cannot create a suppressive decision.
+        if decision in {"false_positive", "intentional_by_design"} and not linked_hash:
+            connection.execute(
+                "UPDATE processed_feedback_events SET outcome = 'stale' WHERE event_id = ?",
+                (event_id,),
+            )
+            connection.commit()
+            return {"status": "stale", "fingerprint": fingerprint}
+
+        actor = f"github-id:{actor_user_id}"
         result = insert_decision(
             connection,
             fingerprint=fingerprint,
             decision=decision,
             reason=reason,
             actor=actor,
-            context_hash=current_hash,
+            context_hash=observation_hash,
             observation_id=observation_id,
             adr_id=adr_id,
             expires_days=expires_days,
@@ -292,6 +296,7 @@ def record_feedback_decision(
         connection.commit()
         return {
             "status": "recorded",
+            "decision_id": result["id"],
             "decision": result["decision"],
             "fingerprint": fingerprint,
             "title": finding["title"] if finding else "",

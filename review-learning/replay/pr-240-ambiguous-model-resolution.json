@@ -14,24 +14,24 @@
       {
         "rule_id": "migration.ambiguous-model-resolution",
         "severity": {
-          "minimum": "High",
-          "maximum": "High"
+          "highest_allowed": "High",
+          "lowest_allowed": "High"
         },
         "semantic_claim": "tenant model mapping ignores provider/deployment identity"
       },
       {
         "rule_id": "migration.request-wide-transaction",
         "severity": {
-          "minimum": "High",
-          "maximum": "High"
+          "highest_allowed": "High",
+          "lowest_allowed": "High"
         },
         "semantic_claim": "all-tenant migration lost tenant-local transaction boundaries"
       },
       {
         "rule_id": "migration.kwargs-reset-confirmation",
         "severity": {
-          "minimum": "High",
-          "maximum": "High"
+          "highest_allowed": "High",
+          "lowest_allowed": "High"
         },
         "semantic_claim": "destructive kwargs reset can happen without explicit confirmation"
       }

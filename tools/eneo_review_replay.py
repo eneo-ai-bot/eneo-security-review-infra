@@ -27,6 +27,8 @@ class ReplayValidationResult:
 
 def validate_replay_path(path: Path) -> tuple[ReplayValidationResult, ...]:
     paths = _fixture_paths(path)
+    if not paths:
+        raise ValueError(f"{path} contains no replay fixtures")
     seen_ids: set[str] = set()
     results: list[ReplayValidationResult] = []
     for fixture_path in paths:
@@ -43,7 +45,9 @@ def validate_replay_path(path: Path) -> tuple[ReplayValidationResult, ...]:
 
 def _fixture_paths(path: Path) -> tuple[Path, ...]:
     if path.is_dir():
-        return tuple(sorted(path.glob("*.yaml")))
+        return tuple(sorted(path.glob("*.json")))
+    if path.suffix != ".json":
+        raise ValueError(f"{path} must be a .json replay fixture")
     return (path,)
 
 
@@ -52,7 +56,7 @@ def _load_fixture(path: Path) -> Mapping[str, object]:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"{path} must be JSON-compatible YAML; {exc.msg} at line {exc.lineno}"
+            f"{path} must be JSON; {exc.msg} at line {exc.lineno}"
         ) from exc
     if not isinstance(raw, Mapping):
         raise ValueError(f"{path} must contain a JSON object")
@@ -153,14 +157,16 @@ def _validate_root_cause(item: Mapping[str, object]) -> None:
     severity = _mapping(item.get("severity"), "root_cause.severity")
     _expect_keys(
         severity,
-        {"minimum", "maximum"},
-        {"minimum", "maximum"},
+        {"highest_allowed", "lowest_allowed"},
+        {"highest_allowed", "lowest_allowed"},
         "root_cause.severity",
     )
-    minimum = _severity(severity.get("minimum"), "severity.minimum")
-    maximum = _severity(severity.get("maximum"), "severity.maximum")
-    if SEVERITY_RANK[minimum] > SEVERITY_RANK[maximum]:
-        raise ValueError("severity.minimum cannot be lower priority than maximum")
+    highest = _severity(severity.get("highest_allowed"), "severity.highest_allowed")
+    lowest = _severity(severity.get("lowest_allowed"), "severity.lowest_allowed")
+    if SEVERITY_RANK[highest] > SEVERITY_RANK[lowest]:
+        raise ValueError(
+            "severity.highest_allowed cannot be lower priority than lowest_allowed"
+        )
 
 
 def _validate_deterministic_invariants(items: Sequence[object]) -> None:

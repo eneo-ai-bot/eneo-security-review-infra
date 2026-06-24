@@ -88,6 +88,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "PostgreSQL RLS enforces tenant scope for this application role.",
             "github:alice",
             expires_days=180,
+            latest=True,
         )
         decision = self.connection.execute(
             "SELECT observation_id FROM decisions WHERE fingerprint = ?",
@@ -102,6 +103,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "reopen",
             "The migration removed FORCE ROW LEVEL SECURITY.",
             "github:bob",
+            latest=True,
         )
         self.assertIsNone(memory_db.active_suppression(self.connection, fingerprint))
 
@@ -136,6 +138,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "A verified guard exists in the unchanged implementation.",
             "github:alice",
             expires_days=180,
+            latest=True,
         )
         second = self.record(context_hash="e" * 40)
         self.assertFalse(second["suppressed"])
@@ -150,6 +153,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "Temporary exception approved for the migration window.",
             "github:security-team",
             expires_days=30,
+            latest=True,
         )
         context = memory_db.memory_context(
             self.connection, "eneo/platform", ["backend/api/documents.py"]
@@ -516,6 +520,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "The tenant guard exists in an unchanged dependency.",
             "github:alice",
             expires_days=180,
+            latest=True,
         )
         memory_db.record_findings(
             self.connection,
@@ -550,6 +555,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "The tenant guard exists in an unchanged dependency.",
             "github:alice",
             expires_days=180,
+            latest=True,
         )
         memory_db.record_findings(
             self.connection,
@@ -821,6 +827,49 @@ class ReviewMemoryTests(unittest.TestCase):
             memory_db.resolve_fingerprint(self.connection, prefix), result["fingerprint"]
         )
 
+    def test_operator_decision_requires_explicit_observation_target(self):
+        result = self.record()
+
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "exactly one target"):
+            memory_db.add_decision(
+                self.connection,
+                result["fingerprint"],
+                "resolved",
+                "Fixed with a regression test.",
+                "github:alice",
+            )
+
+    def test_operator_decision_can_target_observation_id(self):
+        result = self.record()
+
+        decision = memory_db.add_decision(
+            self.connection,
+            result["fingerprint"],
+            "resolved",
+            "Fixed with a regression test.",
+            "github:alice",
+            observation_id=result["observation_id"],
+        )
+
+        self.assertEqual(decision["observation_id"], result["observation_id"])
+        self.assertEqual(decision["context_hash"], "d" * 40)
+
+    def test_operator_decision_can_target_pr_local_reference(self):
+        result = self.record()
+
+        decision = memory_db.add_decision(
+            self.connection,
+            result["fingerprint"],
+            "resolved",
+            "Fixed with a regression test.",
+            "github:alice",
+            repository="eneo/platform",
+            pr_number=17,
+            local_reference="F1",
+        )
+
+        self.assertEqual(decision["observation_id"], result["observation_id"])
+
     def test_weak_finding_is_rejected(self):
         weak = dict(self.finding, confidence=0.84)
         with self.assertRaises(memory_db.ReviewMemoryError):
@@ -934,6 +983,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "false_positive",
             "Covered by a verified guard.",
             "github:alice",
+            latest=True,
         )
         medium = dict(
             self.finding,
@@ -1289,6 +1339,7 @@ class ReviewMemoryTests(unittest.TestCase):
             "PostgreSQL RLS enforces tenant scope for this application role.",
             "github:alice",
             expires_days=180,
+            latest=True,
         )
         state = memory_db.export_state(self.connection)
         self.assertEqual(state["schema_version"], memory_db.SCHEMA_VERSION)

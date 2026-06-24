@@ -89,6 +89,7 @@ class ReviewStatsTests(unittest.TestCase):
         memory_db.add_decision(
             self.connection, result["fingerprint"], "false_positive", "reason", "github:alice",
             expires_days=180,
+            latest=True,
         )
         stats = memory_db.compute_stats(self.connection, repository="eneo/platform")
         self.assertEqual(stats["active_suppressions"], 1)
@@ -100,6 +101,7 @@ class ReviewStatsTests(unittest.TestCase):
         memory_db.add_decision(
             self.connection, result["fingerprint"], "accepted_risk", "reason", "github:alice",
             expires_days=1,
+            latest=True,
         )
         future = memory_db.utc_now() + timedelta(days=2)
         stats = memory_db.compute_stats(self.connection, repository="eneo/platform", now=future)
@@ -112,6 +114,7 @@ class ReviewStatsTests(unittest.TestCase):
         memory_db.add_decision(
             self.connection, result["fingerprint"], "false_positive", "reason", "github:alice",
             expires_days=180,
+            latest=True,
         )
         # The file changes -> the same fingerprint now has a different trusted context hash.
         self._record(context_hash="e" * 40)
@@ -122,6 +125,7 @@ class ReviewStatsTests(unittest.TestCase):
         result = self._record()
         memory_db.add_decision(
             self.connection, result["fingerprint"], "resolved", "fixed in #2", "github:alice",
+            latest=True,
         )
         stats = memory_db.compute_stats(self.connection, repository="eneo/platform")
         self.assertEqual(stats["active_suppressions"], 0)
@@ -132,6 +136,7 @@ class ReviewStatsTests(unittest.TestCase):
         memory_db.add_decision(
             self.connection, result["fingerprint"], "false_positive", "reason", "github:alice",
             expires_days=10,
+            latest=True,
         )
         within = memory_db.compute_stats(
             self.connection, repository="eneo/platform", expiring_within_days=30
@@ -156,6 +161,7 @@ class ReviewStatsTests(unittest.TestCase):
         memory_db.add_decision(
             self.connection, result["fingerprint"], "false_positive", "reason", "github:alice",
             expires_days=180,
+            latest=True,
         )
         # A later commit still contains the same finding after the human decision.
         self._record(context_hash="d" * 40, head_sha="b" * 40)
