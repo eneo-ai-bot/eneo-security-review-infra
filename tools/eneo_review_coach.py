@@ -12,6 +12,16 @@ from eneo_review_learning import LearningSignal, build_learning_report
 
 
 COACH_SCHEMA_VERSION: Final = 1
+DECISION_CANDIDATE_GROUP: Final = "decision_candidate"
+REVIEW_QUALITY_SIGNAL_GROUP: Final = "review_quality_signal"
+POSITIVE_PATTERN_GROUP: Final = "positive_pattern"
+COACH_EVENT_GROUPS: Final[frozenset[str]] = frozenset(
+    {
+        DECISION_CANDIDATE_GROUP,
+        REVIEW_QUALITY_SIGNAL_GROUP,
+        POSITIVE_PATTERN_GROUP,
+    }
+)
 MAX_UNTRUSTED_TEXT: Final = 1000
 MAX_SHORT_TEXT: Final = 240
 MAX_DECISION_CHAIN: Final = 20
@@ -29,9 +39,9 @@ def build_coach_export(
     report = build_learning_report(state, repository=repository)
     events: list[dict[str, object]] = []
     for group, signals in [
-        ("decision_candidate", report.decision_candidates),
-        ("review_quality_signal", report.quality_signals),
-        ("positive_pattern", report.positive_patterns),
+        (DECISION_CANDIDATE_GROUP, report.decision_candidates),
+        (REVIEW_QUALITY_SIGNAL_GROUP, report.quality_signals),
+        (POSITIVE_PATTERN_GROUP, report.positive_patterns),
     ]:
         for signal in signals:
             if not include_incomplete and not signal.promotion_eligible:

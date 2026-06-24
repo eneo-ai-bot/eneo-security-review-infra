@@ -203,6 +203,12 @@ EMITTED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     | set(QUALITY_POLICIES)
     | set(POSITIVE_FEEDBACK)
 )
+EMITTED_SIGNAL_STRENGTHS: Final[frozenset[str]] = frozenset(
+    {policy.signal_strength for policy in DECISION_POLICIES.values()}
+    | {policy.signal_strength for policy in QUALITY_POLICIES.values()}
+    | {policy.signal_strength for policy in _DERIVED_SIGNAL_POLICIES}
+    | {"incomplete"}
+)
 
 
 def build_learning_report(

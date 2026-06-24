@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from eneo_review_coach import COACH_SCHEMA_VERSION
-from eneo_review_export import optional_int, optional_string
+from eneo_review_coach import COACH_EVENT_GROUPS, COACH_SCHEMA_VERSION
+from eneo_review_learning import EMITTED_SIGNAL_STRENGTHS
 
 
 PROPOSAL_SCHEMA_VERSION: Final = 1
@@ -69,6 +69,51 @@ PROPOSAL_SUPPORTED_SUGGESTED_ROUTES: Final[frozenset[str]] = frozenset(
     _TARGET_BY_ROUTE
 ) | frozenset(_ROUTE_PRIORITY)
 PROPOSAL_SUPPORTED_EVENT_TYPES: Final[frozenset[str]] = frozenset(_EVENT_TYPE_PRIORITY)
+_COACH_EXPORT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "snapshot_id",
+        "event_set_id",
+        "schema_version",
+        "source_schema_version",
+        "repository_untrusted",
+        "source_exported_at",
+        "cursor",
+        "events",
+        "notes",
+    }
+)
+_COACH_EVENT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "event_id",
+        "event_group",
+        "event_type",
+        "signal_strength",
+        "suggested_route",
+        "promotion_eligible",
+        "missing_evidence",
+        "human_reason_untrusted",
+        "reviewer_title_untrusted",
+        "next_step_untrusted",
+        "related_event_ids",
+        "related_event_ids_total",
+        "decision_chain",
+        "decision_chain_total",
+        "source",
+    }
+)
+_COACH_SOURCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "repository_untrusted",
+        "pr_number",
+        "head_sha",
+        "fingerprint",
+        "observation_id",
+        "local_reference",
+        "path_untrusted",
+    }
+)
+PROPOSAL_SUPPORTED_EVENT_GROUPS: Final[frozenset[str]] = COACH_EVENT_GROUPS
+PROPOSAL_SUPPORTED_SIGNAL_STRENGTHS: Final[frozenset[str]] = EMITTED_SIGNAL_STRENGTHS
 
 @dataclass(frozen=True)
 class CoachEvent:
@@ -298,8 +343,12 @@ def build_proposal(
         schema_version=PROPOSAL_SCHEMA_VERSION,
         source_coach_schema_version=COACH_SCHEMA_VERSION,
         source_event_set_id=source_event_set_id,
-        source_snapshot_id=optional_string(coach_export, "snapshot_id"),
-        repository_untrusted=optional_string(coach_export, "repository_untrusted"),
+        source_snapshot_id=_optional_string(
+            coach_export, "snapshot_id", "coach export"
+        ),
+        repository_untrusted=_optional_string(
+            coach_export, "repository_untrusted", "coach export"
+        ),
         decision="propose" if candidate_payloads else "no_change",
         candidates=candidate_payloads,
         governance_observations=governance_observations,
@@ -394,8 +443,9 @@ def render_markdown(bundle: ProposalBundle) -> str:
 
 
 def _validate_schema(payload: Mapping[str, object]) -> None:
+    _reject_unknown_keys(payload, _COACH_EXPORT_KEYS, "coach export")
     schema_value = payload.get("schema_version")
-    if schema_value != COACH_SCHEMA_VERSION:
+    if type(schema_value) is not int or schema_value != COACH_SCHEMA_VERSION:
         raise ValueError(
             f"coach export schema_version must be {COACH_SCHEMA_VERSION}; got {schema_value!r}"
         )
@@ -405,10 +455,7 @@ def _validate_schema(payload: Mapping[str, object]) -> None:
 
 
 def _required_top_level_string(row: Mapping[str, object], key: str) -> str:
-    value = optional_string(row, key)
-    if not value:
-        raise ValueError(f"coach export is missing {key}")
-    return value
+    return _required_string(row, key, "coach export")
 
 
 def _events(payload: Mapping[str, object]) -> tuple[CoachEvent, ...]:
@@ -416,27 +463,57 @@ def _events(payload: Mapping[str, object]) -> tuple[CoachEvent, ...]:
     events: list[CoachEvent] = []
     for index, item in enumerate(raw_events):
         events.append(_event(item, index))
+    event_ids = [event.event_id for event in events]
+    if len(set(event_ids)) != len(event_ids):
+        raise ValueError("coach export events contain duplicate event_id values")
     return tuple(events)
 
 
 def _event(item: Mapping[str, object], index: int) -> CoachEvent:
+    context = f"events[{index}]"
+    _reject_unknown_keys(item, _COACH_EVENT_KEYS, context)
     source = _required_mapping(item, "source", index)
+    _reject_unknown_keys(source, _COACH_SOURCE_KEYS, f"{context}.source")
+    event_group = _required_string(item, "event_group", context)
+    if event_group not in PROPOSAL_SUPPORTED_EVENT_GROUPS:
+        raise ValueError(f"{context}.event_group has unsupported value {event_group!r}")
+    event_type = _required_string(item, "event_type", context)
+    if event_type not in PROPOSAL_SUPPORTED_EVENT_TYPES:
+        raise ValueError(f"{context}.event_type has unsupported value {event_type!r}")
+    signal_strength = _required_string(item, "signal_strength", context)
+    if signal_strength not in PROPOSAL_SUPPORTED_SIGNAL_STRENGTHS:
+        raise ValueError(
+            f"{context}.signal_strength has unsupported value {signal_strength!r}"
+        )
+    suggested_route = _required_string(item, "suggested_route", context)
+    if suggested_route not in PROPOSAL_SUPPORTED_SUGGESTED_ROUTES:
+        raise ValueError(
+            f"{context}.suggested_route has unsupported value {suggested_route!r}"
+        )
     return CoachEvent(
-        event_id=_required_string(item, "event_id", index),
-        event_group=_required_string(item, "event_group", index),
-        event_type=_required_string(item, "event_type", index),
-        signal_strength=_required_string(item, "signal_strength", index),
-        suggested_route=_required_string(item, "suggested_route", index),
+        event_id=_required_string(item, "event_id", context),
+        event_group=event_group,
+        event_type=event_type,
+        signal_strength=signal_strength,
+        suggested_route=suggested_route,
         promotion_eligible=_required_bool(item, "promotion_eligible", index),
         missing_evidence=tuple(_string_list(item, "missing_evidence", index)),
-        title_untrusted=optional_string(item, "reviewer_title_untrusted"),
-        human_reason_untrusted=optional_string(item, "human_reason_untrusted"),
-        next_step_untrusted=optional_string(item, "next_step_untrusted"),
-        repository_untrusted=optional_string(source, "repository_untrusted"),
-        pr_number=optional_int(source, "pr_number"),
-        fingerprint=optional_string(source, "fingerprint"),
-        observation_id=optional_int(source, "observation_id"),
-        local_reference=optional_string(source, "local_reference"),
+        title_untrusted=_optional_string(
+            item, "reviewer_title_untrusted", context
+        ),
+        human_reason_untrusted=_optional_string(
+            item, "human_reason_untrusted", context
+        ),
+        next_step_untrusted=_optional_string(item, "next_step_untrusted", context),
+        repository_untrusted=_optional_string(
+            source, "repository_untrusted", f"{context}.source"
+        ),
+        pr_number=_optional_int(source, "pr_number", f"{context}.source"),
+        fingerprint=_optional_string(source, "fingerprint", f"{context}.source"),
+        observation_id=_optional_int(source, "observation_id", f"{context}.source"),
+        local_reference=_optional_string(
+            source, "local_reference", f"{context}.source"
+        ),
         related_event_ids=tuple(_string_list(item, "related_event_ids", index)),
     )
 
@@ -669,31 +746,59 @@ def _sequence_of_mappings(row: Mapping[str, object], key: str) -> tuple[Mapping[
     return tuple(output)
 
 
-def _strings(row: Mapping[str, object], key: str) -> tuple[str, ...]:
-    value = row.get(key, [])
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return ()
-    items = cast(Sequence[object], value)
-    output: list[str] = []
-    for item in items:
-        if isinstance(item, str) and item.strip():
-            output.append(" ".join(item.strip().split()))
-    return tuple(output)
-
-
 def _string_list(
     row: Mapping[str, object], key: str, event_index: int
 ) -> tuple[str, ...]:
+    context = f"events[{event_index}].{key}"
     value = row.get(key, [])
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        raise ValueError(f"events[{event_index}].{key} must be a list")
-    return _strings(row, key)
+        raise ValueError(f"{context} must be a list")
+    items = cast(Sequence[object], value)
+    output: list[str] = []
+    for item_index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise ValueError(f"{context}[{item_index}] must be a string")
+        normalized = " ".join(item.strip().split())
+        if not normalized:
+            raise ValueError(f"{context}[{item_index}] must be non-empty")
+        output.append(normalized)
+    return tuple(output)
 
 
-def _required_string(row: Mapping[str, object], key: str, index: int) -> str:
-    value = optional_string(row, key)
+def _reject_unknown_keys(
+    row: Mapping[str, object], allowed: frozenset[str], context: str
+) -> None:
+    unknown: list[str] = []
+    for key in row:
+        if key not in allowed:
+            unknown.append(key)
+    if unknown:
+        formatted = ", ".join(sorted(unknown))
+        raise ValueError(f"{context} contains unknown keys: {formatted}")
+
+
+def _optional_string(row: Mapping[str, object], key: str, context: str) -> str:
+    if key not in row:
+        return ""
+    value = row[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{context}.{key} must be a string")
+    return " ".join(value.strip().split())
+
+
+def _required_string(row: Mapping[str, object], key: str, context: str) -> str:
+    value = _optional_string(row, key, context)
     if not value:
-        raise ValueError(f"events[{index}].{key} is required")
+        raise ValueError(f"{context}.{key} is required")
+    return value
+
+
+def _optional_int(row: Mapping[str, object], key: str, context: str) -> int | None:
+    if key not in row or row[key] is None:
+        return None
+    value = row[key]
+    if type(value) is not int:
+        raise ValueError(f"{context}.{key} must be an integer")
     return value
 
 
