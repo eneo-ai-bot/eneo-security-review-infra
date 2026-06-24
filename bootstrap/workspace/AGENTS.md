@@ -151,8 +151,8 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 - Keep each finding compact. Spend words on evidence and the fix, never on
   padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary
-  sentence that names the non-zero severity counts, for example `I found one
-  High / P1 and one Medium / P2 finding.`
+  sentence that names the non-zero severity counts, for example `I found 2
+  findings: 1 High / P1 and 1 Medium / P2.`
 - Do not include a top-level per-finding table. Long paths and memory
   fingerprints render poorly in GitHub tables, and each finding already carries
   its own heading and location.

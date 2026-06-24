@@ -227,7 +227,7 @@ class ReviewMemoryTests(unittest.TestCase):
         markdown = result["markdown"]
         visible = markdown.split("<!--", 1)[0]
         self.assertEqual(result["findings_count"], 2)
-        self.assertIn("I found 1 Critical / P0 and 1 Medium / P2 findings.", markdown)
+        self.assertIn("I found 2 findings: 1 Critical / P0 and 1 Medium / P2.", markdown)
         self.assertIn("### F1 - Critical / P0: Document creation omits tenant scope", markdown)
         self.assertIn("### F2 - Medium / P2: Regression test misses tenant failure path", markdown)
         self.assertIn("Copyable fix brief for a coding agent", markdown)
@@ -235,6 +235,37 @@ class ReviewMemoryTests(unittest.TestCase):
         for item in recorded:
             self.assertNotIn(item["fingerprint"], visible)
             self.assertIn(item["fingerprint"], markdown)
+
+    def test_finalize_review_pluralizes_multiple_findings_in_one_severity(self):
+        first = dict(
+            self.finding,
+            severity="High",
+            publication_score=8,
+            title="First high issue",
+            rule_id="tenant.first-high",
+            anchor="POST /v1/documents:first",
+        )
+        second = dict(
+            self.finding,
+            severity="High",
+            publication_score=8,
+            title="Second high issue",
+            rule_id="tenant.second-high",
+            anchor="POST /v1/documents:second",
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+
+        self.assertIn("I found 2 findings: 2 High / P1.", result["markdown"])
+        self.assertNotIn("I found 2 High / P1 finding.", result["markdown"])
 
     def test_finalize_review_marks_previous_findings_resolved_on_next_head(self):
         first = self.finding

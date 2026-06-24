@@ -147,7 +147,7 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 ````md
 ## Eneo AI code & security review
 
-I found one High / P1 and one Medium / P2 finding.
+I found 2 findings: 1 High / P1 and 1 Medium / P2.
 
 ### F1 - High / P1: Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security

@@ -47,7 +47,7 @@ class DocsContractTests(unittest.TestCase):
             body = read(relative)
             with self.subTest(relative=relative):
                 self.assertIn(
-                    "I found one High / P1 and one Medium / P2 finding.",
+                    "I found 2 findings: 1 High / P1 and 1 Medium / P2.",
                     body,
                 )
                 self.assertNotIn("| Severity | Category | Location | Finding | ID |", body)

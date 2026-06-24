@@ -43,20 +43,21 @@ def compact_text(value: Any, *, maximum: int = 800) -> str:
 def severity_summary(findings: Sequence[PublishedFinding]) -> str:
     if not findings:
         return "No current findings survived this review."
+    total = len(findings)
     counts = {severity: 0 for severity in SEVERITY_ORDER}
     for item in findings:
         counts[str(item["severity"])] += 1
     parts = [
-        f"{count} {severity} / P{index}"
-        for index, severity in enumerate(SEVERITY_ORDER)
-        for count in [counts[severity]]
-        if count
+        f"{counts[severity]} {severity} / P{SEVERITY_PRIORITY[severity]}"
+        for severity in SEVERITY_ORDER
+        if counts[severity]
     ]
+    noun = "finding" if total == 1 else "findings"
     if len(parts) == 1:
-        return f"I found {parts[0]} finding."
+        return f"I found {total} {noun}: {parts[0]}."
     if len(parts) == 2:
-        return f"I found {parts[0]} and {parts[1]} findings."
-    return "I found " + ", ".join(parts[:-1]) + f", and {parts[-1]} findings."
+        return f"I found {total} findings: {parts[0]} and {parts[1]}."
+    return f"I found {total} findings: {', '.join(parts[:-1])}, and {parts[-1]}."
 
 
 def ordered_findings(items: Sequence[PublishedFinding]) -> list[PublishedFinding]:
