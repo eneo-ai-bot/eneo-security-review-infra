@@ -1,0 +1,32 @@
+id: pr-240-ambiguous-model-resolution
+repository: eneo-ai/eneo
+pull_request: 240
+status: seed
+purpose: >
+  Preserve reviewer stability around all-tenant completion-model migration
+  findings without depending on exact line numbers.
+source: historical human-triggered review discussion
+expected_findings:
+  - title_contains: provider-specific model row
+    category: security
+    severity: High
+    root_cause: tenant model mapping ignores provider/deployment identity
+  - title_contains: one request transaction
+    category: reliability
+    severity: High
+    root_cause: all-tenant migration lost tenant-local transaction boundaries
+  - title_contains: model kwargs without confirmation
+    category: correctness
+    severity: High
+    root_cause: destructive kwargs reset can happen without explicit confirmation
+stability_rules:
+  - Repeated reviews should reuse the same root-cause identities when the code
+    is unchanged.
+  - A resolved finding must be closed only when the current code directly fixes
+    the prior claim.
+  - Absence from a later review is not enough to mark a prior finding resolved.
+non_goals:
+  - Do not require exact wording.
+  - Do not require stable line numbers.
+  - Do not treat this replay seed as production policy until a replay runner
+    and human approval process exist.

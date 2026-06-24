@@ -662,6 +662,16 @@ severity rules, or retrieval. Measure valid finding recall, false-positive rate,
 severity calibration, unchanged-head stability, root-cause duplication, comment
 length, missed issues, and remediation usefulness.
 
+First implemented learning slice:
+
+- generate `eneo-review-memory learning-report` from an exported SQLite snapshot;
+- keep report logic outside the production plugin and do not let the public
+  webhook reviewer read `review-learning/`;
+- treat `review_quality_feedback` as optional until a public feedback writer
+  exists;
+- keep generated reports advisory until a replay, ADR, skill, AGENTS, or plugin
+  change is reviewed through normal version control.
+
 ## GitHub Trigger Behavior
 
 Current issue:

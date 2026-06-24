@@ -1,6 +1,7 @@
 {
   "include": [
-    "bootstrap/plugins/eneo_review_tools"
+    "bootstrap/plugins/eneo_review_tools",
+    "tools/eneo_review_learning.py"
   ],
   "exclude": [
     "**/__pycache__",

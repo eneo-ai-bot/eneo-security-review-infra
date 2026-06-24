@@ -27,6 +27,15 @@ def load_memory_module():
 memory_db = load_memory_module()
 
 
+def load_learning_module():
+    try:
+        import eneo_review_learning
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo learning report module") from exc
+
+    return eneo_review_learning
+
+
 def print_table(items):
     if not items:
         print("No findings.")
@@ -133,7 +142,34 @@ def main() -> int:
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
     runs_parser.add_argument("--json", action="store_true")
 
+    learning_parser = sub.add_parser(
+        "learning-report",
+        help="Generate a private learning-candidate report from an export JSON.",
+    )
+    learning_parser.add_argument(
+        "--export",
+        required=True,
+        help="Path created by `eneo-review-memory export --output`.",
+    )
+    learning_parser.add_argument("--repo", help="Limit to owner/repository.")
+    learning_parser.add_argument("--output", help="Write Markdown to a file instead of stdout.")
+
     args = parser.parse_args()
+
+    if args.command == "learning-report":
+        learning = load_learning_module()
+        state = learning.load_export(Path(args.export))
+        report = learning.build_learning_report(state, repository=args.repo)
+        content = learning.render_markdown(report)
+        if args.output:
+            destination = Path(args.output)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+            print(destination)
+        else:
+            print(content, end="")
+        return 0
+
     with closing(memory_db.connect(args.db)) as connection:
         if args.command == "init":
             print(f"Ready: {memory_db.database_path(args.db)}")

@@ -147,6 +147,22 @@ class DocsContractTests(unittest.TestCase):
                 self.assertIn("missed", body)
         self.assertIn("ADRs are context, not immunity", guide)
         self.assertIn("automatically rewrite reviewer policy", guide)
+        self.assertIn("learning-report", guide)
+        self.assertIn("learning-report", readme)
+        self.assertIn("does not read `review-learning/`", guide)
+        self.assertIn("does not read `review-learning/`", readme)
+        self.assertIn("no public writer yet", guide)
+        self.assertIn("no public writer yet", readme)
+
+    def test_learning_pipeline_boundary_is_tool_surface_first(self):
+        config = read("bootstrap/config.yaml")
+        skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
+        self.assertIn("    - file\n", config)
+        self.assertIn("    - skills\n", config)
+        self.assertIn("    - memory\n", config)
+        self.assertIn("    - terminal\n", config)
+        self.assertIn("    - code_execution\n", config)
+        self.assertNotIn("review-learning", skill)
 
     def test_plugin_manifest_lists_registered_tools(self):
         manifest = read("bootstrap/plugins/eneo_review_tools/plugin.yaml")

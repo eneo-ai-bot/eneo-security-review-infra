@@ -348,6 +348,26 @@ eneo-review-memory export \
 Back up the `/opt/data` volume securely. It contains OAuth credentials and may
 contain sensitive unpublished findings.
 
+Generate a private learning-candidate report from an export:
+
+```bash
+eneo-review-memory learning-report \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --output /opt/data/review-memory/learning-candidates.md
+```
+
+This is operator tooling, not live reviewer memory. The public webhook reviewer
+does not read `review-learning/`, and the route disables local file access,
+general skill writes, memory writes, web, shell, code execution, session search,
+and delegation. The report surfaces explicit human decisions and any populated
+review-quality feedback rows for a private coach workflow. In the current bundle
+the `review_quality_feedback` table is exported but has no public writer yet, so
+that section may be empty. Do not infer learning from silence, thumbs-up, merges,
+or a later code change without a linked decision or test.
+Scrub reports before moving useful candidates into `review-learning/reports/` as
+versioned artifacts.
+
 ## 8. Tune the review policy
 
 Canonical policy lives in:
@@ -361,6 +381,13 @@ bootstrap/skills/eneo-pr-review/SKILL.md
 Keep `SOUL.md` focused on reviewer identity, evidence, tone, and brevity.
 Keep `AGENTS.md` focused on Eneo invariants and the visible comment contract.
 Keep the skill focused on the exact two-pass procedure.
+
+Learning candidates graduate only through normal version-controlled changes:
+exact decisions remain in SQLite, architectural context becomes an ADR, visible
+comment shape belongs in `AGENTS.md`, review procedure belongs in the skill,
+mechanical enforcement belongs in plugin code and tests, and replay behavior
+belongs under `review-learning/replay/`. Do not add a second production policy
+file for unapproved lessons.
 
 After editing the version-controlled source, rebuild/redeploy and run:
 

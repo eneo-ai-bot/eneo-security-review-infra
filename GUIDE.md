@@ -507,6 +507,36 @@ coach can read curated metrics and propose small AGENTS, skill, ADR, or replay
 fixture changes for human review. Do not allow public PR content to
 automatically rewrite reviewer policy.
 
+The first coach-facing slice is export based:
+
+```bash
+eneo-review-memory export \
+  --output /opt/data/review-memory/export.json
+
+eneo-review-memory learning-report \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --output /opt/data/review-memory/learning-candidates.md
+```
+
+The public webhook reviewer does not read `review-learning/`. The runtime
+boundary is the tool surface: local file access, skills, memory, web, terminal,
+code execution, session search, and delegation are disabled for the route. A
+candidate report is advisory and may contain sensitive human-entered reasons, so
+scrub it before committing or sharing. In the current bundle,
+`review_quality_feedback` is exported but has no public writer yet; empty
+review-quality sections are expected. Scrub reports before moving useful
+candidates into `review-learning/reports/` as versioned artifacts.
+
+Borrow the useful parts of Hermes `/learn` and UpSkill only for the private
+coach process: curated sources, proposed learnings, human approval, and replay
+or focused tests before promotion. Do not run `/learn` on arbitrary PR comments,
+contributor branches, raw session transcripts, or unsanitized exports. Approved
+lessons should fold into the narrowest canonical owner: SQLite for exact
+decisions, ADRs for architecture context, `AGENTS.md` for visible review shape,
+the review skill for procedure, plugin code for mechanical enforcement, and
+`review-learning/replay/` for replay cases.
+
 ### Triage commands
 
 List findings:
