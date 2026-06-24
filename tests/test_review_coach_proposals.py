@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -16,13 +17,17 @@ sys.path.insert(0, str(ROOT / "tools"))
 from eneo_review_coach import COACH_EVENT_GROUPS, build_coach_export
 from eneo_review_coach_proposals import (
     POSITIVE_PATTERN_REASON,
+    PROPOSAL_FORBIDDEN_ACTIONS,
     PROPOSAL_SUPPORTED_EVENT_GROUPS,
     PROPOSAL_SUPPORTED_EVENT_TYPES,
     PROPOSAL_SUPPORTED_SIGNAL_STRENGTHS,
     PROPOSAL_SUPPORTED_SUGGESTED_ROUTES,
     REVIEW_QUALITY_PROVENANCE_REASON,
     build_proposal,
+    dumps_proposal_bundle,
+    load_proposal_bundle,
     render_markdown,
+    verify_proposal_bundle,
 )
 from eneo_review_learning import (
     EMITTED_EVENT_TYPES,
@@ -133,6 +138,34 @@ def proposal_json(
     max_candidates: int = 3,
 ) -> dict[str, object]:
     return build_proposal(payload, max_candidates=max_candidates).to_json_obj()
+
+
+def maximal_proposal_bundle():
+    return build_proposal(
+        coach_export(
+            [
+                event("decision:1", observation_id=11, pr_number=240),
+                event("decision:2", observation_id=22, pr_number=241),
+                event(
+                    "decision:3",
+                    event_type="accepted_risk",
+                    route="exact_decision",
+                    observation_id=33,
+                    fingerprint="1111222233334444",
+                    pr_number=242,
+                ),
+                event(
+                    "decision:4",
+                    event_type="resolved",
+                    route="positive_pattern",
+                    group="positive_pattern",
+                    observation_id=44,
+                    fingerprint="5555666677778888",
+                    pr_number=243,
+                ),
+            ]
+        )
+    )
 
 
 def event(
@@ -534,6 +567,181 @@ class CoachProposalTests(unittest.TestCase):
         second = proposal_json(second_export)
 
         self.assertEqual(first["proposal_set_id"], second["proposal_set_id"])
+
+    def test_proposal_bundle_round_trips_from_maximal_artifact(self) -> None:
+        bundle = maximal_proposal_bundle()
+        self.assertEqual(len(bundle.candidates), 1)
+        self.assertEqual(len(bundle.governance_observations), 1)
+        self.assertEqual(len(bundle.rejected_groups), 1)
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "proposal.json"
+            path.write_text(dumps_proposal_bundle(bundle), encoding="utf-8")
+
+            loaded = load_proposal_bundle(path)
+            verification = verify_proposal_bundle(loaded)
+
+        self.assertEqual(loaded, bundle)
+        self.assertEqual(verification.proposal_set_id, bundle.proposal_set_id)
+        self.assertEqual(verification.forbidden_actions, PROPOSAL_FORBIDDEN_ACTIONS)
+
+    def test_proposal_parser_rejects_unknown_keys_at_each_level(self) -> None:
+        bundle = maximal_proposal_bundle().to_json_obj()
+
+        cases: list[tuple[str, dict[str, object]]] = []
+        top_level = json.loads(json.dumps(bundle))
+        top_level["actor_login"] = "alice"
+        cases.append(("proposal bundle contains unknown keys: actor_login", top_level))
+
+        candidate_level = json.loads(json.dumps(bundle))
+        candidate_level["candidates"][0]["extra"] = "value"
+        cases.append(("candidates[0] contains unknown keys: extra", candidate_level))
+
+        evidence_level = json.loads(json.dumps(bundle))
+        evidence_level["candidates"][0]["evidence"][0]["extra"] = "value"
+        cases.append(
+            ("candidates[0].evidence[0] contains unknown keys: extra", evidence_level)
+        )
+
+        rejected_level = json.loads(json.dumps(bundle))
+        rejected_level["rejected_groups"][0]["extra"] = "value"
+        cases.append(("rejected_groups[0] contains unknown keys: extra", rejected_level))
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for index, (message, payload) in enumerate(cases):
+                path = root / f"proposal-{index}.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(ValueError, re.escape(message)):
+                        load_proposal_bundle(path)
+
+    def test_proposal_parser_rejects_bad_decision_and_non_strict_ints(self) -> None:
+        bundle = maximal_proposal_bundle().to_json_obj()
+
+        cases: list[tuple[str, dict[str, object]]] = []
+        bad_decision = json.loads(json.dumps(bundle))
+        bad_decision["decision"] = "ready_for_human_review"
+        cases.append(("unsupported value", bad_decision))
+
+        bad_schema_bool = json.loads(json.dumps(bundle))
+        bad_schema_bool["schema_version"] = True
+        cases.append(("schema_version", bad_schema_bool))
+
+        bad_count_string = json.loads(json.dumps(bundle))
+        bad_count_string["candidates"][0]["independent_episode_count"] = "2"
+        cases.append(("independent_episode_count must be an integer", bad_count_string))
+
+        bad_events_bool = json.loads(json.dumps(bundle))
+        bad_events_bool["events_considered"] = True
+        cases.append(("events_considered must be an integer", bad_events_bool))
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for index, (message, payload) in enumerate(cases):
+                path = root / f"proposal-{index}.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(ValueError, message):
+                        load_proposal_bundle(path)
+
+    def test_proposal_parser_rejects_tampered_content_hash(self) -> None:
+        payload = maximal_proposal_bundle().to_json_obj()
+        payload["candidates"][0]["evidence_event_ids"][0] = "decision:999"
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "proposal.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "proposal_set_id"):
+                load_proposal_bundle(path)
+
+    def test_proposal_verifier_rejects_structural_invariant_drift(self) -> None:
+        base = maximal_proposal_bundle().to_json_obj()
+        cases: list[tuple[str, dict[str, object]]] = []
+
+        bad_decision = json.loads(json.dumps(base))
+        bad_decision["decision"] = "no_change"
+        cases.append(("decision does not match candidate presence", bad_decision))
+
+        bad_episode_count = json.loads(json.dumps(base))
+        bad_episode_count["candidates"][0]["independent_episode_count"] = 99
+        cases.append(
+            ("independent_episode_count does not match keys", bad_episode_count)
+        )
+
+        bad_evidence_total = json.loads(json.dumps(base))
+        bad_evidence_total["candidates"][0]["evidence_events_total"] = 1
+        cases.append(("evidence_events_total is smaller", bad_evidence_total))
+
+        bad_nested_evidence = json.loads(json.dumps(base))
+        bad_nested_evidence["candidates"][0]["evidence"][0]["event_id"] = "decision:999"
+        cases.append(("evidence_event_ids do not match evidence", bad_nested_evidence))
+
+        bad_validation = json.loads(json.dumps(base))
+        bad_validation["candidates"][0]["required_validation"] = []
+        cases.append(("required_validation must not be empty", bad_validation))
+
+        bad_rejected_total = json.loads(json.dumps(base))
+        bad_rejected_total["rejected_groups"][0]["events_total"] = 0
+        cases.append(("events_total is smaller than event ids", bad_rejected_total))
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for index, (message, payload) in enumerate(cases):
+                path = root / f"proposal-{index}.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(ValueError, re.escape(message)):
+                        load_proposal_bundle(path)
+
+    def test_proposal_parser_round_trips_null_optional_evidence_fields(self) -> None:
+        first = event("decision:1", observation_id=11, pr_number=240)
+        second = event("decision:2", observation_id=22, pr_number=241)
+        first["source"]["pr_number"] = None
+        first["source"]["observation_id"] = None
+        second["source"]["pr_number"] = None
+        second["source"]["observation_id"] = None
+        bundle = build_proposal(coach_export([first, second]))
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "proposal.json"
+            path.write_text(dumps_proposal_bundle(bundle), encoding="utf-8")
+            loaded = load_proposal_bundle(path)
+
+        self.assertIsNone(loaded.candidates[0].evidence[0].pr_number)
+        self.assertIsNone(loaded.candidates[0].evidence[0].observation_id)
+        self.assertEqual(loaded, bundle)
+
+    def test_cli_verifies_proposal_artifact_without_writing_or_db(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            proposal_path = root / "proposal.json"
+            proposal_path.write_text(
+                dumps_proposal_bundle(maximal_proposal_bundle()),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "eneo_review_memory.py"),
+                    "coach-verify-proposal",
+                    "--proposal",
+                    str(proposal_path),
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        receipt = json.loads(completed.stdout)
+        self.assertEqual(receipt["decision"], "propose")
+        self.assertEqual(receipt["candidates_count"], 1)
+        self.assertEqual(receipt["governance_observations_count"], 1)
+        self.assertEqual(receipt["rejected_groups_count"], 1)
+        self.assertEqual(receipt["forbidden_actions"], list(PROPOSAL_FORBIDDEN_ACTIONS))
 
     def test_cli_writes_private_proposal_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

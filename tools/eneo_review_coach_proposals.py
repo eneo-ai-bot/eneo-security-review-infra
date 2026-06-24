@@ -8,13 +8,14 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 from eneo_review_coach import COACH_EVENT_GROUPS, COACH_SCHEMA_VERSION
 from eneo_review_learning import EMITTED_SIGNAL_STRENGTHS
 
 
 PROPOSAL_SCHEMA_VERSION: Final = 1
+ProposalDecision = Literal["propose", "no_change"]
 DEFAULT_MAX_CANDIDATES: Final = 3
 DEFAULT_MIN_INDEPENDENT_EPISODES: Final = 2
 MAX_EVIDENCE_EVENTS_PER_CANDIDATE: Final = 5
@@ -114,6 +115,76 @@ _COACH_SOURCE_KEYS: Final[frozenset[str]] = frozenset(
 )
 PROPOSAL_SUPPORTED_EVENT_GROUPS: Final[frozenset[str]] = COACH_EVENT_GROUPS
 PROPOSAL_SUPPORTED_SIGNAL_STRENGTHS: Final[frozenset[str]] = EMITTED_SIGNAL_STRENGTHS
+PROPOSAL_DECISIONS: Final[frozenset[str]] = frozenset({"propose", "no_change"})
+PROPOSAL_FORBIDDEN_ACTIONS: Final[tuple[str, ...]] = (
+    "Do not open a pull request automatically.",
+    "Do not edit reviewer policy, prompts, skills, or code from this artifact alone.",
+    "Do not suppress findings or change review-memory decisions from this artifact.",
+    "Do not proceed without a focused replay fixture or behavior test.",
+)
+_PROPOSAL_BUNDLE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "source_coach_schema_version",
+        "source_event_set_id",
+        "source_snapshot_id",
+        "repository_untrusted",
+        "decision",
+        "candidates",
+        "governance_observations",
+        "rejected_groups",
+        "events_considered",
+        "notes",
+        "proposal_set_id",
+    }
+)
+_PROPOSAL_CANDIDATE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "candidate_key",
+        "target_owner",
+        "suggested_route",
+        "event_type",
+        "independent_episode_count",
+        "independent_episode_keys",
+        "evidence_event_ids",
+        "evidence_events_total",
+        "evidence",
+        "problem_untrusted",
+        "proposed_change",
+        "required_validation",
+        "risk",
+        "why_not_no_change",
+    }
+)
+_PROPOSAL_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "event_id",
+        "event_group",
+        "event_type",
+        "signal_strength",
+        "suggested_route",
+        "repository_untrusted",
+        "pr_number",
+        "observation_id",
+        "fingerprint",
+        "local_reference",
+        "reviewer_title_untrusted",
+        "human_reason_untrusted",
+        "next_step_untrusted",
+        "related_event_ids",
+    }
+)
+_PROPOSAL_REJECTED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "candidate_key",
+        "suggested_route",
+        "event_type",
+        "reason",
+        "independent_episode_count",
+        "event_ids",
+        "events_total",
+    }
+)
 
 @dataclass(frozen=True)
 class CoachEvent:
@@ -247,7 +318,7 @@ class ProposalBundle:
     source_event_set_id: str
     source_snapshot_id: str
     repository_untrusted: str
-    decision: str
+    decision: ProposalDecision
     candidates: tuple[CandidateProposal, ...]
     governance_observations: tuple[EvidenceSummary, ...]
     rejected_groups: tuple[RejectedGroup, ...]
@@ -274,11 +345,52 @@ class ProposalBundle:
         }
 
 
+@dataclass(frozen=True)
+class ProposalVerification:
+    proposal_set_id: str
+    decision: ProposalDecision
+    candidates_count: int
+    governance_observations_count: int
+    rejected_groups_count: int
+    forbidden_actions: tuple[str, ...]
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "proposal_set_id": self.proposal_set_id,
+            "decision": self.decision,
+            "candidates_count": self.candidates_count,
+            "governance_observations_count": self.governance_observations_count,
+            "rejected_groups_count": self.rejected_groups_count,
+            "forbidden_actions": list(self.forbidden_actions),
+        }
+
+
 def load_coach_export(path: Path) -> Mapping[str, object]:
     raw: object = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
         raise ValueError("coach export must be a JSON object")
     return cast(Mapping[str, object], raw)
+
+
+def load_proposal_bundle(path: Path) -> ProposalBundle:
+    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, Mapping):
+        raise ValueError("proposal bundle must be a JSON object")
+    bundle = _proposal_bundle(cast(Mapping[str, object], raw))
+    verify_proposal_bundle(bundle)
+    return bundle
+
+
+def verify_proposal_bundle(bundle: ProposalBundle) -> ProposalVerification:
+    _validate_loaded_bundle(bundle)
+    return ProposalVerification(
+        proposal_set_id=bundle.proposal_set_id,
+        decision=bundle.decision,
+        candidates_count=len(bundle.candidates),
+        governance_observations_count=len(bundle.governance_observations),
+        rejected_groups_count=len(bundle.rejected_groups),
+        forbidden_actions=PROPOSAL_FORBIDDEN_ACTIONS,
+    )
 
 
 def build_proposal(
@@ -454,8 +566,182 @@ def _validate_schema(payload: Mapping[str, object]) -> None:
         raise ValueError("coach export is missing events")
 
 
+def _proposal_bundle(payload: Mapping[str, object]) -> ProposalBundle:
+    context = "proposal bundle"
+    _reject_unknown_keys(payload, _PROPOSAL_BUNDLE_KEYS, context)
+    schema_value = payload.get("schema_version")
+    if type(schema_value) is not int or schema_value != PROPOSAL_SCHEMA_VERSION:
+        raise ValueError(
+            f"proposal bundle schema_version must be {PROPOSAL_SCHEMA_VERSION}; "
+            f"got {schema_value!r}"
+        )
+    source_schema_value = payload.get("source_coach_schema_version")
+    if type(source_schema_value) is not int or source_schema_value != COACH_SCHEMA_VERSION:
+        raise ValueError(
+            "proposal bundle source_coach_schema_version must be "
+            f"{COACH_SCHEMA_VERSION}; got {source_schema_value!r}"
+        )
+    decision = _proposal_decision(_required_string(payload, "decision", context))
+    return ProposalBundle(
+        schema_version=PROPOSAL_SCHEMA_VERSION,
+        source_coach_schema_version=COACH_SCHEMA_VERSION,
+        source_event_set_id=_required_string(payload, "source_event_set_id", context),
+        source_snapshot_id=_optional_string(payload, "source_snapshot_id", context),
+        repository_untrusted=_optional_string(payload, "repository_untrusted", context),
+        decision=decision,
+        candidates=tuple(
+            _proposal_candidate(item, index)
+            for index, item in enumerate(
+                _sequence_of_mappings_in_context(payload, "candidates", context)
+            )
+        ),
+        governance_observations=tuple(
+            _proposal_evidence(item, f"governance_observations[{index}]")
+            for index, item in enumerate(
+                _sequence_of_mappings_in_context(
+                    payload, "governance_observations", context
+                )
+            )
+        ),
+        rejected_groups=tuple(
+            _proposal_rejected(item, index)
+            for index, item in enumerate(
+                _sequence_of_mappings_in_context(payload, "rejected_groups", context)
+            )
+        ),
+        events_considered=_required_int(payload, "events_considered", context, minimum=0),
+        notes=_string_tuple(payload, "notes", context),
+        proposal_set_id=_required_string(payload, "proposal_set_id", context),
+    )
+
+
+def _proposal_candidate(
+    item: Mapping[str, object], index: int
+) -> CandidateProposal:
+    context = f"candidates[{index}]"
+    _reject_unknown_keys(item, _PROPOSAL_CANDIDATE_KEYS, context)
+    return CandidateProposal(
+        candidate_key=_required_string(item, "candidate_key", context),
+        target_owner=_required_string(item, "target_owner", context),
+        suggested_route=_required_string(item, "suggested_route", context),
+        event_type=_required_string(item, "event_type", context),
+        independent_episode_count=_required_int(
+            item, "independent_episode_count", context, minimum=1
+        ),
+        independent_episode_keys=_string_tuple(
+            item, "independent_episode_keys", context
+        ),
+        evidence_event_ids=_string_tuple(item, "evidence_event_ids", context),
+        evidence_events_total=_required_int(
+            item, "evidence_events_total", context, minimum=0
+        ),
+        evidence=tuple(
+            _proposal_evidence(evidence, f"{context}.evidence[{evidence_index}]")
+            for evidence_index, evidence in enumerate(
+                _sequence_of_mappings_in_context(item, "evidence", context)
+            )
+        ),
+        problem_untrusted=_optional_string(item, "problem_untrusted", context),
+        proposed_change=_required_string(item, "proposed_change", context),
+        required_validation=_string_tuple(item, "required_validation", context),
+        risk=_required_string(item, "risk", context),
+        why_not_no_change=_required_string(item, "why_not_no_change", context),
+    )
+
+
+def _proposal_evidence(
+    item: Mapping[str, object], context: str
+) -> EvidenceSummary:
+    _reject_unknown_keys(item, _PROPOSAL_EVIDENCE_KEYS, context)
+    return EvidenceSummary(
+        event_id=_required_string(item, "event_id", context),
+        event_group=_required_string(item, "event_group", context),
+        event_type=_required_string(item, "event_type", context),
+        signal_strength=_required_string(item, "signal_strength", context),
+        suggested_route=_required_string(item, "suggested_route", context),
+        repository_untrusted=_optional_string(item, "repository_untrusted", context),
+        pr_number=_optional_int(item, "pr_number", context),
+        observation_id=_optional_int(item, "observation_id", context),
+        fingerprint=_optional_string(item, "fingerprint", context),
+        local_reference=_optional_string(item, "local_reference", context),
+        reviewer_title_untrusted=_optional_string(
+            item, "reviewer_title_untrusted", context
+        ),
+        human_reason_untrusted=_optional_string(
+            item, "human_reason_untrusted", context
+        ),
+        next_step_untrusted=_optional_string(item, "next_step_untrusted", context),
+        related_event_ids=_string_tuple(item, "related_event_ids", context),
+    )
+
+
+def _proposal_rejected(item: Mapping[str, object], index: int) -> RejectedGroup:
+    context = f"rejected_groups[{index}]"
+    _reject_unknown_keys(item, _PROPOSAL_REJECTED_KEYS, context)
+    return RejectedGroup(
+        candidate_key=_required_string(item, "candidate_key", context),
+        suggested_route=_required_string(item, "suggested_route", context),
+        event_type=_required_string(item, "event_type", context),
+        reason=_required_string(item, "reason", context),
+        independent_episode_count=_required_int(
+            item, "independent_episode_count", context, minimum=0
+        ),
+        event_ids=_string_tuple(item, "event_ids", context),
+        events_total=_required_int(item, "events_total", context, minimum=0),
+    )
+
+
+def _validate_loaded_bundle(bundle: ProposalBundle) -> None:
+    expected_decision = "propose" if bundle.candidates else "no_change"
+    if bundle.decision != expected_decision:
+        raise ValueError(
+            "proposal bundle decision does not match candidate presence"
+        )
+    # The proposal id protects candidate/evidence identity and governance membership;
+    # field-level consistency checks below guard the non-hashed presentation details.
+    expected_id = _proposal_set_id(
+        source_event_set_id=bundle.source_event_set_id,
+        candidates=bundle.candidates,
+        governance_observations=bundle.governance_observations,
+    )
+    if bundle.proposal_set_id != expected_id:
+        raise ValueError("proposal bundle proposal_set_id does not match its content")
+    if bundle.events_considered < 0:
+        raise ValueError("proposal bundle events_considered must be zero or greater")
+    for index, candidate in enumerate(bundle.candidates):
+        context = f"candidates[{index}]"
+        if candidate.independent_episode_count != len(
+            candidate.independent_episode_keys
+        ):
+            raise ValueError(
+                f"{context}.independent_episode_count does not match keys"
+            )
+        if candidate.evidence_events_total < len(candidate.evidence_event_ids):
+            raise ValueError(
+                f"{context}.evidence_events_total is smaller than evidence ids"
+            )
+        evidence_ids = tuple(item.event_id for item in candidate.evidence)
+        if candidate.evidence_event_ids != evidence_ids:
+            raise ValueError(f"{context}.evidence_event_ids do not match evidence")
+        if not candidate.required_validation:
+            raise ValueError(f"{context}.required_validation must not be empty")
+    for index, group in enumerate(bundle.rejected_groups):
+        if group.events_total < len(group.event_ids):
+            raise ValueError(
+                f"rejected_groups[{index}].events_total is smaller than event ids"
+            )
+
+
 def _required_top_level_string(row: Mapping[str, object], key: str) -> str:
     return _required_string(row, key, "coach export")
+
+
+def _proposal_decision(value: str) -> ProposalDecision:
+    if value == "propose":
+        return "propose"
+    if value == "no_change":
+        return "no_change"
+    raise ValueError(f"proposal bundle decision has unsupported value {value!r}")
 
 
 def _events(payload: Mapping[str, object]) -> tuple[CoachEvent, ...]:
@@ -793,6 +1079,17 @@ def _required_string(row: Mapping[str, object], key: str, context: str) -> str:
     return value
 
 
+def _required_int(
+    row: Mapping[str, object], key: str, context: str, *, minimum: int
+) -> int:
+    value = _optional_int(row, key, context)
+    if value is None:
+        raise ValueError(f"{context}.{key} is required")
+    if value < minimum:
+        raise ValueError(f"{context}.{key} must be at least {minimum}")
+    return value
+
+
 def _optional_int(row: Mapping[str, object], key: str, context: str) -> int | None:
     if key not in row or row[key] is None:
         return None
@@ -800,6 +1097,39 @@ def _optional_int(row: Mapping[str, object], key: str, context: str) -> int | No
     if type(value) is not int:
         raise ValueError(f"{context}.{key} must be an integer")
     return value
+
+
+def _string_tuple(
+    row: Mapping[str, object], key: str, context: str
+) -> tuple[str, ...]:
+    value = row.get(key, [])
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{context}.{key} must be a list")
+    items = cast(Sequence[object], value)
+    output: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise ValueError(f"{context}.{key}[{index}] must be a string")
+        normalized = " ".join(item.strip().split())
+        if not normalized:
+            raise ValueError(f"{context}.{key}[{index}] must be non-empty")
+        output.append(normalized)
+    return tuple(output)
+
+
+def _sequence_of_mappings_in_context(
+    row: Mapping[str, object], key: str, context: str
+) -> tuple[Mapping[str, object], ...]:
+    value = row.get(key, [])
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{context}.{key} must be a list")
+    items = cast(Sequence[object], value)
+    output: list[Mapping[str, object]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{context}.{key}[{index}] must be an object")
+        output.append(cast(Mapping[str, object], item))
+    return tuple(output)
 
 
 def _required_bool(row: Mapping[str, object], key: str, event_index: int) -> bool:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sqlite3
 import sys
@@ -15,6 +16,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Protocol, cast
 
 from eneo_review_coach_proposals import ProposalBundle
+from eneo_review_coach_proposals import ProposalVerification
 from eneo_review_coach_run import build_coach_run_artifacts
 from eneo_review_learning import LearningReport
 from eneo_review_private_io import write_private_file
@@ -122,6 +124,8 @@ class CoachModule(Protocol):
 
 class CoachProposalsModule(Protocol):
     def load_coach_export(self, path: Path) -> Mapping[str, object]: ...
+    def load_proposal_bundle(self, path: Path) -> ProposalBundle: ...
+    def verify_proposal_bundle(self, bundle: ProposalBundle) -> ProposalVerification: ...
     def build_proposal(
         self,
         coach_export: Mapping[str, object],
@@ -386,6 +390,16 @@ def main() -> int:
     coach_propose_parser.add_argument("--max-candidates", type=int, default=3)
     coach_propose_parser.add_argument("--min-independent-episodes", type=int, default=2)
 
+    coach_verify_parser = sub.add_parser(
+        "coach-verify-proposal",
+        help="Strictly read and verify a private coach proposal artifact.",
+    )
+    coach_verify_parser.add_argument(
+        "--proposal",
+        required=True,
+        help="Path created by `eneo-review-memory coach-propose` or `coach-run`.",
+    )
+
     coach_run_parser = sub.add_parser(
         "coach-run",
         help="Run the private coach pipeline in dry-run mode and record the result.",
@@ -464,6 +478,13 @@ def main() -> int:
         )
         write_private_file(output_dir / "SUMMARY.md", proposals.render_markdown(bundle))
         print(output_dir)
+        return 0
+
+    if args.command == "coach-verify-proposal":
+        proposals = load_coach_proposals_module()
+        bundle = proposals.load_proposal_bundle(Path(args.proposal))
+        verification = proposals.verify_proposal_bundle(bundle)
+        print(json.dumps(verification.to_json_obj(), sort_keys=True, indent=2))
         return 0
 
     if args.command == "coach-run":
