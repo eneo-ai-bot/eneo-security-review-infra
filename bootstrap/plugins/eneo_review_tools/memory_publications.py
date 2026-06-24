@@ -129,11 +129,15 @@ def _finding_payload(
     *,
     local_reference: str,
     context_hash: str,
+    observation_id: int | None = None,
     review_status: Literal["observed", "carried_forward"],
 ) -> PublishedFinding:
+    if observation_id is None and item.get("id") is not None:
+        observation_id = int(item["id"])
     return {
         "local_reference": local_reference,
         "fingerprint": str(item["fingerprint"]),
+        "observation_id": observation_id,
         "context_hash": context_hash,
         "review_status": review_status,
         "rule_id": str(item["rule_id"]),
@@ -160,6 +164,11 @@ def _closed_payload(
     return {
         "local_reference": str(item["local_reference"]),
         "fingerprint": str(item["fingerprint"]),
+        "observation_id": (
+            int(item["observation_id"])
+            if item.get("observation_id") is not None
+            else None
+        ),
         "context_hash": str(item["context_hash"]),
         "verdict": verdict,
         "title": title,
@@ -398,6 +407,7 @@ def finalize_review(
                     item,
                     local_reference=local_reference,
                     context_hash=context_hash,
+                    observation_id=int(item["id"]) if item.get("id") is not None else None,
                     review_status="observed",
                 )
             )
@@ -453,6 +463,11 @@ def finalize_review(
                     carried,
                     local_reference=local_reference,
                     context_hash=context_hash,
+                    observation_id=(
+                        int(item["observation_id"])
+                        if item.get("observation_id") is not None
+                        else None
+                    ),
                     review_status="carried_forward",
                 )
             )
@@ -509,13 +524,15 @@ def finalize_review(
             connection.execute(
                 """
                 INSERT INTO publication_findings (
-                    publication_id, local_reference, fingerprint, context_hash, status
-                ) VALUES (?, ?, ?, ?, 'current')
+                    publication_id, local_reference, fingerprint, observation_id,
+                    context_hash, status
+                ) VALUES (?, ?, ?, ?, ?, 'current')
                 """,
                 (
                     publication_id,
                     item["local_reference"],
                     item["fingerprint"],
+                    item["observation_id"],
                     item["context_hash"],
                 ),
             )
@@ -523,13 +540,15 @@ def finalize_review(
             connection.execute(
                 """
                 INSERT INTO publication_findings (
-                    publication_id, local_reference, fingerprint, context_hash, status
-                ) VALUES (?, ?, ?, ?, 'resolved')
+                    publication_id, local_reference, fingerprint, observation_id,
+                    context_hash, status
+                ) VALUES (?, ?, ?, ?, ?, 'resolved')
                 """,
                 (
                     publication_id,
                     item["local_reference"],
                     item["fingerprint"],
+                    item["observation_id"],
                     item["context_hash"],
                 ),
             )

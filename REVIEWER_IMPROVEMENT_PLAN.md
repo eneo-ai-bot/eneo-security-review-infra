@@ -519,16 +519,15 @@ the same current review comment.
 
 Current issue:
 
-- Existing code models `review_comment_links`: one inline review comment maps to
-  one finding.
+- The inline `review_comment_links` model was removed instead of extended.
 - The product posts one ordinary PR conversation comment.
-- There is no current route/tool wiring that completes the inline feedback loop.
+- The deterministic feedback writer exists, but there is no current GitHub bridge
+  wiring that calls it from PR comments.
 
 Recommendation:
 
-- Do not extend the inline model.
-- Either delete/quarantine it when the replacement lands, or finish exactly one
-  summary-comment feedback path.
+- Do not restore the inline model.
+- Build exactly one summary-comment feedback path.
 - Avoid running two feedback models in parallel.
 
 Future publication shape:
@@ -667,8 +666,8 @@ First implemented learning slice:
 - generate `eneo-review-memory learning-report` from an exported SQLite snapshot;
 - keep report logic outside the production plugin and do not let the public
   webhook reviewer read `review-learning/`;
-- treat `review_quality_feedback` as optional until a public feedback writer
-  exists;
+- treat `review_quality_feedback` as optional until an allowlisted feedback
+  command is ingested;
 - keep generated reports advisory until a replay, ADR, skill, AGENTS, or plugin
   change is reviewed through normal version control.
 

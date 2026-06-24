@@ -480,22 +480,19 @@ untrusted PR text or autonomous prompt mutation. Keep finding-level feedback and
 review-quality feedback separate:
 
 ```text
-@review challenge F2 <reason>
 @review false-positive F2 <reason>
-@review intentional F2 ADR-0042
-@review accepted-risk F2 until 2026-12-31 <reason>
-@review reopen F2 <reason>
+@review intentional F2 ADR-0042 <reason>
 
-@review feedback useful
-@review feedback too-verbose
-@review feedback unclear F2 <reason>
 @review feedback missed <issue link or description>
 ```
 
-`challenge` asks the reviewer to re-check evidence and does not suppress
-anything. `false-positive`, `intentional`, `accepted-risk`, and `reopen` are
-durable decisions and should require an allowlisted maintainer. Accepted risks
-require an expiry. Intentional-design decisions require an accepted ADR.
+`false-positive` and `intentional` are durable suppressive decisions and require
+an allowlisted maintainer. Intentional-design decisions require an accepted ADR.
+The core writer is implemented, but PR comments will not record these commands
+until a deterministic GitHub bridge calls it.
+Accepted-risk, reopen, and challenge commands remain governance CLI actions
+until there is a deterministic PR bridge that can preserve their stricter
+workflow requirements without routing through the review model.
 
 ADRs are context, not immunity. The reviewer should load accepted ADRs from the
 base commit and use them to avoid architectural false positives while still
@@ -533,10 +530,9 @@ The public webhook reviewer does not read `review-learning/`. The runtime
 boundary is the tool surface: local file access, skills, memory, web, terminal,
 code execution, session search, and delegation are disabled for the route. A
 candidate report is advisory and may contain sensitive human-entered reasons, so
-scrub it before committing or sharing. In the current bundle,
-`review_quality_feedback` is exported but has no public writer yet; empty
-review-quality sections are expected. Scrub reports before moving useful
-candidates into `review-learning/reports/` as versioned artifacts.
+scrub it before committing or sharing. Empty review-quality sections mean no
+allowlisted feedback command has been ingested yet. Scrub reports before moving
+useful candidates into `review-learning/reports/` as versioned artifacts.
 Coach exports are the private LLM input format. They include only allowlisted
 fields, stable event ids, exact observation provenance, bounded `*_untrusted`
 text, a snapshot hash, and an event-set hash for deduping equivalent evidence;

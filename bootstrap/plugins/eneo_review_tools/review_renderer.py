@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
 class PublishedFinding(TypedDict):
     local_reference: str
     fingerprint: str
+    observation_id: int | None
     context_hash: str
     review_status: Literal["observed", "carried_forward"]
     rule_id: str
@@ -41,6 +42,7 @@ class PublishedFinding(TypedDict):
 class ClosedFinding(TypedDict):
     local_reference: str
     fingerprint: str
+    observation_id: int | None
     context_hash: str
     verdict: Literal["resolved", "invalidated", "suppressed"]
     title: str

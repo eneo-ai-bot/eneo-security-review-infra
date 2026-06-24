@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 OBSERVATION_BACKFILL_VERSION = 3
 
 
@@ -96,6 +96,32 @@ def _decisions_has_legacy_check(connection: sqlite3.Connection) -> bool:
 def _review_runs_has_legacy_status_check(connection: sqlite3.Connection) -> bool:
     sql = _table_sql(connection, "review_runs")
     return bool(sql) and "generated" not in sql
+
+
+def _ensure_current_publication_unique_index(connection: sqlite3.Connection) -> None:
+    duplicate = connection.execute(
+        """
+        SELECT repository, pr_number, COUNT(*) AS count
+        FROM review_publications
+        WHERE superseded_at IS NULL
+        GROUP BY repository, pr_number
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if duplicate:
+        raise ReviewMemoryError(
+            "multiple current review publications exist for "
+            f"{duplicate['repository']}#{duplicate['pr_number']}; "
+            "resolve the duplicate rows before migrating"
+        )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_current_review_publication
+            ON review_publications(repository, pr_number)
+            WHERE superseded_at IS NULL
+        """
+    )
 
 
 def _migrate_findings_severity_check(connection: sqlite3.Connection) -> None:
@@ -590,6 +616,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             publication_id INTEGER NOT NULL,
             local_reference TEXT NOT NULL,
             fingerprint TEXT NOT NULL,
+            observation_id INTEGER,
             context_hash TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'current' CHECK (
                 status IN ('current', 'resolved')
@@ -597,13 +624,16 @@ def init_schema(connection: sqlite3.Connection) -> None:
             UNIQUE(publication_id, local_reference),
             UNIQUE(publication_id, fingerprint),
             FOREIGN KEY (publication_id) REFERENCES review_publications(id),
-            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint),
+            FOREIGN KEY (observation_id) REFERENCES finding_observations(id)
         );
 
         CREATE TABLE IF NOT EXISTS review_quality_feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
+            publication_id INTEGER,
+            head_sha TEXT NOT NULL DEFAULT '',
             local_reference TEXT NOT NULL DEFAULT '',
             category TEXT NOT NULL,
             reason TEXT NOT NULL DEFAULT '',
@@ -612,21 +642,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             author_association TEXT NOT NULL DEFAULT '',
             source_comment_id INTEGER,
             source_comment_url TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-
-        -- Authority mapping: which finding a posted inline review comment belongs to.
-        -- Stored at publish time; the sole source for routing a threaded reply back to a
-        -- finding. The comment footer text is never trusted for this.
-        CREATE TABLE IF NOT EXISTS review_comment_links (
-            review_comment_id INTEGER PRIMARY KEY,
-            repository TEXT NOT NULL,
-            pr_number INTEGER NOT NULL,
-            fingerprint TEXT NOT NULL,
-            context_hash TEXT NOT NULL DEFAULT '',
-            head_sha TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            FOREIGN KEY (publication_id) REFERENCES review_publications(id)
         );
 
         -- Idempotency / replay protection: every processed feedback event id is recorded
@@ -646,6 +663,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             actor_login TEXT NOT NULL DEFAULT '',
             author_association TEXT NOT NULL DEFAULT '',
             allowlist_version TEXT NOT NULL DEFAULT '',
+            -- Reserved for a future inline bridge; summary-comment feedback writes NULL.
             review_comment_id INTEGER,
             source_comment_id INTEGER,
             source_comment_url TEXT NOT NULL DEFAULT '',
@@ -682,6 +700,25 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "outcome",
         "TEXT NOT NULL DEFAULT 'pending'",
     )
+    _ensure_column(
+        connection,
+        "publication_findings",
+        "observation_id",
+        "INTEGER REFERENCES finding_observations(id)",
+    )
+    _ensure_column(
+        connection,
+        "review_quality_feedback",
+        "publication_id",
+        "INTEGER REFERENCES review_publications(id)",
+    )
+    _ensure_column(
+        connection,
+        "review_quality_feedback",
+        "head_sha",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    connection.execute("DROP TABLE IF EXISTS review_comment_links")
     connection.commit()
     existing_version = _user_version(connection)
     _migrate_findings_severity_check(connection)
@@ -693,6 +730,13 @@ def init_schema(connection: sqlite3.Connection) -> None:
             ON decisions(observation_id)
         """
     )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_publication_findings_observation
+            ON publication_findings(observation_id)
+        """
+    )
+    _ensure_current_publication_unique_index(connection)
     if existing_version < OBSERVATION_BACKFILL_VERSION:
         _backfill_observations(connection)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

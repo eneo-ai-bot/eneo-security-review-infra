@@ -265,10 +265,11 @@ policy, or open PRs; it creates the bounded evidence packet a human or later
 coach can use to decide whether a replay, skill, ADR, or plugin change is
 actually warranted.
 
-Review-quality feedback without exact publication or finding provenance is
-listed as not promoted rather than treated as policy evidence. These artifacts
-may still contain bounded maintainer-entered reasons or repository text, so keep
-them private unless they have been scrubbed before committing or sharing.
+Review-quality feedback is useful only when it is tied to the exact generated
+review publication and head SHA. Unprovenanced feedback is listed as not
+promoted rather than treated as policy evidence. These artifacts may still
+contain bounded maintainer-entered reasons or repository text, so keep them
+private unless they have been scrubbed before committing or sharing.
 
 ## 7. How the two-pass review works
 
@@ -378,16 +379,19 @@ eneo-review-memory decide <fingerprint> reopen \
   --reason "The trusted guard changed."
 ```
 
-Future PR-comment feedback should separate finding decisions from review-quality
-feedback. Finding commands can use local references, for example
-`@review false-positive F2 <reason>`, `@review intentional F2 ADR-0042`, and
-`@review reopen F2 <reason>`. Review-quality commands such as
-`@review feedback unclear F2 <reason>` or `@review feedback missed <issue>`
-should feed metrics and replay cases, not automatic suppressions.
+Deterministic PR-comment feedback separates finding decisions from review-quality
+feedback. Finding commands use local references from the current generated
+review, for example `@review false-positive F2 <reason>` and
+`@review intentional F2 ADR-0042 <reason>`. Review-quality commands such as
+`@review feedback missed <issue>` feed metrics and replay cases, not automatic
+suppressions. The feedback path requires an allowlisted numeric GitHub actor id
+from `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`; normal `@review` trigger comments do not
+record feedback. The core writer is implemented, but PR comments will not record
+these commands until a deterministic GitHub bridge calls it.
 
-Only a human CLI command can create a suppression. The model may record a
-finding, but it cannot mark itself correct, dismiss itself, or alter prior human
-decisions.
+Only allowlisted human feedback or a human CLI command can create a suppression.
+The model may record a finding, but it cannot mark itself correct, dismiss
+itself, or alter prior human decisions.
 
 Suppressions are conservative. The decision is tied to the trusted GitHub blob
 hash that a human reviewed and expires by default after 180 days. If that file
@@ -436,10 +440,10 @@ This is operator tooling, not live reviewer memory. The public webhook reviewer
 does not read `review-learning/`, and the route disables local file access,
 general skill writes, memory writes, web, shell, code execution, session search,
 and delegation. The report surfaces explicit human decisions and any populated
-review-quality feedback rows for a private coach workflow. In the current bundle
-the `review_quality_feedback` table is exported but has no public writer yet, so
-that section may be empty. Do not infer learning from silence, thumbs-up, merges,
-or a later code change without a linked decision or test.
+review-quality feedback rows for a private coach workflow. Empty review-quality
+sections mean no allowlisted feedback command has been ingested yet. Do not infer
+learning from silence, thumbs-up, merges, or a later code change without a linked
+decision or test.
 New decisions are tied to the exact finding observation that the human judged.
 The learning report derives PR, head SHA, path, and local `F` reference from that
 observation instead of the mutable latest finding row. Legacy decisions without

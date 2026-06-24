@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 try:
+    from .feedback_authorization import *  # noqa: F403
+    from .feedback_commands import *  # noqa: F403
     from .memory_validation import *  # noqa: F403
     from .memory_schema import *  # noqa: F403
     from .memory_identity import *  # noqa: F403
@@ -14,6 +16,8 @@ try:
     from .memory_runs import *  # noqa: F403
     from .memory_coach import *  # noqa: F403
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from feedback_authorization import *  # noqa: F403
+    from feedback_commands import *  # noqa: F403
     from memory_validation import *  # noqa: F403
     from memory_schema import *  # noqa: F403
     from memory_identity import *  # noqa: F403

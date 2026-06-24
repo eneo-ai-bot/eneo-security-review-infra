@@ -151,8 +151,10 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("learning-report", readme)
         self.assertIn("does not read `review-learning/`", guide)
         self.assertIn("does not read `review-learning/`", readme)
-        self.assertIn("no public writer yet", guide)
-        self.assertIn("no public writer yet", readme)
+        self.assertIn("allowlisted feedback command", guide)
+        self.assertIn("allowlisted feedback command", readme)
+        self.assertIn("deterministic GitHub bridge", readme)
+        self.assertIn("deterministic GitHub bridge", guide)
 
     def test_learning_pipeline_boundary_is_tool_surface_first(self):
         config = read("bootstrap/config.yaml")

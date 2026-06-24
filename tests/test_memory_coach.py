@@ -55,7 +55,7 @@ class MemoryCoachTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def test_fresh_schema_creates_coach_tables_without_schema_bump(self) -> None:
+    def test_fresh_schema_creates_current_coach_and_feedback_tables(self) -> None:
         tables = {
             row["name"]
             for row in self.connection.execute(
@@ -63,9 +63,11 @@ class MemoryCoachTests(unittest.TestCase):
             )
         }
 
-        self.assertEqual(memory_db.SCHEMA_VERSION, 5)
+        self.assertEqual(memory_db.SCHEMA_VERSION, 6)
         self.assertIn("coach_runs", tables)
         self.assertIn("coach_candidates", tables)
+        self.assertIn("review_quality_feedback", tables)
+        self.assertIn("publication_findings", tables)
 
     def test_no_change_run_records_without_candidates(self) -> None:
         item = run_input(decision="no_change", candidates=())

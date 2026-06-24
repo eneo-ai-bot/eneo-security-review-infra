@@ -268,8 +268,8 @@ def build_learning_report(
 
     if not quality_signals and not unclassified_feedback:
         notes.append(
-            "No review-quality feedback signals were present. In the current "
-            "bundle this is expected until a public feedback writer is added."
+            "No review-quality feedback signals were present. This means no "
+            "allowlisted feedback command has been ingested into the export."
         )
     elif not quality_signals:
         notes.append(
@@ -317,8 +317,8 @@ def render_markdown(report: LearningReport) -> str:
         lines.extend(_render_signals("Q", report.quality_signals))
     else:
         lines.append(
-            "No review-quality signals were found in the export. This is normal "
-            "until feedback ingestion writes this table."
+            "No review-quality signals were found in the export. This means no "
+            "allowlisted feedback command has been ingested into the export."
         )
         lines.append("")
 

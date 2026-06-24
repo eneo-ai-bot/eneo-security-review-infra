@@ -212,43 +212,6 @@ def _latest_observation_for_local_reference(
     return dict(row)
 
 
-def observation_id_for_context(
-    connection: sqlite3.Connection,
-    *,
-    repository: str,
-    pr_number: int,
-    fingerprint: str,
-    head_sha: str = "",
-    context_hash: str = "",
-) -> int | None:
-    repository = normalize_repository(repository)
-    params: list[Any] = [repository, int(pr_number), fingerprint]
-    clauses = [
-        "repository = ?",
-        "pr_number = ?",
-        "fingerprint = ?",
-    ]
-    if head_sha:
-        clauses.append("head_sha = ?")
-        params.append(head_sha)
-    if context_hash:
-        clauses.append("context_hash = ?")
-        params.append(context_hash)
-    # Empty head/hash is allowed for non-suppressive legacy feedback; the lookup
-    # then degrades only within the same repository, PR, and fingerprint.
-    row = connection.execute(
-        f"""
-        SELECT id
-        FROM finding_observations
-        WHERE {" AND ".join(clauses)}
-        ORDER BY observed_at DESC, id DESC
-        LIMIT 1
-        """,
-        params,
-    ).fetchone()
-    return int(row["id"]) if row else None
-
-
 def insert_decision(
     connection: sqlite3.Connection,
     *,

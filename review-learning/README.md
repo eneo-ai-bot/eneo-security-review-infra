@@ -82,10 +82,9 @@ Replay fixtures are strict JSON files. This keeps validation on the standard
 library path and fails loudly instead of silently accepting a partial YAML parse.
 
 The report reads explicit human decisions and any populated
-`review_quality_feedback` rows. In the current bundle, review-quality feedback
-has a table and export path but no public writer yet, so that section is often
-empty. That is correct; do not infer learning from silence, merges, thumbs-up,
-or a later code change.
+`review_quality_feedback` rows. Empty review-quality sections mean no allowlisted
+feedback command has been ingested yet. That is correct; do not infer learning
+from silence, merges, thumbs-up, or a later code change.
 
 New decisions are anchored to the exact `finding_observations.id` that the human
 judged. The report derives repository, PR number, head SHA, path, title, and

@@ -13,6 +13,8 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 
 
 OWNER_MODULES = [
+    "feedback_authorization",
+    "feedback_commands",
     "memory_validation",
     "memory_schema",
     "memory_identity",

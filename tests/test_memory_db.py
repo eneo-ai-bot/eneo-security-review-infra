@@ -1183,9 +1183,10 @@ class ReviewMemoryTests(unittest.TestCase):
             ).fetchone()[0],
             1,
         )
-        self.assertEqual(
-            self.connection.execute("SELECT COUNT(*) FROM review_comment_links").fetchone()[0],
-            1,
+        self.assertIsNone(
+            self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'review_comment_links'"
+            ).fetchone()
         )
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM decision_audit").fetchone()[0],

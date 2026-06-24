@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Final, cast
 
 
-SUPPORTED_SCHEMA_VERSIONS: Final = {4, 5}
+SUPPORTED_SCHEMA_VERSIONS: Final = {4, 5, 6}
 
 
 @dataclass(frozen=True)
