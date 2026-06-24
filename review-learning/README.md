@@ -34,6 +34,13 @@ has a table and export path but no public writer yet, so that section is often
 empty. That is correct; do not infer learning from silence, merges, thumbs-up,
 or a later code change.
 
+New decisions are anchored to the exact `finding_observations.id` that the human
+judged. The report derives repository, PR number, head SHA, path, title, and
+local `F` reference from that immutable observation, not from the mutable latest
+`findings` identity row. Older decisions without observation provenance remain
+visible as historical context, but they are marked incomplete and are not
+eligible for promotion into policy.
+
 Generated reports may contain maintainer-entered reasons, private URLs, or
 customer-specific details. Review and scrub them before committing or sharing.
 Move only scrubbed reports that are useful to review as versioned artifacts into

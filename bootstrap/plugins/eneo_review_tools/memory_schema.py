@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 OBSERVATION_BACKFILL_VERSION = 3
 
 
@@ -195,18 +195,22 @@ def _migrate_decisions_check(connection: sqlite3.Connection) -> None:
                 actor TEXT NOT NULL,
                 context_hash TEXT NOT NULL DEFAULT '',
                 adr_id TEXT NOT NULL DEFAULT '',
+                observation_id INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
-                FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+                FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint),
+                FOREIGN KEY (observation_id) REFERENCES finding_observations(id)
             )
             """
         )
         connection.execute(
             """
             INSERT INTO decisions_migration (
-                id, fingerprint, decision, reason, actor, context_hash, created_at, expires_at
+                id, fingerprint, decision, reason, actor, context_hash,
+                observation_id, created_at, expires_at
             )
-            SELECT id, fingerprint, decision, reason, actor, context_hash, created_at, expires_at
+            SELECT id, fingerprint, decision, reason, actor, context_hash,
+                   NULL, created_at, expires_at
             FROM decisions
             """
         )
@@ -440,9 +444,11 @@ def init_schema(connection: sqlite3.Connection) -> None:
             actor TEXT NOT NULL,
             context_hash TEXT NOT NULL DEFAULT '',
             adr_id TEXT NOT NULL DEFAULT '',
+            observation_id INTEGER,
             created_at TEXT NOT NULL,
             expires_at TEXT,
-            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint),
+            FOREIGN KEY (observation_id) REFERENCES finding_observations(id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_decisions_fingerprint
@@ -624,6 +630,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "decisions", "context_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "decisions", "adr_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(
+        connection,
+        "decisions",
+        "observation_id",
+        "INTEGER REFERENCES finding_observations(id)",
+    )
+    _ensure_column(
         connection, "finding_observations", "rule_id", "TEXT NOT NULL DEFAULT ''"
     )
     _ensure_column(
@@ -637,6 +649,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _migrate_findings_severity_check(connection)
     _migrate_decisions_check(connection)
     _migrate_review_runs_status(connection)
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_decisions_observation
+            ON decisions(observation_id)
+        """
+    )
     if existing_version < OBSERVATION_BACKFILL_VERSION:
         _backfill_observations(connection)
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

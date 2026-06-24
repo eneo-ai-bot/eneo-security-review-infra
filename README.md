@@ -365,6 +365,11 @@ review-quality feedback rows for a private coach workflow. In the current bundle
 the `review_quality_feedback` table is exported but has no public writer yet, so
 that section may be empty. Do not infer learning from silence, thumbs-up, merges,
 or a later code change without a linked decision or test.
+New decisions are tied to the exact finding observation that the human judged.
+The learning report derives PR, head SHA, path, and local `F` reference from that
+observation instead of the mutable latest finding row. Legacy decisions without
+observation provenance remain visible but are marked incomplete and
+non-promotable.
 Scrub reports before moving useful candidates into `review-learning/reports/` as
 versioned artifacts.
 

@@ -89,6 +89,11 @@ class ReviewMemoryTests(unittest.TestCase):
             "github:alice",
             expires_days=180,
         )
+        decision = self.connection.execute(
+            "SELECT observation_id FROM decisions WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        self.assertEqual(decision["observation_id"], result["observation_id"])
         self.assertIsNotNone(memory_db.active_suppression(self.connection, fingerprint))
 
         memory_db.add_decision(
@@ -99,6 +104,28 @@ class ReviewMemoryTests(unittest.TestCase):
             "github:bob",
         )
         self.assertIsNone(memory_db.active_suppression(self.connection, fingerprint))
+
+    def test_decision_observation_must_belong_to_same_finding(self):
+        first = self.record()
+        second = self.record(
+            path="backend/api/users.py",
+            symbol="create_user",
+            anchor="POST /v1/users:create",
+        )
+
+        with self.assertRaisesRegex(
+            memory_db.ReviewMemoryError,
+            "observation_id belongs to a different finding",
+        ):
+            memory_db.insert_decision(
+                self.connection,
+                fingerprint=first["fingerprint"],
+                decision="resolved",
+                reason="Fixed with a regression test.",
+                actor="github:alice",
+                context_hash="",
+                observation_id=second["observation_id"],
+            )
 
     def test_file_change_invalidates_suppression(self):
         first = self.record(context_hash="d" * 40)
@@ -1010,6 +1037,22 @@ class ReviewMemoryTests(unittest.TestCase):
                 expires_at TEXT,
                 FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
             );
+            CREATE TABLE decision_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id INTEGER NOT NULL,
+                actor_user_id TEXT NOT NULL,
+                actor_login TEXT NOT NULL DEFAULT '',
+                author_association TEXT NOT NULL DEFAULT '',
+                allowlist_version TEXT NOT NULL DEFAULT '',
+                review_comment_id INTEGER,
+                source_comment_id INTEGER,
+                source_comment_url TEXT NOT NULL DEFAULT '',
+                classifier_version TEXT NOT NULL DEFAULT '',
+                classifier_output TEXT NOT NULL DEFAULT '',
+                hmac_key_version TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (decision_id) REFERENCES decisions(id)
+            );
             CREATE TABLE review_comment_links (
                 review_comment_id INTEGER PRIMARY KEY,
                 repository TEXT NOT NULL,
@@ -1040,13 +1083,25 @@ class ReviewMemoryTests(unittest.TestCase):
             """,
             (fingerprint, "d" * 40, "a" * 40, created, created),
         )
-        raw.execute(
+        decision = raw.execute(
             """
             INSERT INTO decisions (
                 fingerprint, decision, reason, actor, context_hash, created_at, expires_at
             ) VALUES (?, 'false_positive', 'reason', 'github:alice', ?, ?, NULL)
             """,
             (fingerprint, "d" * 40, created),
+        )
+        raw.execute(
+            """
+            INSERT INTO decision_audit (
+                decision_id, actor_user_id, actor_login, author_association,
+                allowlist_version, review_comment_id, source_comment_id,
+                source_comment_url, classifier_version, classifier_output,
+                hmac_key_version, created_at
+            ) VALUES (?, '12345', 'alice', 'MEMBER', 'v1', 111, 222,
+                'https://github.test/comment/222', 'classifier-v1', '{}', 'hmac-v1', ?)
+            """,
+            (decision.lastrowid, created),
         )
         raw.execute(
             """
@@ -1070,6 +1125,10 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         self.assertEqual(
             self.connection.execute("SELECT COUNT(*) FROM review_comment_links").fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM decision_audit").fetchone()[0],
             1,
         )
         self.assertEqual(self.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -1229,6 +1288,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(len(state["pr_finding_references"]), 1)
         self.assertEqual(len(state["decisions"]), 1)
         self.assertEqual(state["findings"][0]["fingerprint"], result["fingerprint"])
+        self.assertEqual(state["decisions"][0]["observation_id"], result["observation_id"])
 
 
 if __name__ == "__main__":

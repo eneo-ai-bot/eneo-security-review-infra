@@ -90,6 +90,15 @@ class FeedbackDecisionTests(unittest.TestCase):
         result = self.feedback(actor_login="ccimen", author_association="MEMBER")
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(result["fingerprint"], fp)
+        decision = self.connection.execute(
+            "SELECT observation_id FROM decisions WHERE fingerprint = ?",
+            (fp,),
+        ).fetchone()
+        observation = self.connection.execute(
+            "SELECT id FROM finding_observations WHERE fingerprint = ?",
+            (fp,),
+        ).fetchone()
+        self.assertEqual(decision["observation_id"], observation["id"])
         self.assertIsNotNone(memory_db.active_suppression(self.connection, fp))
         self.assertEqual(
             memory_db.feedback_event(self.connection, "evt-1")["outcome"], "recorded"

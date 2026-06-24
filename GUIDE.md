@@ -527,6 +527,11 @@ scrub it before committing or sharing. In the current bundle,
 `review_quality_feedback` is exported but has no public writer yet; empty
 review-quality sections are expected. Scrub reports before moving useful
 candidates into `review-learning/reports/` as versioned artifacts.
+New decisions are tied to the exact finding observation that the human judged,
+so a later PR that re-observes the same fingerprint cannot rewrite the learning
+report's PR, head SHA, path, or local `F` reference. Legacy decisions without
+observation provenance remain visible but are marked incomplete and
+non-promotable.
 
 Borrow the useful parts of Hermes `/learn` and UpSkill only for the private
 coach process: curated sources, proposed learnings, human approval, and replay

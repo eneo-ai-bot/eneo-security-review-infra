@@ -15,6 +15,7 @@ try:
         clean_multiline,
         clean_text,
         isoformat,
+        normalize_repository,
         parse_time,
         utc_now,
     )
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         clean_multiline,
         clean_text,
         isoformat,
+        normalize_repository,
         parse_time,
         utc_now,
     )
@@ -37,8 +39,8 @@ def latest_decision(
 ) -> dict[str, Any] | None:
     row = connection.execute(
         """
-        SELECT id, fingerprint, decision, reason, actor, context_hash, adr_id,
-               created_at, expires_at
+        SELECT id, fingerprint, decision, reason, actor, context_hash,
+               observation_id, adr_id, created_at, expires_at
         FROM decisions
         WHERE fingerprint = ?
         ORDER BY id DESC
@@ -63,7 +65,8 @@ def latest_decisions_for_fingerprints(
         rows = connection.execute(
             f"""
             SELECT d.id, d.fingerprint, d.decision, d.reason, d.actor,
-                   d.context_hash, d.adr_id, d.created_at, d.expires_at
+                   d.context_hash, d.observation_id, d.adr_id,
+                   d.created_at, d.expires_at
             FROM decisions d
             JOIN (
                 SELECT fingerprint, MAX(id) AS id
@@ -129,6 +132,59 @@ def active_suppression(
     )
 
 
+def latest_observation_id_for_fingerprint(
+    connection: sqlite3.Connection, fingerprint: str
+) -> int | None:
+    row = connection.execute(
+        """
+        SELECT id
+        FROM finding_observations
+        WHERE fingerprint = ?
+        ORDER BY observed_at DESC, id DESC
+        LIMIT 1
+        """,
+        (fingerprint,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def observation_id_for_context(
+    connection: sqlite3.Connection,
+    *,
+    repository: str,
+    pr_number: int,
+    fingerprint: str,
+    head_sha: str = "",
+    context_hash: str = "",
+) -> int | None:
+    repository = normalize_repository(repository)
+    params: list[Any] = [repository, int(pr_number), fingerprint]
+    clauses = [
+        "repository = ?",
+        "pr_number = ?",
+        "fingerprint = ?",
+    ]
+    if head_sha:
+        clauses.append("head_sha = ?")
+        params.append(head_sha)
+    if context_hash:
+        clauses.append("context_hash = ?")
+        params.append(context_hash)
+    # Empty head/hash is allowed for non-suppressive legacy feedback; the lookup
+    # then degrades only within the same repository, PR, and fingerprint.
+    row = connection.execute(
+        f"""
+        SELECT id
+        FROM finding_observations
+        WHERE {" AND ".join(clauses)}
+        ORDER BY observed_at DESC, id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def insert_decision(
     connection: sqlite3.Connection,
     *,
@@ -137,6 +193,7 @@ def insert_decision(
     reason: str,
     actor: str,
     context_hash: str,
+    observation_id: int | None = None,
     adr_id: str = "",
     expires_days: int | None = None,
     now: datetime | None = None,
@@ -159,12 +216,25 @@ def insert_decision(
     elif expires_days is not None:
         raise ReviewMemoryError("expires_days only applies to suppressive decisions")
 
+    if observation_id is not None:
+        observation = connection.execute(
+            "SELECT fingerprint FROM finding_observations WHERE id = ?",
+            (observation_id,),
+        ).fetchone()
+        if not observation:
+            raise ReviewMemoryError("decision observation_id does not exist")
+        if str(observation["fingerprint"]) != fingerprint:
+            raise ReviewMemoryError(
+                "decision observation_id belongs to a different finding"
+            )
+
     created_at = isoformat(moment)
     cursor = connection.execute(
         """
         INSERT INTO decisions (
-            fingerprint, decision, reason, actor, context_hash, adr_id, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            fingerprint, decision, reason, actor, context_hash, observation_id,
+            adr_id, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             fingerprint,
@@ -172,6 +242,7 @@ def insert_decision(
             reason,
             actor,
             context_hash,
+            observation_id,
             adr_id,
             created_at,
             expires_at,
@@ -184,6 +255,7 @@ def insert_decision(
         "reason": reason,
         "actor": actor,
         "context_hash": context_hash,
+        "observation_id": observation_id,
         "adr_id": adr_id,
         "created_at": created_at,
         "expires_at": expires_at,
@@ -217,6 +289,11 @@ def add_decision(
             "unknown fingerprint; record the finding before deciding it"
         )
     context_hash = str(row["context_hash"] or "")
+    observation_id = latest_observation_id_for_fingerprint(connection, fingerprint)
+    if observation_id is None:
+        raise ReviewMemoryError(
+            "finding has no recorded observation; re-run the review before deciding it"
+        )
 
     with connection:
         return insert_decision(
@@ -226,6 +303,7 @@ def add_decision(
             reason=reason,
             actor=actor,
             context_hash=context_hash,
+            observation_id=observation_id,
             adr_id=adr_id,
             expires_days=expires_days,
         )

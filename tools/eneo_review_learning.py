@@ -14,19 +14,19 @@ from pathlib import Path
 from typing import Final, cast
 
 
-SUPPORTED_SCHEMA_VERSIONS: Final = {4}
+SUPPORTED_SCHEMA_VERSIONS: Final = {4, 5}
 
 
 @dataclass(frozen=True)
-class FindingRef:
-    fingerprint: str
+class DecisionProvenance:
+    observation_id: int | None
     repository: str
     pr_number: int | None
-    rule_id: str
+    head_sha: str
+    fingerprint: str
     title: str
     path: str
-    severity: str
-    category: str
+    local_reference: str
 
 
 @dataclass(frozen=True)
@@ -34,15 +34,17 @@ class LearningSignal:
     source: str
     source_value: str
     signal_strength: str
-    classification: str
+    suggested_route: str
     title: str
     reason: str
     next_step: str
+    promotion_eligible: bool
+    missing_evidence: tuple[str, ...]
     repository: str
     pr_number: int | None
     fingerprint: str
     local_reference: str
-    finding: FindingRef | None
+    provenance: DecisionProvenance | None
 
 
 @dataclass(frozen=True)
@@ -58,14 +60,14 @@ class LearningReport:
 @dataclass(frozen=True)
 class SignalPolicy:
     signal_strength: str
-    classification: str
+    suggested_route: str
     next_step: str
 
 
 DECISION_POLICIES: Final[dict[str, SignalPolicy]] = {
     "false_positive": SignalPolicy(
         "strong",
-        "judgment_calibration",
+        "judgment_or_procedure",
         "Add or extend a false-positive replay case, then tighten the evidence "
         "rule only if the same reasoning failure recurs.",
     ),
@@ -156,9 +158,7 @@ def build_learning_report(
     state: Mapping[str, object], *, repository: str | None = None
 ) -> LearningReport:
     schema_version = _schema_version(state)
-    finding_by_fingerprint = {
-        finding.fingerprint: finding for finding in _finding_refs(state)
-    }
+    provenance_by_observation_id = _decision_provenances(state)
     decision_candidates: list[LearningSignal] = []
     quality_signals: list[LearningSignal] = []
     positive_patterns: list[LearningSignal] = []
@@ -171,15 +171,14 @@ def build_learning_report(
 
     for row in _rows(state, "decisions"):
         decision = _required_string(row, "decision")
-        fingerprint = _required_string(row, "fingerprint")
-        finding = finding_by_fingerprint.get(fingerprint)
-        if not _matches_repository(repository, finding, row):
+        provenance = _provenance_for_decision(row, provenance_by_observation_id)
+        if not _matches_repository(repository, provenance, row):
             continue
         if decision in POSITIVE_DECISIONS:
             positive_patterns.append(
                 _decision_signal(
                     row,
-                    finding,
+                    provenance,
                     SignalPolicy(
                         "medium",
                         "positive_pattern",
@@ -190,7 +189,7 @@ def build_learning_report(
             )
         elif decision in DECISION_POLICIES:
             decision_candidates.append(
-                _decision_signal(row, finding, DECISION_POLICIES[decision])
+                _decision_signal(row, provenance, DECISION_POLICIES[decision])
             )
         else:
             unclassified_decisions.add(decision)
@@ -325,46 +324,94 @@ def _rows(state: Mapping[str, object], key: str) -> tuple[Mapping[str, object], 
         rows.append(cast(Mapping[str, object], item))
     return tuple(rows)
 
-
-def _finding_refs(state: Mapping[str, object]) -> tuple[FindingRef, ...]:
-    refs: list[FindingRef] = []
-    for row in _rows(state, "findings"):
-        refs.append(
-            FindingRef(
-                fingerprint=_required_string(row, "fingerprint"),
-                repository=_optional_string(row, "repository"),
-                pr_number=_optional_int(row, "pr_number"),
-                rule_id=_optional_string(row, "rule_id"),
-                title=_optional_string(row, "title"),
-                path=_optional_string(row, "path"),
-                severity=_optional_string(row, "severity"),
-                category=_optional_string(row, "category"),
+def _decision_provenances(
+    state: Mapping[str, object]
+) -> dict[int, DecisionProvenance]:
+    local_refs: dict[tuple[str, int, str], str] = {}
+    for row in _rows(state, "pr_finding_references"):
+        repository = _optional_string(row, "repository")
+        pr_number = _optional_int(row, "pr_number")
+        fingerprint = _optional_string(row, "fingerprint")
+        if repository and pr_number is not None and fingerprint:
+            local_refs[(repository, pr_number, fingerprint)] = _optional_string(
+                row, "local_reference"
             )
+
+    provenances: dict[int, DecisionProvenance] = {}
+    for row in _rows(state, "finding_observations"):
+        observation_id = _optional_int(row, "id")
+        if observation_id is None:
+            raise ValueError("finding_observations row is missing id")
+        repository = _optional_string(row, "repository")
+        pr_number = _optional_int(row, "pr_number")
+        fingerprint = _required_string(row, "fingerprint")
+        local_reference = (
+            local_refs.get((repository, pr_number, fingerprint), "")
+            if pr_number is not None
+            else ""
         )
-    return tuple(refs)
+        provenances[observation_id] = DecisionProvenance(
+            observation_id=observation_id,
+            repository=repository,
+            pr_number=pr_number,
+            head_sha=_optional_string(row, "head_sha"),
+            fingerprint=fingerprint,
+            title=_optional_string(row, "title"),
+            path=_optional_string(row, "path"),
+            local_reference=local_reference,
+        )
+    return provenances
+
+
+def _provenance_for_decision(
+    row: Mapping[str, object],
+    provenances: Mapping[int, DecisionProvenance],
+) -> DecisionProvenance | None:
+    observation_id = _optional_int(row, "observation_id")
+    if observation_id is None:
+        return None
+    provenance = provenances.get(observation_id)
+    if provenance is None:
+        raise ValueError(
+            f"decision observation_id {observation_id} is missing from finding_observations"
+        )
+    fingerprint = _required_string(row, "fingerprint")
+    if provenance.fingerprint != fingerprint:
+        raise ValueError(
+            f"decision fingerprint {fingerprint} does not match observation {observation_id}"
+        )
+    return provenance
 
 
 def _decision_signal(
     row: Mapping[str, object],
-    finding: FindingRef | None,
+    provenance: DecisionProvenance | None,
     policy: SignalPolicy,
 ) -> LearningSignal:
     decision = _required_string(row, "decision")
-    fallback_repository = finding.repository if finding else ""
-    fallback_pr = finding.pr_number if finding else None
+    reason = _optional_string(row, "reason")
+    missing_evidence: list[str] = []
+    if not reason:
+        missing_evidence.append("human reason")
+    if provenance is None:
+        missing_evidence.append("exact observation provenance")
+    promotion_eligible = not missing_evidence
+    signal_strength = policy.signal_strength if promotion_eligible else "incomplete"
     return LearningSignal(
         source="decision",
         source_value=decision,
-        signal_strength=policy.signal_strength,
-        classification=policy.classification,
-        title=_signal_title(decision, finding),
-        reason=_optional_string(row, "reason"),
+        signal_strength=signal_strength,
+        suggested_route=policy.suggested_route,
+        title=_signal_title(decision, provenance),
+        reason=reason,
         next_step=policy.next_step,
-        repository=fallback_repository,
-        pr_number=fallback_pr,
+        promotion_eligible=promotion_eligible,
+        missing_evidence=tuple(missing_evidence),
+        repository=provenance.repository if provenance else "",
+        pr_number=provenance.pr_number if provenance else None,
         fingerprint=_required_string(row, "fingerprint"),
-        local_reference="",
-        finding=finding,
+        local_reference=provenance.local_reference if provenance else "",
+        provenance=provenance,
     )
 
 
@@ -373,39 +420,43 @@ def _quality_signal(
     policy: SignalPolicy,
 ) -> LearningSignal:
     category = _required_string(row, "category")
+    reason = _optional_string(row, "reason")
+    promotion_eligible = bool(reason)
     return LearningSignal(
         source="review_quality_feedback",
         source_value=category,
-        signal_strength=policy.signal_strength,
-        classification=policy.classification,
+        signal_strength=policy.signal_strength if promotion_eligible else "incomplete",
+        suggested_route=policy.suggested_route,
         title=f"Review-quality feedback: {category.replace('_', ' ')}",
-        reason=_optional_string(row, "reason"),
+        reason=reason,
         next_step=policy.next_step,
+        promotion_eligible=promotion_eligible,
+        missing_evidence=() if promotion_eligible else ("human reason",),
         repository=_required_string(row, "repository"),
         pr_number=_optional_int(row, "pr_number"),
         fingerprint="",
         local_reference=_optional_string(row, "local_reference"),
-        finding=None,
+        provenance=None,
     )
 
 
 def _matches_repository(
     repository: str | None,
-    finding: FindingRef | None,
+    provenance: DecisionProvenance | None,
     row: Mapping[str, object],
 ) -> bool:
     if repository is None:
         return True
-    if finding is not None:
-        return finding.repository == repository
+    if provenance is not None:
+        return provenance.repository == repository
     row_repository = _optional_string(row, "repository")
     return row_repository == repository
 
 
-def _signal_title(decision: str, finding: FindingRef | None) -> str:
-    if finding is None or not finding.title:
+def _signal_title(decision: str, provenance: DecisionProvenance | None) -> str:
+    if provenance is None or not provenance.title:
         return f"Human decision: {decision}"
-    return finding.title
+    return provenance.title
 
 
 def _render_signals(prefix: str, signals: tuple[LearningSignal, ...]) -> list[str]:
@@ -419,8 +470,9 @@ def _render_signals(prefix: str, signals: tuple[LearningSignal, ...]) -> list[st
                 "",
                 f"- Source: `{signal.source}` / `{signal.source_value}`",
                 f"- Signal: {signal.signal_strength}",
-                f"- Classification: {signal.classification}",
+                f"- Suggested route: {signal.suggested_route}",
                 f"- Scope: {location}",
+                f"- Promotion eligible: {'yes' if signal.promotion_eligible else 'no'}",
             ]
         )
         if signal.fingerprint:
@@ -429,17 +481,20 @@ def _render_signals(prefix: str, signals: tuple[LearningSignal, ...]) -> list[st
             lines.append(f"- Local reference: `{signal.local_reference}`")
         if signal.reason:
             lines.append(f"- Human reason: {signal.reason}")
+        if signal.missing_evidence:
+            missing = ", ".join(signal.missing_evidence)
+            lines.append(f"- Missing evidence: {missing}")
         lines.extend([f"- Next step: {signal.next_step}", ""])
     return lines
 
 
 def _location(signal: LearningSignal) -> str:
-    if signal.finding is not None:
-        parts = [signal.finding.repository]
-        if signal.finding.pr_number is not None:
-            parts.append(f"#{signal.finding.pr_number}")
-        if signal.finding.path:
-            parts.append(signal.finding.path)
+    if signal.provenance is not None:
+        parts = [signal.provenance.repository]
+        if signal.provenance.pr_number is not None:
+            parts.append(f"#{signal.provenance.pr_number}")
+        if signal.provenance.path:
+            parts.append(signal.provenance.path)
         return " ".join(part for part in parts if part)
 
     parts = [signal.repository]

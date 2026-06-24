@@ -7,7 +7,11 @@ from datetime import datetime
 from typing import Any
 
 try:
-    from .memory_decisions import current_context_hash_for_fingerprint, insert_decision
+    from .memory_decisions import (
+        current_context_hash_for_fingerprint,
+        insert_decision,
+        observation_id_for_context,
+    )
     from .memory_identity import resolve_fingerprint
     from .memory_validation import (
         FEEDBACK_DECISIONS,
@@ -19,7 +23,11 @@ try:
         normalize_repository,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
-    from memory_decisions import current_context_hash_for_fingerprint, insert_decision
+    from memory_decisions import (
+        current_context_hash_for_fingerprint,
+        insert_decision,
+        observation_id_for_context,
+    )
     from memory_identity import resolve_fingerprint
     from memory_validation import (
         FEEDBACK_DECISIONS,
@@ -145,8 +153,8 @@ def record_feedback_decision(
     identifies the finding — the caller never picks it. Returns:
       - None: the event was already processed (replay) or the comment is not a known
         finding thread (clean no-op);
-      - {"status": "stale", ...}: a false_positive whose finding's file changed since the
-        comment was posted (do not suppress a version the human did not review);
+      - {"status": "stale", ...}: a suppressive decision whose finding's file changed
+        since the comment was posted (do not suppress a version the human did not review);
       - {"status": "recorded", ...}: the decision + finding details for the bot confirmation.
     Raises for an out-of-scope decision (e.g. accepted_risk — a governance decision).
     Call with no open transaction; this function owns the BEGIN IMMEDIATE boundary."""
@@ -215,8 +223,8 @@ def record_feedback_decision(
         linked_hash = str(link["context_hash"] or "")
         current_hash = current_context_hash_for_fingerprint(connection, fingerprint)
 
-        # A false_positive may only suppress the exact file version the human reviewed.
-        if decision == "false_positive" and (
+        # A suppression may only apply to the exact file version the human reviewed.
+        if decision in {"false_positive", "intentional_by_design"} and (
             not linked_hash or linked_hash != current_hash
         ):
             connection.execute(
@@ -227,6 +235,18 @@ def record_feedback_decision(
             return {"status": "stale", "fingerprint": fingerprint}
 
         actor = f"github-id:{actor_user_id}"
+        observation_id = observation_id_for_context(
+            connection,
+            repository=link["repository"],
+            pr_number=int(link["pr_number"]),
+            fingerprint=fingerprint,
+            head_sha=str(link["head_sha"] or ""),
+            context_hash=linked_hash,
+        )
+        if observation_id is None:
+            raise ReviewMemoryError(
+                "review comment link does not resolve to a recorded finding observation"
+            )
         result = insert_decision(
             connection,
             fingerprint=fingerprint,
@@ -234,6 +254,7 @@ def record_feedback_decision(
             reason=reason,
             actor=actor,
             context_hash=current_hash,
+            observation_id=observation_id,
             adr_id=adr_id,
             expires_days=expires_days,
             now=now,
