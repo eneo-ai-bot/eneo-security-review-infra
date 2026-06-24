@@ -26,6 +26,7 @@ OWNER_MODULES = [
 OFFLINE_OPERATOR_MODULES = {
     "eneo_review_learning",
     "eneo_review_coach",
+    "eneo_review_coach_proposals",
     "eneo_review_replay",
     "eneo_review_export",
 }

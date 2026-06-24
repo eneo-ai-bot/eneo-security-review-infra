@@ -5,6 +5,7 @@
     "tools/eneo_review_export.py",
     "tools/eneo_review_learning.py",
     "tools/eneo_review_coach.py",
+    "tools/eneo_review_coach_proposals.py",
     "tools/eneo_review_replay.py"
   ],
   "exclude": [

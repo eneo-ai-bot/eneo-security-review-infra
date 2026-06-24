@@ -50,6 +50,28 @@ Coach exports contain stable event ids, exact observation provenance, bounded
 deduping equivalent evidence across exports. They omit actors, source URLs, and
 raw database rows. Output files are written atomically with mode `0600`.
 
+Then select deterministic improvement proposals from the coach events:
+
+```bash
+eneo-review-memory coach-propose \
+  --events /opt/data/review-memory/coach-export.json \
+  --output-dir /opt/data/review-memory/coach-proposal
+```
+
+This writes:
+
+- `proposal.json`: machine-readable candidate, governance, and rejection data;
+- `SUMMARY.md`: a human-readable summary and copyable next-step prompt.
+
+The proposal step is the first automated-improvement gate. It does not call an
+LLM, edit reviewer policy, or open a GitHub PR. It admits normal improvement
+candidates only after repeated independent episodes for the same stable finding
+identity. A single accepted-risk decision is kept as a governance observation,
+not treated as evidence that reviewer behavior should change.
+
+Review-quality feedback that lacks exact publication or finding provenance is
+shown as not promoted until the feedback writer records that provenance.
+
 Validate replay fixtures before relying on them:
 
 ```bash

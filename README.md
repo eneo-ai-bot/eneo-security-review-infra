@@ -30,6 +30,8 @@ browser, delegation, or code execution.
   history in SQLite, and renders the final review comment.
 - Human-only decisions for false positives, accepted risks, duplicates,
   resolutions, and reopenings.
+- Private coach tooling that exports bounded learning evidence and selects
+  deterministic, human-reviewable reviewer-improvement proposals.
 - An optional, disabled later-design note for `code-review-graph`.
 
 ## Review flow
@@ -234,7 +236,41 @@ python3 scripts/smoke_webhook.py \
 
 This test will post a real comment when the PR and credentials are valid.
 
-## 6. How the two-pass review works
+## 6. Generate reviewer-improvement proposals
+
+The reviewer can collect human decisions and review-quality feedback without
+turning every signal into policy. A private operator can export that evidence
+from the persistent `/opt/data` volume and produce a deterministic proposal
+bundle:
+
+```bash
+eneo-review-memory export \
+  --output /opt/data/review-memory/export.json
+
+eneo-review-memory coach-export \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --output /opt/data/review-memory/coach-export.json
+
+eneo-review-memory coach-propose \
+  --events /opt/data/review-memory/coach-export.json \
+  --output-dir /opt/data/review-memory/coach-proposal
+```
+
+`coach-propose` writes `proposal.json` and `SUMMARY.md` with mode `0600`. It
+groups only promotion-eligible coach events, requires repeated independent
+episodes for normal reviewer changes, and keeps isolated accepted-risk decisions
+as governance observations. It does not call Claude/Codex, change reviewer
+policy, or open PRs; it creates the bounded evidence packet a human or later
+coach can use to decide whether a replay, skill, ADR, or plugin change is
+actually warranted.
+
+Review-quality feedback without exact publication or finding provenance is
+listed as not promoted rather than treated as policy evidence. These artifacts
+may still contain bounded maintainer-entered reasons or repository text, so keep
+them private unless they have been scrubbed before committing or sharing.
+
+## 7. How the two-pass review works
 
 The first pass creates every concrete candidate it can tie to the diff. The
 second pass tries to reject each candidate by checking nearby guards, callers,

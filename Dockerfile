@@ -14,6 +14,7 @@ COPY --chown=root:root tools/eneo_review_private_io.py /usr/local/bin/eneo_revie
 COPY --chown=root:root tools/eneo_review_export.py /usr/local/bin/eneo_review_export.py
 COPY --chown=root:root tools/eneo_review_learning.py /usr/local/bin/eneo_review_learning.py
 COPY --chown=root:root tools/eneo_review_coach.py /usr/local/bin/eneo_review_coach.py
+COPY --chown=root:root tools/eneo_review_coach_proposals.py /usr/local/bin/eneo_review_coach_proposals.py
 COPY --chown=root:root tools/eneo_review_replay.py /usr/local/bin/eneo_review_replay.py
 RUN chmod 0755 /opt/eneo-bootstrap/install.sh \
     /opt/eneo-bootstrap/install.py \

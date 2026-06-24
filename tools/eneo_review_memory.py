@@ -26,9 +26,6 @@ def load_memory_module():
     raise SystemExit("Could not locate the eneo_review_tools plugin")
 
 
-memory_db = load_memory_module()
-
-
 def load_learning_module():
     try:
         import eneo_review_learning
@@ -45,6 +42,15 @@ def load_coach_module():
         raise SystemExit("Could not locate the Eneo coach export module") from exc
 
     return eneo_review_coach
+
+
+def load_coach_proposals_module():
+    try:
+        import eneo_review_coach_proposals
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo coach proposal module") from exc
+
+    return eneo_review_coach_proposals
 
 
 def load_replay_module():
@@ -93,7 +99,7 @@ def print_stats(stats):
     print(f"  repeats after a human decision (approx): {stats['repeats_after_decision_approx']}")
 
 
-def print_runs(runs):
+def print_runs(memory_db, runs):
     if not runs:
         print("No review runs.")
         return
@@ -142,7 +148,7 @@ def main() -> int:
     )
     decide_parser.add_argument(
         "decision",
-        choices=sorted(memory_db.DECISIONS),
+        help="Decision value validated by the review-memory database.",
     )
     decide_parser.add_argument("--reason", required=True)
     decide_parser.add_argument("--actor", required=True)
@@ -225,6 +231,23 @@ def main() -> int:
     coach_parser.add_argument("--include-incomplete", action="store_true")
     coach_parser.add_argument("--output", required=True, help="Write JSON to this file.")
 
+    coach_propose_parser = sub.add_parser(
+        "coach-propose",
+        help="Select deterministic private coach improvement candidates from a coach export.",
+    )
+    coach_propose_parser.add_argument(
+        "--events",
+        required=True,
+        help="Path created by `eneo-review-memory coach-export --output`.",
+    )
+    coach_propose_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for proposal.json and SUMMARY.md.",
+    )
+    coach_propose_parser.add_argument("--max-candidates", type=int, default=3)
+    coach_propose_parser.add_argument("--min-independent-episodes", type=int, default=2)
+
     args = parser.parse_args()
 
     if args.command == "learning-report":
@@ -267,6 +290,24 @@ def main() -> int:
         print(destination)
         return 0
 
+    if args.command == "coach-propose":
+        proposals = load_coach_proposals_module()
+        payload = proposals.load_coach_export(Path(args.events))
+        bundle = proposals.build_proposal(
+            payload,
+            max_candidates=args.max_candidates,
+            min_independent_episodes=args.min_independent_episodes,
+        )
+        output_dir = Path(args.output_dir)
+        write_private_file(
+            output_dir / "proposal.json",
+            proposals.dumps_proposal_bundle(bundle),
+        )
+        write_private_file(output_dir / "SUMMARY.md", proposals.render_markdown(bundle))
+        print(output_dir)
+        return 0
+
+    memory_db = load_memory_module()
     with closing(memory_db.connect(args.db)) as connection:
         if args.command == "init":
             print(f"Ready: {memory_db.database_path(args.db)}")
@@ -366,7 +407,7 @@ def main() -> int:
                 if args.json:
                     print(memory_db.json_dumps(runs))
                 else:
-                    print_runs(runs)
+                    print_runs(memory_db, runs)
             return 0
 
     return 1

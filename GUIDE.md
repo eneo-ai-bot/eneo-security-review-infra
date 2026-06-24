@@ -240,7 +240,8 @@ bootstrap/skills/ponytail/           vendored upstream skill and licence
 bootstrap/plugins/eneo_review_tools/ bounded GitHub reads + SQLite memory
 examples/github/ai-review-request.yml maintainer-only @review trigger
 examples/comments/example-review.md  desired developer-facing style
-tools/eneo_review_memory.py          human triage CLI
+tools/eneo_review_memory.py          human triage and private coach CLI
+tools/eneo_review_coach*.py          bounded coach export and proposal helpers
 examples/optional/code-review-graph.md optional later indexing design
 ```
 
