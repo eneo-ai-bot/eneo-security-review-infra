@@ -28,6 +28,37 @@ eneo-review-memory learning-report \
   --output /opt/data/review-memory/learning-candidates.md
 ```
 
+The report groups decision chains by finding fingerprint. For example, a
+`false_positive -> reopen -> false_positive` sequence is one current decision
+episode with the chain preserved as context, not three independent policy
+candidates.
+
+For private coach input, generate the typed allowlist JSON bundle instead of
+feeding raw exports or Markdown to an LLM:
+
+```bash
+eneo-review-memory coach-export \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --after-decision-id 0 \
+  --after-feedback-id 0 \
+  --output /opt/data/review-memory/coach-export.json
+```
+
+Coach exports contain stable event ids, exact observation provenance, bounded
+`*_untrusted` text fields, and a snapshot hash. They omit actors, source URLs,
+and raw database rows. Output files are written atomically with mode `0600`.
+
+Validate replay fixtures before relying on them:
+
+```bash
+eneo-review-memory validate-replay review-learning/replay
+```
+
+Replay fixtures are strict JSON-compatible YAML. This keeps validation on the
+standard library path and fails loudly instead of silently accepting a partial
+YAML parse.
+
 The report reads explicit human decisions and any populated
 `review_quality_feedback` rows. In the current bundle, review-quality feedback
 has a table and export path but no public writer yet, so that section is often

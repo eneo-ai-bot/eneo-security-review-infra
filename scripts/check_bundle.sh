@@ -9,6 +9,7 @@ if ! command -v pyright >/dev/null 2>&1; then
 fi
 pyright -p "$ROOT"
 PYTHONPATH="$ROOT/bootstrap/plugins" python3 -m unittest discover -s "$ROOT/tests" -v
+python3 "$ROOT/tools/eneo_review_memory.py" validate-replay "$ROOT/review-learning/replay"
 
 python3 - "$ROOT" <<'PY'
 from pathlib import Path

@@ -23,6 +23,12 @@ OWNER_MODULES = [
     "memory_reporting",
     "memory_runs",
 ]
+OFFLINE_OPERATOR_MODULES = {
+    "eneo_review_learning",
+    "eneo_review_coach",
+    "eneo_review_replay",
+    "eneo_review_export",
+}
 
 
 class MemoryModuleBoundaryTests(unittest.TestCase):
@@ -50,6 +56,18 @@ class MemoryModuleBoundaryTests(unittest.TestCase):
                         self.assertFalse(
                             node.level == 1 and node.module == "memory_db"
                         )
+
+    def test_public_plugin_does_not_import_offline_learning_modules(self):
+        for path in sorted(PLUGIN.glob("*.py")):
+            with self.subTest(path=path.name):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported = {alias.name.split(".")[0] for alias in node.names}
+                        self.assertTrue(OFFLINE_OPERATOR_MODULES.isdisjoint(imported))
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        imported = node.module.split(".")[0]
+                        self.assertNotIn(imported, OFFLINE_OPERATOR_MODULES)
 
 
 if __name__ == "__main__":

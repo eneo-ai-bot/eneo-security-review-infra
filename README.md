@@ -357,6 +357,23 @@ eneo-review-memory learning-report \
   --output /opt/data/review-memory/learning-candidates.md
 ```
 
+Generate the bounded untrusted JSON bundle for a private coach workflow:
+
+```bash
+eneo-review-memory coach-export \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --after-decision-id 0 \
+  --after-feedback-id 0 \
+  --output /opt/data/review-memory/coach-export.json
+```
+
+Validate replay fixtures:
+
+```bash
+eneo-review-memory validate-replay review-learning/replay
+```
+
 This is operator tooling, not live reviewer memory. The public webhook reviewer
 does not read `review-learning/`, and the route disables local file access,
 general skill writes, memory writes, web, shell, code execution, session search,

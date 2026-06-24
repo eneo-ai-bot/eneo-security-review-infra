@@ -9,6 +9,8 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
+from eneo_review_private_io import write_private_file
+
 
 def load_memory_module():
     candidates = [
@@ -34,6 +36,24 @@ def load_learning_module():
         raise SystemExit("Could not locate the Eneo learning report module") from exc
 
     return eneo_review_learning
+
+
+def load_coach_module():
+    try:
+        import eneo_review_coach
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo coach export module") from exc
+
+    return eneo_review_coach
+
+
+def load_replay_module():
+    try:
+        import eneo_review_replay
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo replay validator module") from exc
+
+    return eneo_review_replay
 
 
 def print_table(items):
@@ -154,6 +174,31 @@ def main() -> int:
     learning_parser.add_argument("--repo", help="Limit to owner/repository.")
     learning_parser.add_argument("--output", help="Write Markdown to a file instead of stdout.")
 
+    replay_parser = sub.add_parser(
+        "validate-replay",
+        help="Validate typed replay fixture files.",
+    )
+    replay_parser.add_argument(
+        "path",
+        type=Path,
+        help="Replay fixture file or directory containing *.yaml fixtures.",
+    )
+
+    coach_parser = sub.add_parser(
+        "coach-export",
+        help="Generate a bounded untrusted JSON bundle for the private review coach.",
+    )
+    coach_parser.add_argument(
+        "--export",
+        required=True,
+        help="Path created by `eneo-review-memory export --output`.",
+    )
+    coach_parser.add_argument("--repo", help="Limit to owner/repository.")
+    coach_parser.add_argument("--after-decision-id", type=int, default=0)
+    coach_parser.add_argument("--after-feedback-id", type=int, default=0)
+    coach_parser.add_argument("--include-incomplete", action="store_true")
+    coach_parser.add_argument("--output", required=True, help="Write JSON to this file.")
+
     args = parser.parse_args()
 
     if args.command == "learning-report":
@@ -163,11 +208,37 @@ def main() -> int:
         content = learning.render_markdown(report)
         if args.output:
             destination = Path(args.output)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(content, encoding="utf-8")
+            write_private_file(destination, content)
             print(destination)
         else:
             print(content, end="")
+        return 0
+
+    if args.command == "validate-replay":
+        replay = load_replay_module()
+        cwd = str(Path.cwd())
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+        results = replay.validate_replay_path(args.path)
+        for result in results:
+            print(f"Replay OK: {result.fixture_id} ({result.path})")
+        print(f"Validated {len(results)} replay fixture(s).")
+        return 0
+
+    if args.command == "coach-export":
+        learning = load_learning_module()
+        coach = load_coach_module()
+        state = learning.load_export(Path(args.export))
+        payload = coach.build_coach_export(
+            state,
+            repository=args.repo,
+            after_decision_id=args.after_decision_id,
+            after_feedback_id=args.after_feedback_id,
+            include_incomplete=args.include_incomplete,
+        )
+        destination = Path(args.output)
+        write_private_file(destination, coach.dumps_coach_export(payload))
+        print(destination)
         return 0
 
     with closing(memory_db.connect(args.db)) as connection:
@@ -231,8 +302,7 @@ def main() -> int:
             content = memory_db.json_dumps(memory_db.export_state(connection)) + "\n"
             if args.output:
                 destination = Path(args.output)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(content, encoding="utf-8")
+                write_private_file(destination, content)
                 print(destination)
             else:
                 print(content, end="")

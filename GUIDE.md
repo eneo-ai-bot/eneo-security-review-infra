@@ -517,6 +517,15 @@ eneo-review-memory learning-report \
   --export /opt/data/review-memory/export.json \
   --repo eneo-ai/eneo \
   --output /opt/data/review-memory/learning-candidates.md
+
+eneo-review-memory coach-export \
+  --export /opt/data/review-memory/export.json \
+  --repo eneo-ai/eneo \
+  --after-decision-id 0 \
+  --after-feedback-id 0 \
+  --output /opt/data/review-memory/coach-export.json
+
+eneo-review-memory validate-replay review-learning/replay
 ```
 
 The public webhook reviewer does not read `review-learning/`. The runtime
@@ -527,6 +536,11 @@ scrub it before committing or sharing. In the current bundle,
 `review_quality_feedback` is exported but has no public writer yet; empty
 review-quality sections are expected. Scrub reports before moving useful
 candidates into `review-learning/reports/` as versioned artifacts.
+Coach exports are the private LLM input format. They include only allowlisted
+fields, stable event ids, exact observation provenance, bounded `*_untrusted`
+text, and a snapshot hash; they omit actors, source URLs, and raw rows. Replay
+fixtures are strict JSON-compatible YAML and separate advisory model
+expectations from deterministic test-backed invariants.
 New decisions are tied to the exact finding observation that the human judged,
 so a later PR that re-observes the same fingerprint cannot rewrite the learning
 report's PR, head SHA, path, or local `F` reference. Legacy decisions without
