@@ -1,32 +1,59 @@
-id: pr-240-ambiguous-model-resolution
-repository: eneo-ai/eneo
-pull_request: 240
-status: seed
-purpose: >
-  Preserve reviewer stability around all-tenant completion-model migration
-  findings without depending on exact line numbers.
-source: historical human-triggered review discussion
-expected_findings:
-  - title_contains: provider-specific model row
-    category: security
-    severity: High
-    root_cause: tenant model mapping ignores provider/deployment identity
-  - title_contains: one request transaction
-    category: reliability
-    severity: High
-    root_cause: all-tenant migration lost tenant-local transaction boundaries
-  - title_contains: model kwargs without confirmation
-    category: correctness
-    severity: High
-    root_cause: destructive kwargs reset can happen without explicit confirmation
-stability_rules:
-  - Repeated reviews should reuse the same root-cause identities when the code
-    is unchanged.
-  - A resolved finding must be closed only when the current code directly fixes
-    the prior claim.
-  - Absence from a later review is not enough to mark a prior finding resolved.
-non_goals:
-  - Do not require exact wording.
-  - Do not require stable line numbers.
-  - Do not treat this replay seed as production policy until a replay runner
-    and human approval process exist.
+{
+  "schema_version": 1,
+  "id": "pr-240-ambiguous-model-resolution",
+  "source": {
+    "repository": "eneo-ai/eneo",
+    "pull_request": 240,
+    "base_sha": "43edef11a5959162e98ba2fc9d06b2ccf940cf65",
+    "head_sha": "518cc8a235777527177a9097e5a6be191771cf83",
+    "trust": "human_confirmed"
+  },
+  "model_expectations": {
+    "mode": "advisory",
+    "required_root_causes": [
+      {
+        "rule_id": "migration.ambiguous-model-resolution",
+        "severity": {
+          "minimum": "High",
+          "maximum": "High"
+        },
+        "semantic_claim": "tenant model mapping ignores provider/deployment identity"
+      },
+      {
+        "rule_id": "migration.request-wide-transaction",
+        "severity": {
+          "minimum": "High",
+          "maximum": "High"
+        },
+        "semantic_claim": "all-tenant migration lost tenant-local transaction boundaries"
+      },
+      {
+        "rule_id": "migration.kwargs-reset-confirmation",
+        "severity": {
+          "minimum": "High",
+          "maximum": "High"
+        },
+        "semantic_claim": "destructive kwargs reset can happen without explicit confirmation"
+      }
+    ],
+    "forbidden_root_causes": []
+  },
+  "deterministic_invariants": [
+    {
+      "id": "stable-fingerprint-on-line-move",
+      "covered_by": [
+        "tests.test_memory_db.ReviewMemoryTests.test_fingerprint_is_stable_across_line_moves"
+      ]
+    },
+    {
+      "id": "absence-is-not-resolution",
+      "covered_by": [
+        "tests.test_memory_db.ReviewMemoryTests.test_finalize_review_carries_unobserved_previous_findings"
+      ]
+    }
+  ],
+  "advisory_notes": [
+    "Finding wording and line numbers may change.",
+    "Model expectations are advisory and must not become hard deterministic CI gates."
+  ]
+}
