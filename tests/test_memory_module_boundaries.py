@@ -22,6 +22,7 @@ OWNER_MODULES = [
     "memory_feedback",
     "memory_reporting",
     "memory_runs",
+    "memory_coach",
 ]
 OFFLINE_OPERATOR_MODULES = {
     "eneo_review_learning",

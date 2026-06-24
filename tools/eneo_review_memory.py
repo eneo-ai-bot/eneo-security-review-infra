@@ -4,65 +4,199 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
+import sqlite3
 import sys
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol, cast
 
+from eneo_review_coach_proposals import ProposalBundle
+from eneo_review_coach_run import build_coach_run_artifacts
+from eneo_review_learning import LearningReport
 from eneo_review_private_io import write_private_file
+from eneo_review_replay import ReplayValidationResult
+
+if TYPE_CHECKING:
+    from eneo_review_tools.memory_coach import (
+        CoachCandidateInput as MemoryCoachCandidateInput,
+        CoachRunDecision as MemoryCoachRunDecision,
+        CoachRunInput as MemoryCoachRunInput,
+    )
+
+JsonObject = Mapping[str, object]
 
 
-def load_memory_module():
+class CoachRunRow(Protocol):
+    def to_json_obj(self) -> dict[str, object]: ...
+
+
+class MemoryDbModule(Protocol):
+    ReviewMemoryError: type[Exception]
+    CoachCandidateInput: type[MemoryCoachCandidateInput]
+    CoachRunInput: type[MemoryCoachRunInput]
+
+    def connect(self, explicit: str | None = None) -> sqlite3.Connection: ...
+    def database_path(self, explicit: str | None = None) -> Path: ...
+    def json_dumps(self, value: object) -> str: ...
+    def list_findings(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        limit: int = 50,
+        include_suppressed: bool = True,
+    ) -> list[dict[str, object]]: ...
+    def resolve_fingerprint(
+        self, connection: sqlite3.Connection, prefix: str
+    ) -> str: ...
+    def active_suppression(
+        self, connection: sqlite3.Connection, fingerprint: str
+    ) -> dict[str, object] | None: ...
+    def add_decision(
+        self,
+        connection: sqlite3.Connection,
+        fingerprint_or_prefix: str,
+        decision: str,
+        reason: str,
+        actor: str,
+        *,
+        expires_days: int | None = None,
+        observation_id: int | None = None,
+        repository: str | None = None,
+        pr_number: int | None = None,
+        local_reference: str = "",
+        latest: bool = False,
+    ) -> dict[str, object]: ...
+    def export_state(self, connection: sqlite3.Connection) -> dict[str, object]: ...
+    def compute_stats(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        expiring_within_days: int = 30,
+    ) -> dict[str, object]: ...
+    def run_stats(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        days: int = 30,
+    ) -> dict[str, object]: ...
+    def list_runs(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]: ...
+    def run_is_stale(self, run: Mapping[str, object]) -> bool: ...
+    def record_coach_run(
+        self, connection: sqlite3.Connection, item: MemoryCoachRunInput
+    ) -> CoachRunRow: ...
+
+
+class LearningModule(Protocol):
+    def load_export(self, path: Path) -> Mapping[str, object]: ...
+    def build_learning_report(
+        self, state: Mapping[str, object], *, repository: str | None = None
+    ) -> LearningReport: ...
+    def render_markdown(self, report: LearningReport) -> str: ...
+
+
+class CoachModule(Protocol):
+    def build_coach_export(
+        self,
+        state: Mapping[str, object],
+        *,
+        repository: str | None = None,
+        after_decision_id: int = 0,
+        after_feedback_id: int = 0,
+        include_incomplete: bool = False,
+    ) -> dict[str, object]: ...
+    def dumps_coach_export(self, payload: Mapping[str, object]) -> str: ...
+
+
+class CoachProposalsModule(Protocol):
+    def load_coach_export(self, path: Path) -> Mapping[str, object]: ...
+    def build_proposal(
+        self,
+        coach_export: Mapping[str, object],
+        *,
+        max_candidates: int = 3,
+        min_independent_episodes: int = 2,
+    ) -> ProposalBundle: ...
+    def dumps_proposal_bundle(self, bundle: ProposalBundle) -> str: ...
+    def render_markdown(self, bundle: ProposalBundle) -> str: ...
+
+
+class ReplayModule(Protocol):
+    def validate_replay_path(self, path: Path) -> tuple[ReplayValidationResult, ...]: ...
+
+
+def _import_module(name: str) -> ModuleType:
+    return importlib.import_module(name)
+
+
+def load_memory_module() -> MemoryDbModule:
     candidates = [
         Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins" / "eneo_review_tools",
         Path(__file__).resolve().parents[1] / "bootstrap" / "plugins" / "eneo_review_tools",
     ]
     for candidate in candidates:
         if (candidate / "memory_db.py").exists():
+            # Installed Hermes plugins are path-loaded as top-level modules; the
+            # Protocol above keeps this dynamic boundary explicit and typed.
             sys.path.insert(0, str(candidate))
-            import memory_db  # type: ignore
-
-            return memory_db
+            return cast(MemoryDbModule, _import_module("memory_db"))
     raise SystemExit("Could not locate the eneo_review_tools plugin")
 
 
-def load_learning_module():
+def load_learning_module() -> LearningModule:
     try:
-        import eneo_review_learning
+        return cast(LearningModule, _import_module("eneo_review_learning"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo learning report module") from exc
 
-    return eneo_review_learning
 
-
-def load_coach_module():
+def load_coach_module() -> CoachModule:
     try:
-        import eneo_review_coach
+        return cast(CoachModule, _import_module("eneo_review_coach"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo coach export module") from exc
 
-    return eneo_review_coach
 
-
-def load_coach_proposals_module():
+def load_coach_proposals_module() -> CoachProposalsModule:
     try:
-        import eneo_review_coach_proposals
+        return cast(CoachProposalsModule, _import_module("eneo_review_coach_proposals"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo coach proposal module") from exc
 
-    return eneo_review_coach_proposals
 
-
-def load_replay_module():
+def load_replay_module() -> ReplayModule:
     try:
-        import eneo_review_replay
+        return cast(ReplayModule, _import_module("eneo_review_replay"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo replay validator module") from exc
 
-    return eneo_review_replay
+
+def _nested(row: JsonObject, key: str) -> JsonObject:
+    value = row.get(key, {})
+    return cast(JsonObject, value) if isinstance(value, Mapping) else {}
 
 
-def print_table(items):
+def _coach_run_decision(value: str) -> MemoryCoachRunDecision:
+    if value == "propose":
+        return "propose"
+    if value == "no_change":
+        return "no_change"
+    raise SystemExit(f"coach proposal returned unsupported decision: {value}")
+
+
+def print_table(items: Sequence[JsonObject]) -> None:
     if not items:
         print("No findings.")
         return
@@ -70,11 +204,11 @@ def print_table(items):
         marker = "SUPPRESSED" if item.get("suppressed") else "OPEN"
         line = item.get("line") or "?"
         print(
-            f"{item['fingerprint'][:12]}  {marker:10}  {item['severity']:8}  "
+            f"{str(item['fingerprint'])[:12]}  {marker:10}  {str(item['severity']):8}  "
             f"{item.get('category', '-'):15} score={item.get('publication_score', '-')}  "
             f"{item['repository']}  {item['path']}:{line}  {item['title']}"
         )
-        decision = item.get("latest_decision")
+        decision = _nested(item, "latest_decision")
         if decision:
             print(
                 f"  decision={decision['decision']} actor={decision['actor']} "
@@ -82,14 +216,17 @@ def print_table(items):
             )
 
 
-def print_stats(stats):
+def print_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review memory - {repo}  (as of {stats['generated_at']})")
     print(f"  findings: {stats['findings_total']}  (no decision: {stats['findings_without_decision']})")
-    print("  by severity:  " + ", ".join(f"{k}={v}" for k, v in stats["findings_by_severity"].items()))
-    cats = ", ".join(f"{k}={v}" for k, v in stats["findings_by_category"].items() if v) or "(none)"
+    by_severity = _nested(stats, "findings_by_severity")
+    by_category = _nested(stats, "findings_by_category")
+    latest_decisions = _nested(stats, "latest_decision_by_type")
+    print("  by severity:  " + ", ".join(f"{k}={v}" for k, v in by_severity.items()))
+    cats = ", ".join(f"{k}={v}" for k, v in by_category.items() if v) or "(none)"
     print(f"  by category:  {cats}")
-    decs = ", ".join(f"{k}={v}" for k, v in stats["latest_decision_by_type"].items() if v) or "(none)"
+    decs = ", ".join(f"{k}={v}" for k, v in latest_decisions.items() if v) or "(none)"
     print(f"  latest decision:  {decs}")
     print(
         f"  active suppressions: {stats['active_suppressions']} "
@@ -99,7 +236,7 @@ def print_stats(stats):
     print(f"  repeats after a human decision (approx): {stats['repeats_after_decision_approx']}")
 
 
-def print_runs(memory_db, runs):
+def print_runs(memory_db: MemoryDbModule, runs: Sequence[JsonObject]) -> None:
     if not runs:
         print("No review runs.")
         return
@@ -113,14 +250,15 @@ def print_runs(memory_db, runs):
         )
 
 
-def print_run_stats(stats):
+def print_run_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
     print("  (best-effort telemetry recorded by the reviewer; treat counts as approximate)")
     print(f"  total: {stats['total']}")
-    print("  by status:  " + ", ".join(f"{k}={v}" for k, v in stats["by_status"].items()))
+    by_status = _nested(stats, "by_status")
+    print("  by status:  " + ", ".join(f"{k}={v}" for k, v in by_status.items()))
     print(f"  stalled (running but likely crashed): {stats['stalled_running']}")
-    tta = stats["time_to_answer_seconds"]
+    tta = _nested(stats, "time_to_answer_seconds")
     print(f"  time to answer (s):  p50={tta['p50']}  p95={tta['p95']}")
     print(f"  avg findings / completed run:  {stats['avg_findings_per_completed_run']}")
 
@@ -248,6 +386,27 @@ def main() -> int:
     coach_propose_parser.add_argument("--max-candidates", type=int, default=3)
     coach_propose_parser.add_argument("--min-independent-episodes", type=int, default=2)
 
+    coach_run_parser = sub.add_parser(
+        "coach-run",
+        help="Run the private coach pipeline in dry-run mode and record the result.",
+    )
+    coach_run_parser.add_argument(
+        "--export",
+        required=True,
+        help="Path created by `eneo-review-memory export --output`.",
+    )
+    coach_run_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory for coach-export.json, proposal.json, and SUMMARY.md.",
+    )
+    coach_run_parser.add_argument("--repo", help="Limit to owner/repository.")
+    coach_run_parser.add_argument("--after-decision-id", type=int, default=0)
+    coach_run_parser.add_argument("--after-feedback-id", type=int, default=0)
+    coach_run_parser.add_argument("--include-incomplete", action="store_true")
+    coach_run_parser.add_argument("--max-candidates", type=int, default=3)
+    coach_run_parser.add_argument("--min-independent-episodes", type=int, default=2)
+
     args = parser.parse_args()
 
     if args.command == "learning-report":
@@ -305,6 +464,53 @@ def main() -> int:
         )
         write_private_file(output_dir / "SUMMARY.md", proposals.render_markdown(bundle))
         print(output_dir)
+        return 0
+
+    if args.command == "coach-run":
+        memory_db = load_memory_module()
+        artifacts = build_coach_run_artifacts(
+            export_path=Path(args.export),
+            output_dir=Path(args.output_dir),
+            repository=args.repo,
+            after_decision_id=args.after_decision_id,
+            after_feedback_id=args.after_feedback_id,
+            include_incomplete=args.include_incomplete,
+            max_candidates=args.max_candidates,
+            min_independent_episodes=args.min_independent_episodes,
+        )
+
+        candidates = tuple(
+            memory_db.CoachCandidateInput(
+                candidate_key=candidate.candidate_key,
+                target_owner=candidate.target_owner,
+                suggested_route=candidate.suggested_route,
+                event_type=candidate.event_type,
+                independent_episode_count=candidate.independent_episode_count,
+                evidence_event_ids=candidate.evidence_event_ids,
+                evidence_events_total=candidate.evidence_events_total,
+            )
+            for candidate in artifacts.bundle.candidates
+        )
+        run_input = memory_db.CoachRunInput(
+            repository=artifacts.bundle.repository_untrusted,
+            source_event_set_id=artifacts.bundle.source_event_set_id,
+            source_snapshot_id=artifacts.bundle.source_snapshot_id,
+            proposal_set_id=artifacts.bundle.proposal_set_id,
+            decision=_coach_run_decision(artifacts.bundle.decision),
+            events_considered=artifacts.bundle.events_considered,
+            artifact_dir=str(artifacts.paths.output_dir),
+            candidates=candidates,
+        )
+        with closing(memory_db.connect(args.db)) as connection:
+            run = memory_db.record_coach_run(connection, run_input)
+        print(
+            memory_db.json_dumps(
+                {
+                    "run": run.to_json_obj(),
+                    "artifacts": artifacts.paths.to_json_obj(),
+                }
+            )
+        )
         return 0
 
     memory_db = load_memory_module()

@@ -471,6 +471,44 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
             ON review_runs(repository, started_at DESC);
 
+        CREATE TABLE IF NOT EXISTS coach_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repository TEXT NOT NULL DEFAULT '',
+            source_event_set_id TEXT NOT NULL,
+            source_snapshot_id TEXT NOT NULL DEFAULT '',
+            proposal_set_id TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('propose', 'no_change')),
+            events_considered INTEGER NOT NULL CHECK (events_considered >= 0),
+            candidates_count INTEGER NOT NULL CHECK (candidates_count >= 0),
+            artifact_dir TEXT NOT NULL DEFAULT '',
+            recorded_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coach_runs_repo_recorded
+            ON coach_runs(repository, recorded_at DESC);
+
+        CREATE TABLE IF NOT EXISTS coach_candidates (
+            repository TEXT NOT NULL DEFAULT '',
+            candidate_key TEXT NOT NULL,
+            proposal_set_id TEXT NOT NULL,
+            source_event_set_id TEXT NOT NULL,
+            target_owner TEXT NOT NULL,
+            suggested_route TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            independent_episode_count INTEGER NOT NULL CHECK (
+                independent_episode_count >= 1
+            ),
+            evidence_event_ids_json TEXT NOT NULL,
+            evidence_events_total INTEGER NOT NULL CHECK (evidence_events_total >= 0),
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            seen_count INTEGER NOT NULL DEFAULT 1 CHECK (seen_count >= 1),
+            PRIMARY KEY (repository, candidate_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coach_candidates_repo_seen
+            ON coach_candidates(repository, last_seen_at DESC);
+
         CREATE TABLE IF NOT EXISTS review_subjects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL,
