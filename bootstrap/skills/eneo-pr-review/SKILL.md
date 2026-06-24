@@ -30,8 +30,8 @@ only the `eneo_review` tools available to this run.
 2. Call `eneo_review_memory_context` with the changed paths and current PR
    number. Treat `repeat_review_findings` as the resolution pass for this PR:
    re-check each prior unresolved finding against the latest code and classify it
-   mentally as resolved, still present, partially resolved, invalidated, or
-   suppressed by a current human decision. Use `prior_claim`,
+   as `resolved`, `still_present`, `partially_resolved`, `invalidated`,
+   `suppressed`, or `not_checked`. Use `prior_claim`,
    `prior_disproof_checks`, `prior_impact`, and `prior_smallest_fix` to verify
    the same claim without replaying a full old review. Use prior findings as
    candidates, not proof. If one still holds, reuse its exact `rule_id`,
@@ -68,13 +68,19 @@ only the `eneo_review` tools available to this run.
 7. Redact secret values. Call `eneo_review_memory_record` once with every
    survivor and the exact head SHA from the overview. The tool re-checks PR
    state, changed paths, file versions, and human suppressions.
-8. Call `eneo_review_finalize` with the same repository, PR number, and exact
-   head SHA. It applies suppressions, assigns stable local `F` references,
-   tracks current/still-present/new findings against the previous review, and
-   carries forward any prior current finding that was not explicitly re-observed.
-   Absence from the new observation set is not treated as proof of resolution.
-   It then renders the AGENTS.md-compliant Markdown comment and records
-   publication metadata. Return its `markdown` field unchanged.
+8. Call `eneo_review_finalize` with the same repository, PR number, exact head
+   SHA, and `previous_verdicts` for every `repeat_review_findings` item you
+   checked. Use `resolved` only when the latest code fixes the claim; use
+   `invalidated` when the prior claim is no longer true or was a false positive;
+   use `suppressed` only when the memory context or final record path confirms a
+   current human suppression; use `still_present` or `partially_resolved` only
+   when you also recorded the surviving finding in `eneo_review_memory_record`;
+   use `not_checked` when you could not confidently re-check it. Omitted prior
+   findings default to `not_checked` and remain current. The finalizer applies
+   suppressions, assigns stable local `F` references, tracks current, closed,
+   still-present, partially-resolved, needs-recheck, and new findings against
+   the previous review, then renders the AGENTS.md-compliant Markdown comment
+   and records publication metadata. Return its `markdown` field unchanged.
 9. Just before returning the final comment, call `eneo_review_run_complete` with
    the repository, PR number, `run_id` from run_start, status `generated`, and
    `findings_count` from `eneo_review_finalize` (use `failed` only if you could

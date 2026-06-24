@@ -77,6 +77,10 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("from other pull requests", canonical)
         self.assertIn("reuse its exact `rule_id`", skill)
         self.assertIn("`symbol`, and `anchor`", skill)
+        self.assertIn("previous_verdicts", skill)
+        self.assertIn("findings default to `not_checked`", skill)
+        self.assertIn("invalidated, suppressed, still-present", canonical)
+        self.assertIn("classify it as `not_checked`", canonical)
 
     def test_skeptical_gate_pins_falsification_and_quality_rules(self):
         canonical = read("bootstrap/workspace/AGENTS.md")

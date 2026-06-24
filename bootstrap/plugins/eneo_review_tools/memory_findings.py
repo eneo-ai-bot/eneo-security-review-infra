@@ -28,6 +28,7 @@ try:
         compact_text,
         current_policy_revision,
         isoformat,
+        local_reference_number,
         normalize_context_hash,
         normalize_path,
         normalize_repository,
@@ -55,6 +56,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         compact_text,
         current_policy_revision,
         isoformat,
+        local_reference_number,
         normalize_context_hash,
         normalize_path,
         normalize_repository,
@@ -102,9 +104,30 @@ def _review_subject_id(
     return int(row["id"])
 
 
-def local_reference_number(value: str) -> int:
-    match = re.fullmatch(r"F([1-9][0-9]*)", str(value or "").strip().upper())
-    return int(match.group(1)) if match else 0
+def _latest_publication_current_fingerprints(
+    connection: sqlite3.Connection,
+    repository: str,
+    pr_number: int,
+) -> set[str] | None:
+    publication = connection.execute(
+        """
+        SELECT id FROM review_publications
+        WHERE repository = ? AND pr_number = ? AND superseded_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (repository, pr_number),
+    ).fetchone()
+    if not publication:
+        return None
+    rows = connection.execute(
+        """
+        SELECT fingerprint FROM publication_findings
+        WHERE publication_id = ? AND status = 'current'
+        """,
+        (int(publication["id"]),),
+    ).fetchall()
+    return {str(row["fingerprint"]) for row in rows}
 
 
 def assign_local_reference(
@@ -584,37 +607,49 @@ def memory_context(
 
     repeat_review_findings: list[dict[str, Any]] = []
     if pr_number is not None:
-        repeat_params: list[Any] = [repository, pr_number]
-        repeat_where = "repository = ? AND pr_number = ?"
-        if clean_paths:
-            placeholders = ",".join("?" for _ in clean_paths)
-            repeat_where += f" AND path IN ({placeholders})"
-            repeat_params.extend(clean_paths)
-        repeat_rows = connection.execute(
-            f"""
-            SELECT fo.fingerprint, fo.rule_id, fo.path, fo.line, fo.symbol, fo.anchor,
-                   fo.title, fo.severity, fo.category, fo.publication_score, fo.confidence,
-                   fo.context_hash, fo.pr_number, fo.head_sha, fo.policy_revision,
-                   fo.observed_at AS last_seen_at, fo.evidence, fo.disproof_checks,
-                   fo.impact, fo.smallest_fix, refs.local_reference
-            FROM finding_observations fo
-            JOIN (
-                SELECT fingerprint, MAX(id) AS id
-                FROM finding_observations
-                WHERE {repeat_where}
-                GROUP BY fingerprint
-                ORDER BY MAX(id) DESC
-                LIMIT ?
-            ) latest ON latest.id = fo.id
-            LEFT JOIN pr_finding_references refs
-              ON refs.repository = fo.repository
-             AND refs.pr_number = fo.pr_number
-             AND refs.fingerprint = fo.fingerprint
-            ORDER BY fo.observed_at DESC, fo.id DESC
-            """,
-            [*repeat_params, MAX_FINDINGS_PER_REVIEW],
-        ).fetchall()
-        repeat_items = [dict(row) for row in repeat_rows]
+        active_publication_fingerprints = _latest_publication_current_fingerprints(
+            connection,
+            repository,
+            pr_number,
+        )
+        repeat_items: list[dict[str, Any]] = []
+        if active_publication_fingerprints is None or active_publication_fingerprints:
+            repeat_params: list[Any] = [repository, pr_number]
+            repeat_where = "repository = ? AND pr_number = ?"
+            if active_publication_fingerprints is not None:
+                fingerprints = sorted(active_publication_fingerprints)
+                placeholders = ",".join("?" for _ in fingerprints)
+                repeat_where += f" AND fingerprint IN ({placeholders})"
+                repeat_params.extend(fingerprints)
+            if clean_paths:
+                placeholders = ",".join("?" for _ in clean_paths)
+                repeat_where += f" AND path IN ({placeholders})"
+                repeat_params.extend(clean_paths)
+            repeat_rows = connection.execute(
+                f"""
+                SELECT fo.fingerprint, fo.rule_id, fo.path, fo.line, fo.symbol, fo.anchor,
+                       fo.title, fo.severity, fo.category, fo.publication_score, fo.confidence,
+                       fo.context_hash, fo.pr_number, fo.head_sha, fo.policy_revision,
+                       fo.observed_at AS last_seen_at, fo.evidence, fo.disproof_checks,
+                       fo.impact, fo.smallest_fix, refs.local_reference
+                FROM finding_observations fo
+                JOIN (
+                    SELECT fingerprint, MAX(id) AS id
+                    FROM finding_observations
+                    WHERE {repeat_where}
+                    GROUP BY fingerprint
+                    ORDER BY MAX(id) DESC
+                    LIMIT ?
+                ) latest ON latest.id = fo.id
+                LEFT JOIN pr_finding_references refs
+                  ON refs.repository = fo.repository
+                 AND refs.pr_number = fo.pr_number
+                 AND refs.fingerprint = fo.fingerprint
+                ORDER BY fo.observed_at DESC, fo.id DESC
+                """,
+                [*repeat_params, MAX_FINDINGS_PER_REVIEW],
+            ).fetchall()
+            repeat_items = [dict(row) for row in repeat_rows]
         repeat_decisions = latest_decisions_for_fingerprints(
             connection, (item["fingerprint"] for item in repeat_items)
         )

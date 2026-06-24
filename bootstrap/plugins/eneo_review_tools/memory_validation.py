@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, get_args
 
 DEFAULT_POLICY_REVISION = "policy-v1"
 SEVERITY_ORDER = ("Critical", "High", "Medium", "Low")
@@ -18,6 +18,15 @@ SEVERITY_SCORE_GATES = {
 SEVERITIES = set(SEVERITY_ORDER)
 LOWER_PRIORITY_SEVERITIES = {"Medium", "Low"}
 MAX_FINDINGS_PER_REVIEW = 200
+PriorFindingVerdictValue = Literal[
+    "resolved",
+    "still_present",
+    "partially_resolved",
+    "invalidated",
+    "suppressed",
+    "not_checked",
+]
+PRIOR_FINDING_VERDICTS = get_args(PriorFindingVerdictValue)
 CATEGORIES = {
     "security",
     "correctness",
@@ -106,6 +115,11 @@ def compact_text(value: Any, *, maximum: int = 800) -> str:
     if len(text) <= maximum:
         return text
     return text[: maximum - 1].rstrip() + "..."
+
+
+def local_reference_number(value: str) -> int:
+    match = re.fullmatch(r"F([1-9][0-9]*)", str(value or "").strip().upper())
+    return int(match.group(1)) if match else 0
 
 
 def clean_multiline(

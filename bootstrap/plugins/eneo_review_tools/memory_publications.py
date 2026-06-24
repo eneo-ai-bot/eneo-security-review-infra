@@ -4,39 +4,64 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict, cast
 
 try:
     from .memory_decisions import active_suppression
-    from .memory_findings import assign_local_reference, local_reference_number
+    from .memory_findings import assign_local_reference
     from .memory_validation import (
         HASH_RE,
+        MAX_FINDINGS_PER_REVIEW,
+        PRIOR_FINDING_VERDICTS,
+        PriorFindingVerdictValue,
         ReviewMemoryError,
         clean_text,
         current_policy_revision,
         isoformat,
+        local_reference_number,
         normalize_repository,
         utc_now,
     )
     from .review_renderer import (
+        ClosedFinding,
         PublishedFinding,
-        ResolvedFinding,
         render_review_markdown,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from memory_decisions import active_suppression
-    from memory_findings import assign_local_reference, local_reference_number
+    from memory_findings import assign_local_reference
     from memory_validation import (
         HASH_RE,
+        MAX_FINDINGS_PER_REVIEW,
+        PRIOR_FINDING_VERDICTS,
+        PriorFindingVerdictValue,
         ReviewMemoryError,
         clean_text,
         current_policy_revision,
         isoformat,
+        local_reference_number,
         normalize_repository,
         utc_now,
     )
-    from review_renderer import PublishedFinding, ResolvedFinding, render_review_markdown
+    from review_renderer import ClosedFinding, PublishedFinding, render_review_markdown
+
+
+ClosedFindingVerdict = Literal["resolved", "invalidated", "suppressed"]
+
+
+class PriorFindingVerdict(TypedDict):
+    local_reference: str
+    verdict: PriorFindingVerdictValue
+    evidence: str
+
+
+class PriorReconciliation(TypedDict):
+    closed: list[ClosedFinding]
+    carry_forward: list[str]
+    still_present: list[str]
+    partially_resolved: list[str]
 
 
 def _subject_row(
@@ -125,6 +150,179 @@ def _finding_payload(
     }
 
 
+def _closed_payload(
+    item: dict[str, Any],
+    *,
+    verdict: ClosedFindingVerdict,
+    evidence: str,
+    title: str = "",
+) -> ClosedFinding:
+    return {
+        "local_reference": str(item["local_reference"]),
+        "fingerprint": str(item["fingerprint"]),
+        "context_hash": str(item["context_hash"]),
+        "verdict": verdict,
+        "title": title,
+        "evidence": evidence,
+    }
+
+
+def _prior_verdict_value(value: str, *, field: str) -> PriorFindingVerdictValue:
+    if value not in PRIOR_FINDING_VERDICTS:
+        raise ReviewMemoryError(f"{field} is not supported")
+    return cast(PriorFindingVerdictValue, value)
+
+
+def _normalize_previous_verdicts(
+    previous_verdicts: object,
+) -> dict[str, PriorFindingVerdict]:
+    if previous_verdicts is None:
+        return {}
+    if not isinstance(previous_verdicts, Sequence) or isinstance(
+        previous_verdicts, (str, bytes)
+    ):
+        raise ReviewMemoryError("previous_verdicts must be an array")
+    verdict_items = cast(Sequence[object], previous_verdicts)
+    if len(verdict_items) > MAX_FINDINGS_PER_REVIEW:
+        raise ReviewMemoryError("previous_verdicts contains too many items")
+
+    verdicts: dict[str, PriorFindingVerdict] = {}
+    for index, raw_item in enumerate(verdict_items):
+        if not isinstance(raw_item, Mapping):
+            raise ReviewMemoryError(
+                f"previous_verdicts[{index}] must be an object"
+            )
+        item = cast(Mapping[object, object], raw_item)
+        local_reference = clean_text(
+            item.get("local_reference"),
+            field=f"previous_verdicts[{index}].local_reference",
+            maximum=12,
+        ).upper()
+        if local_reference_number(local_reference) < 1:
+            raise ReviewMemoryError(
+                f"previous_verdicts[{index}].local_reference must be F1, F2, ..."
+            )
+        if local_reference in verdicts:
+            raise ReviewMemoryError(f"duplicate previous verdict for {local_reference}")
+
+        raw_verdict = clean_text(
+            item.get("verdict"),
+            field=f"previous_verdicts[{index}].verdict",
+            maximum=40,
+        ).lower()
+
+        verdicts[local_reference] = {
+            "local_reference": local_reference,
+            "verdict": _prior_verdict_value(
+                raw_verdict,
+                field=f"previous_verdicts[{index}].verdict",
+            ),
+            "evidence": clean_text(
+                item.get("evidence"),
+                field=f"previous_verdicts[{index}].evidence",
+                maximum=500,
+                required=False,
+            ),
+        }
+    return verdicts
+
+
+def _reconcile_prior_findings(
+    previous_current: Mapping[str, dict[str, Any]],
+    current_by_fingerprint: Mapping[str, PublishedFinding],
+    previous_verdicts: Mapping[str, PriorFindingVerdict],
+    suppressed_fingerprints: set[str],
+) -> PriorReconciliation:
+    by_reference = {
+        str(item["local_reference"]): fingerprint
+        for fingerprint, item in previous_current.items()
+    }
+    for local_reference in previous_verdicts:
+        if local_reference not in by_reference:
+            raise ReviewMemoryError(
+                f"previous verdict {local_reference} does not match a current prior finding"
+            )
+
+    closed: list[ClosedFinding] = []
+    carry_forward: list[str] = []
+    still_present: list[str] = []
+    partially_resolved: list[str] = []
+    for fingerprint, item in previous_current.items():
+        local_reference = str(item["local_reference"])
+        supplied = local_reference in previous_verdicts
+        if supplied:
+            verdict = previous_verdicts[local_reference]
+        else:
+            verdict: PriorFindingVerdict = {
+                "local_reference": local_reference,
+                "verdict": "not_checked",
+                "evidence": "",
+            }
+        observed = fingerprint in current_by_fingerprint
+
+        if observed:
+            if not supplied or verdict["verdict"] == "still_present":
+                still_present.append(local_reference)
+                continue
+            if verdict["verdict"] == "partially_resolved":
+                partially_resolved.append(local_reference)
+                continue
+            raise ReviewMemoryError(
+                f"previous verdict {local_reference}={verdict['verdict']} conflicts "
+                "with a newly recorded finding"
+            )
+
+        if fingerprint in suppressed_fingerprints:
+            closed.append(
+                _closed_payload(
+                    item,
+                    verdict="suppressed",
+                    evidence=(
+                        verdict["evidence"]
+                        or "A current human suppression matches this file version."
+                    ),
+                )
+            )
+            continue
+
+        if verdict["verdict"] == "not_checked":
+            carry_forward.append(fingerprint)
+            continue
+        if verdict["verdict"] == "resolved":
+            closed.append(
+                _closed_payload(
+                    item,
+                    verdict="resolved",
+                    evidence=verdict["evidence"],
+                )
+            )
+            continue
+        if verdict["verdict"] == "invalidated":
+            closed.append(
+                _closed_payload(
+                    item,
+                    verdict="invalidated",
+                    evidence=verdict["evidence"],
+                )
+            )
+            continue
+        if verdict["verdict"] == "suppressed":
+            raise ReviewMemoryError(
+                f"previous verdict {local_reference}=suppressed has no active human suppression"
+            )
+        raise ReviewMemoryError(
+            f"previous verdict {local_reference}={verdict['verdict']} must also record "
+            "the still-current finding"
+        )
+
+    return {
+        "closed": closed,
+        "carry_forward": carry_forward,
+        "still_present": still_present,
+        "partially_resolved": partially_resolved,
+    }
+
+
 def _latest_observation_for_pr(
     connection: sqlite3.Connection,
     repository: str,
@@ -161,6 +359,7 @@ def finalize_review(
     pr_number: int,
     head_sha: str,
     *,
+    previous_verdicts: object = None,
     policy_revision: str | None = None,
     comment_id: int | None = None,
     now: datetime | None = None,
@@ -213,42 +412,55 @@ def finalize_review(
             if item.get("status") == "current"
         }
         current_by_fingerprint = {item["fingerprint"]: item for item in current}
-        # Explicit verdicts are intentionally deferred. Until that path exists,
-        # absence from the latest observation set carries a finding forward instead
-        # of treating it as resolved. This hook is kept so the future verdict slice
-        # can render resolved history without changing the renderer contract again.
-        resolved: list[ResolvedFinding] = []
+        suppressed_previous = {
+            fingerprint
+            for fingerprint, item in previous_current.items()
+            if active_suppression(
+                connection,
+                fingerprint,
+                context_hash=str(item["context_hash"]),
+            )
+        }
+        reconciliation = _reconcile_prior_findings(
+            previous_current,
+            current_by_fingerprint,
+            _normalize_previous_verdicts(previous_verdicts),
+            suppressed_previous,
+        )
+        closed = reconciliation["closed"]
+        for item in closed:
+            latest = _latest_observation_for_pr(
+                connection, repository, pr_number, item["fingerprint"]
+            )
+            if latest:
+                item["title"] = str(latest.get("title", ""))
+
         needs_recheck: list[str] = []
-        for fingerprint, item in previous_current.items():
-            if fingerprint not in current_by_fingerprint:
-                # A carried finding has no fresh trusted file hash. Reuse the hash
-                # from the previously published finding so suppressions apply only
-                # to the exact file version a human or prior review saw.
-                context_hash = str(item["context_hash"])
-                if active_suppression(connection, fingerprint, context_hash=context_hash):
-                    continue
-                carried = _latest_observation_for_pr(
-                    connection, repository, pr_number, fingerprint
+        for fingerprint in reconciliation["carry_forward"]:
+            item = previous_current[fingerprint]
+            # A carried finding has no fresh trusted file hash. Reuse the hash
+            # from the previously published finding so suppressions apply only
+            # to the exact file version a human or prior review saw.
+            context_hash = str(item["context_hash"])
+            carried = _latest_observation_for_pr(
+                connection, repository, pr_number, fingerprint
+            )
+            if carried is None:
+                continue
+            local_reference = str(item["local_reference"])
+            current.append(
+                _finding_payload(
+                    carried,
+                    local_reference=local_reference,
+                    context_hash=context_hash,
+                    review_status="carried_forward",
                 )
-                if carried is None:
-                    continue
-                local_reference = str(item["local_reference"])
-                current.append(
-                    _finding_payload(
-                        carried,
-                        local_reference=local_reference,
-                        context_hash=context_hash,
-                        review_status="carried_forward",
-                    )
-                )
-                current_by_fingerprint[fingerprint] = current[-1]
-                needs_recheck.append(local_reference)
-        still_present = [
-            item["local_reference"]
-            for fingerprint, item in current_by_fingerprint.items()
-            if fingerprint in previous_current
-            and item["review_status"] == "observed"
-        ]
+            )
+            current_by_fingerprint[fingerprint] = current[-1]
+            needs_recheck.append(local_reference)
+
+        still_present = reconciliation["still_present"]
+        partially_resolved = reconciliation["partially_resolved"]
         new_refs = [
             item["local_reference"]
             for fingerprint, item in current_by_fingerprint.items()
@@ -260,10 +472,11 @@ def finalize_review(
             pr_number=pr_number,
             head_sha=head_sha,
             findings=current,
-            resolved=resolved,
-            still_present=sorted(still_present, key=local_reference_number),
-            new_refs=sorted(new_refs, key=local_reference_number),
-            needs_recheck=sorted(needs_recheck, key=local_reference_number),
+            closed=closed,
+            still_present=still_present,
+            partially_resolved=partially_resolved,
+            new_refs=new_refs,
+            needs_recheck=needs_recheck,
         )
         rendered_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
@@ -306,7 +519,7 @@ def finalize_review(
                     item["context_hash"],
                 ),
             )
-        for item in resolved:
+        for item in closed:
             connection.execute(
                 """
                 INSERT INTO publication_findings (
@@ -332,7 +545,8 @@ def finalize_review(
         "head_sha": head_sha,
         "policy_revision": policy,
         "findings_count": len(current),
-        "resolved_count": len(resolved),
+        "resolved_count": sum(1 for item in closed if item["verdict"] == "resolved"),
+        "closed_count": len(closed),
         "rendered_hash": rendered_hash,
         "markdown": markdown,
     }

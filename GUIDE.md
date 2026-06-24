@@ -398,19 +398,15 @@ The rerun should feel like a reviewer following the PR through revisions:
 3. Perform a compact safety sweep of the current full PR.
 
 The current phase may post another review comment on each manual rerun. The
-finalizer keeps stable `F1`/`F2` references and shows still-present,
-needs-recheck, and new finding references when a previous review exists. A prior
-current finding that is absent from the latest observation set is not treated as
-resolved; it remains active until explicitly verified, suppressed, or handled by
-a future explicit-verdict path. Updating one current bot review comment in place
-remains a future delivery slice because Hermes owns the final `github_comment`
-post. Re-running the same Actions job reuses the original delivery ID and should
-not duplicate it inside Hermes' idempotency window.
-
-The explicit verdict path should ship before any one-comment publisher. Until
-then, a fixed but unverified prior finding remains a needs-recheck item instead
-of being inferred resolved; that is intentionally conservative but not the final
-publisher experience.
+finalizer keeps stable `F1`/`F2` references and shows resolved, invalidated,
+suppressed, still-present, partially-resolved, needs-recheck, and new finding
+references when a previous review exists. A prior current finding that is absent
+from the latest observation set is not treated as resolved; it remains active
+unless the reviewer explicitly classifies it as resolved or invalidated, or a
+current human suppression applies. Updating one current bot review comment in
+place remains a future delivery slice because Hermes owns the final
+`github_comment` post. Re-running the same Actions job reuses the original
+delivery ID and should not duplicate it inside Hermes' idempotency window.
 
 A direct smoke test is included:
 

@@ -326,6 +326,310 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("F1 - Critical / P0 - security", result["markdown"])
         self.assertNotIn("Resolved since the previous review: F1", result["markdown"])
 
+    def test_finalize_review_resolves_prior_finding_with_explicit_verdict(self):
+        first = self.finding
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+        )
+        first_recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [second],
+            context_hashes={second["path"]: "e" * 40},
+        )
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "resolved",
+                    "evidence": "Tenant scope is now bound from the verified request.",
+                },
+                {"local_reference": "F2", "verdict": "still_present"},
+            ],
+        )
+
+        self.assertEqual(result["findings_count"], 1)
+        self.assertEqual(result["resolved_count"], 1)
+        self.assertEqual(result["closed_count"], 1)
+        self.assertIn("Resolved since the previous review: F1", result["markdown"])
+        self.assertIn("Still present: F2", result["markdown"])
+        self.assertNotIn("Needs recheck: F1", result["markdown"])
+        visible_brief = result["markdown"].split(
+            "<summary>Copyable fix brief for a coding agent</summary>",
+            1,
+        )[1]
+        self.assertNotIn("F1 - Critical / P0 - security", visible_brief)
+        self.assertIn("F2 - Medium / P2 - tests", visible_brief)
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            [first["path"], second["path"]],
+            pr_number=17,
+        )
+        self.assertEqual(
+            {item["fingerprint"] for item in context["repeat_review_findings"]},
+            {first_recorded[1]["fingerprint"]},
+        )
+
+    def test_finalize_review_tracks_partial_resolution_for_current_finding(self):
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "partially_resolved",
+                    "evidence": "The API path is guarded but the repository write is still unscoped.",
+                }
+            ],
+        )
+
+        self.assertEqual(result["findings_count"], 1)
+        self.assertIn("Partially resolved: F1", result["markdown"])
+        self.assertNotIn("Still present: F1", result["markdown"])
+
+    def test_finalize_review_invalidates_absent_prior_finding(self):
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [],
+            context_hashes={},
+        )
+
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "invalidated",
+                    "evidence": "The prior claim relied on a stale caller path.",
+                }
+            ],
+        )
+
+        self.assertEqual(result["findings_count"], 0)
+        self.assertEqual(result["resolved_count"], 0)
+        self.assertEqual(result["closed_count"], 1)
+        self.assertIn("Invalidated since the previous review: F1", result["markdown"])
+        self.assertIn("No current findings survived this review.", result["markdown"])
+        self.assertNotIn("Copyable fix brief for a coding agent", result["markdown"])
+
+    def test_finalize_review_closes_prior_finding_with_human_suppression(self):
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )[0]
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.add_decision(
+            self.connection,
+            recorded["fingerprint"],
+            "false_positive",
+            "The tenant guard exists in an unchanged dependency.",
+            "github:alice",
+            expires_days=180,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [],
+            context_hashes={},
+        )
+
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40)
+
+        self.assertEqual(result["findings_count"], 0)
+        self.assertEqual(result["resolved_count"], 0)
+        self.assertEqual(result["closed_count"], 1)
+        self.assertIn("Suppressed by human decision: F1", result["markdown"])
+
+    def test_finalize_review_closes_observed_finding_with_human_suppression(self):
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )[0]
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.add_decision(
+            self.connection,
+            recorded["fingerprint"],
+            "false_positive",
+            "The tenant guard exists in an unchanged dependency.",
+            "github:alice",
+            expires_days=180,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            previous_verdicts=[{"local_reference": "F1", "verdict": "still_present"}],
+        )
+
+        self.assertEqual(result["findings_count"], 0)
+        self.assertEqual(result["resolved_count"], 0)
+        self.assertEqual(result["closed_count"], 1)
+        self.assertIn("Suppressed by human decision: F1", result["markdown"])
+        self.assertNotIn("### F1", result["markdown"])
+
+    def test_finalize_review_rejects_contradictory_prior_verdict(self):
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [self.finding],
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+
+        with self.assertRaises(memory_db.ReviewMemoryError):
+            memory_db.finalize_review(
+                self.connection,
+                "eneo/platform",
+                17,
+                "b" * 40,
+                previous_verdicts=[
+                    {"local_reference": "F1", "verdict": "resolved"}
+                ],
+            )
+
+    def test_finalize_review_missing_path_verdict_defaults_to_not_checked(self):
+        first = self.finding
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            [second["path"]],
+            pr_number=17,
+        )
+        self.assertEqual(
+            [item["local_reference"] for item in context["repeat_review_findings"]],
+            ["F2"],
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [second],
+            context_hashes={second["path"]: "e" * 40},
+        )
+
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            previous_verdicts=[{"local_reference": "F2", "verdict": "still_present"}],
+        )
+
+        self.assertEqual(result["findings_count"], 2)
+        self.assertIn("Needs recheck: F1", result["markdown"])
+        self.assertIn("Still present: F2", result["markdown"])
+
     def test_carried_reference_is_not_reused_by_new_finding(self):
         first = self.finding
         second = dict(

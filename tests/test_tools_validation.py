@@ -86,6 +86,15 @@ class ToolValidationTests(unittest.TestCase):
         ]["items"]["properties"]["severity"]
         self.assertEqual(severity_schema["enum"], sorted(memory_db.SEVERITIES))
 
+    def test_schema_prior_verdicts_come_from_memory_owner(self):
+        verdict_schema = schemas.ENEO_REVIEW_FINALIZE["parameters"]["properties"][
+            "previous_verdicts"
+        ]["items"]["properties"]["verdict"]
+        self.assertEqual(
+            verdict_schema["enum"],
+            list(memory_db.PRIOR_FINDING_VERDICTS),
+        )
+
     def test_plugin_registers_all_declared_tools(self):
         registry = _FakeRegistry()
 

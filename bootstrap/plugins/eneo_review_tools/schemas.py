@@ -234,6 +234,39 @@ ENEO_REVIEW_FINALIZE = {
                 "pattern": "^[0-9a-f]{40,64}$",
                 "description": "Exact pull-request head commit SHA from eneo_pr_overview.",
             },
+            "previous_verdicts": {
+                "type": "array",
+                "maxItems": memory_contract.MAX_FINDINGS_PER_REVIEW,
+                "description": (
+                    "Optional explicit verdicts for prior F references returned through "
+                    "repeat_review_findings. Omitted prior findings default to not_checked "
+                    "and remain current until explicitly resolved, invalidated, suppressed, "
+                    "or observed again."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "local_reference": {
+                            "type": "string",
+                            "pattern": "^F[1-9][0-9]*$",
+                        },
+                        "verdict": {
+                            "type": "string",
+                            "enum": list(memory_contract.PRIOR_FINDING_VERDICTS),
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": (
+                                "Short reason for resolved, invalidated, suppressed, or "
+                                "partially resolved verdicts. Keep empty when omitted or "
+                                "not checked."
+                            ),
+                        },
+                    },
+                    "required": ["local_reference", "verdict"],
+                    "additionalProperties": False,
+                },
+            },
         },
         "required": ["repository", "pr_number", "head_sha"],
         "additionalProperties": False,

@@ -638,7 +638,13 @@ def review_finalize(args: dict[str, Any], **_: Any) -> str:
 
         _validate_open_pr_head(repository, number, head_sha)
         with closing(memory_db.connect()) as connection:
-            result = memory_db.finalize_review(connection, repository, number, head_sha)
+            result = memory_db.finalize_review(
+                connection,
+                repository,
+                number,
+                head_sha,
+                previous_verdicts=args.get("previous_verdicts"),
+            )
         return _output(result)
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
         return _error(str(exc))
