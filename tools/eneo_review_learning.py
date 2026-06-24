@@ -167,6 +167,42 @@ CONTRADICTORY_DECISIONS: Final = {
     "accepted_risk",
     "duplicate",
 }
+CONTRADICTORY_OUTCOME_ROUTE: Final = "contradictory_outcome"
+POSITIVE_PATTERN_ROUTE: Final = "positive_pattern"
+CONTRADICTORY_OUTCOME_POLICY: Final = SignalPolicy(
+    "medium",
+    CONTRADICTORY_OUTCOME_ROUTE,
+    "Investigate why the same observation moved through a human decision and "
+    "later resolved before changing reviewer policy.",
+)
+POSITIVE_DECISION_POLICY: Final = SignalPolicy(
+    "medium",
+    POSITIVE_PATTERN_ROUTE,
+    "Treat as a fixed-finding example only when the root cause is independently "
+    "confirmed by a regression test.",
+)
+POSITIVE_FEEDBACK_POLICY: Final = SignalPolicy(
+    "medium",
+    POSITIVE_PATTERN_ROUTE,
+    "Protect the behavior only if a later change risks regressing the useful "
+    "output shape.",
+)
+_DERIVED_SIGNAL_POLICIES: Final[tuple[SignalPolicy, ...]] = (
+    CONTRADICTORY_OUTCOME_POLICY,
+    POSITIVE_DECISION_POLICY,
+    POSITIVE_FEEDBACK_POLICY,
+)
+EMITTED_SUGGESTED_ROUTES: Final[frozenset[str]] = frozenset(
+    {policy.suggested_route for policy in DECISION_POLICIES.values()}
+    | {policy.suggested_route for policy in QUALITY_POLICIES.values()}
+    | {policy.suggested_route for policy in _DERIVED_SIGNAL_POLICIES}
+)
+EMITTED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    set(DECISION_POLICIES)
+    | set(POSITIVE_DECISIONS)
+    | set(QUALITY_POLICIES)
+    | set(POSITIVE_FEEDBACK)
+)
 
 
 def build_learning_report(
@@ -191,28 +227,11 @@ def build_learning_report(
         if decision in POSITIVE_DECISIONS:
             if _has_contradictory_chain(episode):
                 decision_candidates.append(
-                    _decision_signal(
-                        episode,
-                        SignalPolicy(
-                            "medium",
-                            "contradictory_outcome",
-                            "Investigate why the same observation moved through a "
-                            "human decision and later resolved before changing "
-                            "reviewer policy.",
-                        ),
-                    )
+                    _decision_signal(episode, CONTRADICTORY_OUTCOME_POLICY)
                 )
             else:
                 positive_patterns.append(
-                    _decision_signal(
-                        episode,
-                        SignalPolicy(
-                            "medium",
-                            "positive_pattern",
-                            "Treat as a fixed-finding example only when the root "
-                            "cause is independently confirmed by a regression test.",
-                        ),
-                    )
+                    _decision_signal(episode, POSITIVE_DECISION_POLICY)
                 )
         elif decision in DECISION_POLICIES:
             decision_candidates.append(
@@ -227,15 +246,7 @@ def build_learning_report(
             continue
         if category in POSITIVE_FEEDBACK:
             positive_patterns.append(
-                _quality_signal(
-                    row,
-                    SignalPolicy(
-                        "medium",
-                        "positive_pattern",
-                        "Protect the behavior only if a later change risks "
-                        "regressing the useful output shape.",
-                    ),
-                )
+                _quality_signal(row, POSITIVE_FEEDBACK_POLICY)
             )
         elif category in QUALITY_POLICIES:
             quality_signals.append(_quality_signal(row, QUALITY_POLICIES[category]))

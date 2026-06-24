@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from eneo_review_coach import COACH_SCHEMA_VERSION
+from eneo_review_export import optional_int, optional_string
 
 
 PROPOSAL_SCHEMA_VERSION: Final = 1
@@ -23,6 +24,11 @@ REVIEW_QUALITY_PROVENANCE_REASON: Final = (
     "review-quality feedback needs exact publication or finding provenance"
 )
 POSITIVE_PATTERN_REASON: Final = "positive patterns need an explicit regression-risk trigger"
+POLICY_CHANGE_GUARDRAIL: Final = (
+    "Do not change reviewer policy unless a human has reviewed the proposal and a "
+    "focused replay or behavior test proves the current reviewer repeats this "
+    "mistake or needs to preserve this pattern."
+)
 
 _EVENT_TYPE_PRIORITY: Final[dict[str, int]] = {
     "missed_issue": 0,
@@ -59,10 +65,10 @@ _TARGET_BY_ROUTE: Final[dict[str, str]] = {
     "severity_calibration": "replay_then_skill",
     "stability_regression": "replay_then_skill",
 }
-
-SUPPORTED_SUGGESTED_ROUTES: Final = frozenset(_TARGET_BY_ROUTE)
-SUPPORTED_EVENT_TYPES: Final = frozenset(_EVENT_TYPE_PRIORITY)
-
+PROPOSAL_SUPPORTED_SUGGESTED_ROUTES: Final[frozenset[str]] = frozenset(
+    _TARGET_BY_ROUTE
+) | frozenset(_ROUTE_PRIORITY)
+PROPOSAL_SUPPORTED_EVENT_TYPES: Final[frozenset[str]] = frozenset(_EVENT_TYPE_PRIORITY)
 
 @dataclass(frozen=True)
 class CoachEvent:
@@ -292,8 +298,8 @@ def build_proposal(
         schema_version=PROPOSAL_SCHEMA_VERSION,
         source_coach_schema_version=COACH_SCHEMA_VERSION,
         source_event_set_id=source_event_set_id,
-        source_snapshot_id=_string(coach_export, "snapshot_id"),
-        repository_untrusted=_string(coach_export, "repository_untrusted"),
+        source_snapshot_id=optional_string(coach_export, "snapshot_id"),
+        repository_untrusted=optional_string(coach_export, "repository_untrusted"),
         decision="propose" if candidate_payloads else "no_change",
         candidates=candidate_payloads,
         governance_observations=governance_observations,
@@ -301,8 +307,7 @@ def build_proposal(
         events_considered=len(events),
         notes=(
             "This private artifact is an evidence-selection proposal, not reviewer policy.",
-            "Do not edit skills, prompts, ADRs, or plugin code until a human reviews "
-            "the proposal and adds a replay or focused test.",
+            POLICY_CHANGE_GUARDRAIL,
             "Fields ending in _untrusted remain bounded untrusted text from humans "
             "or repositories.",
         ),
@@ -310,22 +315,8 @@ def build_proposal(
     )
 
 
-def build_proposal_bundle(
-    coach_export: Mapping[str, object],
-    *,
-    max_candidates: int = DEFAULT_MAX_CANDIDATES,
-    min_independent_episodes: int = DEFAULT_MIN_INDEPENDENT_EPISODES,
-) -> dict[str, object]:
-    return build_proposal(
-        coach_export,
-        max_candidates=max_candidates,
-        min_independent_episodes=min_independent_episodes,
-    ).to_json_obj()
-
-
-def dumps_proposal_bundle(bundle: ProposalBundle | Mapping[str, object]) -> str:
-    payload = bundle.to_json_obj() if isinstance(bundle, ProposalBundle) else bundle
-    return json.dumps(payload, sort_keys=True, indent=2) + "\n"
+def dumps_proposal_bundle(bundle: ProposalBundle) -> str:
+    return json.dumps(bundle.to_json_obj(), sort_keys=True, indent=2) + "\n"
 
 
 def render_markdown(bundle: ProposalBundle) -> str:
@@ -394,9 +385,7 @@ def render_markdown(bundle: ProposalBundle) -> str:
                 f"Candidate key: {first.candidate_key}",
                 f"Target owner: {first.target_owner}",
                 f"Evidence event ids: {', '.join(first.evidence_event_ids)}",
-                "Do not change reviewer policy unless a focused replay or behavior "
-                "test proves the current reviewer repeats this mistake or needs "
-                "to preserve this pattern.",
+                POLICY_CHANGE_GUARDRAIL,
             ]
         )
         lines.extend(["```", ""])
@@ -416,7 +405,7 @@ def _validate_schema(payload: Mapping[str, object]) -> None:
 
 
 def _required_top_level_string(row: Mapping[str, object], key: str) -> str:
-    value = _string(row, key)
+    value = optional_string(row, key)
     if not value:
         raise ValueError(f"coach export is missing {key}")
     return value
@@ -440,14 +429,14 @@ def _event(item: Mapping[str, object], index: int) -> CoachEvent:
         suggested_route=_required_string(item, "suggested_route", index),
         promotion_eligible=_required_bool(item, "promotion_eligible", index),
         missing_evidence=tuple(_string_list(item, "missing_evidence", index)),
-        title_untrusted=_string(item, "reviewer_title_untrusted"),
-        human_reason_untrusted=_string(item, "human_reason_untrusted"),
-        next_step_untrusted=_string(item, "next_step_untrusted"),
-        repository_untrusted=_string(source, "repository_untrusted"),
-        pr_number=_optional_int(source, "pr_number"),
-        fingerprint=_string(source, "fingerprint"),
-        observation_id=_optional_int(source, "observation_id"),
-        local_reference=_string(source, "local_reference"),
+        title_untrusted=optional_string(item, "reviewer_title_untrusted"),
+        human_reason_untrusted=optional_string(item, "human_reason_untrusted"),
+        next_step_untrusted=optional_string(item, "next_step_untrusted"),
+        repository_untrusted=optional_string(source, "repository_untrusted"),
+        pr_number=optional_int(source, "pr_number"),
+        fingerprint=optional_string(source, "fingerprint"),
+        observation_id=optional_int(source, "observation_id"),
+        local_reference=optional_string(source, "local_reference"),
         related_event_ids=tuple(_string_list(item, "related_event_ids", index)),
     )
 
@@ -702,19 +691,10 @@ def _string_list(
 
 
 def _required_string(row: Mapping[str, object], key: str, index: int) -> str:
-    value = _string(row, key)
+    value = optional_string(row, key)
     if not value:
         raise ValueError(f"events[{index}].{key} is required")
     return value
-
-
-def _string(row: Mapping[str, object], key: str) -> str:
-    value = row.get(key)
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        return str(value)
-    return " ".join(value.strip().split())
 
 
 def _required_bool(row: Mapping[str, object], key: str, event_index: int) -> bool:
@@ -722,15 +702,6 @@ def _required_bool(row: Mapping[str, object], key: str, event_index: int) -> boo
     if not isinstance(value, bool):
         raise ValueError(f"events[{event_index}].{key} must be a boolean")
     return value
-
-
-def _optional_int(row: Mapping[str, object], key: str) -> int | None:
-    value = row.get(key)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
 
 
 def _bounded(value: str) -> str:
