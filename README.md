@@ -197,9 +197,16 @@ Codex or Claude Code.
 
 After fixing findings, push the fix commit and comment `@review` again. The
 rerun re-checks previous unresolved findings, reviews the new fix delta, and
-performs a compact safety sweep of the current PR. A later publisher slice should
-update one current bot review comment per PR and preserve stable `F1`/`F2`
-references across review iterations.
+performs a compact safety sweep of the current PR. Prior current findings stay
+active when the latest run does not explicitly re-observe them; the review marks
+those references as needing recheck instead of treating absence as resolution. A
+later publisher slice should update one current bot review comment per PR and
+preserve stable `F1`/`F2` references across review iterations.
+
+Before a one-comment publisher lands, add an explicit verdict path for previous
+findings. Without that, fixed findings can only be carried forward as
+needs-recheck items; that conservative interim behavior is safer than silently
+dropping them, but it should not become the long-term publication model.
 
 The reviewer covers:
 

@@ -101,6 +101,13 @@ def clean_text(value: Any, *, field: str, maximum: int, required: bool = True) -
     return text
 
 
+def compact_text(value: Any, *, maximum: int = 800) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if len(text) <= maximum:
+        return text
+    return text[: maximum - 1].rstrip() + "..."
+
+
 def clean_multiline(
     value: Any, *, field: str, maximum: int, required: bool = True
 ) -> str:

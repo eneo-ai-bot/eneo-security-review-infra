@@ -1,6 +1,6 @@
 ## Eneo AI code & security review
 
-I found 2 findings: 1 High / P1 and 1 Medium / P2.
+There are 2 current findings: 1 High / P1 and 1 Medium / P2.
 
 ### F1 - High / P1: Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security

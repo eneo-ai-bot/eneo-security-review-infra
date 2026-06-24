@@ -25,6 +25,7 @@ try:
         ReviewMemoryError,
         clean_multiline,
         clean_text,
+        compact_text,
         current_policy_revision,
         isoformat,
         normalize_context_hash,
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         ReviewMemoryError,
         clean_multiline,
         clean_text,
+        compact_text,
         current_policy_revision,
         isoformat,
         normalize_context_hash,
@@ -593,7 +595,8 @@ def memory_context(
             SELECT fo.fingerprint, fo.rule_id, fo.path, fo.line, fo.symbol, fo.anchor,
                    fo.title, fo.severity, fo.category, fo.publication_score, fo.confidence,
                    fo.context_hash, fo.pr_number, fo.head_sha, fo.policy_revision,
-                   fo.observed_at AS last_seen_at, refs.local_reference
+                   fo.observed_at AS last_seen_at, fo.evidence, fo.disproof_checks,
+                   fo.impact, fo.smallest_fix, refs.local_reference
             FROM finding_observations fo
             JOIN (
                 SELECT fingerprint, MAX(id) AS id
@@ -618,6 +621,26 @@ def memory_context(
         for item in repeat_items:
             repeat_item = enrich(item, repeat_decisions)
             if not repeat_item["suppressed_for_last_seen_file_version"]:
+                repeat_item["previous_head"] = str(item["head_sha"])
+                repeat_item["prior_claim"] = compact_text(
+                    item.get("evidence"), maximum=600
+                )
+                repeat_item["prior_disproof_checks"] = compact_text(
+                    item.get("disproof_checks"), maximum=420
+                )
+                repeat_item["prior_impact"] = compact_text(
+                    item.get("impact"), maximum=420
+                )
+                repeat_item["prior_smallest_fix"] = compact_text(
+                    item.get("smallest_fix"), maximum=520
+                )
+                for old_field in (
+                    "evidence",
+                    "disproof_checks",
+                    "impact",
+                    "smallest_fix",
+                ):
+                    repeat_item.pop(old_field, None)
                 repeat_review_findings.append(repeat_item)
 
     return {

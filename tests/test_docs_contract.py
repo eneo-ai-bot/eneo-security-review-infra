@@ -47,7 +47,7 @@ class DocsContractTests(unittest.TestCase):
             body = read(relative)
             with self.subTest(relative=relative):
                 self.assertIn(
-                    "I found 2 findings: 1 High / P1 and 1 Medium / P2.",
+                    "There are 2 current findings: 1 High / P1 and 1 Medium / P2.",
                     body,
                 )
                 self.assertNotIn("| Severity | Category | Location | Finding | ID |", body)
@@ -75,7 +75,8 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("compact safety sweep", skill)
         self.assertIn("may come", canonical)
         self.assertIn("from other pull requests", canonical)
-        self.assertIn("reuse its exact `rule_id`, `symbol`, and `anchor`", skill)
+        self.assertIn("reuse its exact `rule_id`", skill)
+        self.assertIn("`symbol`, and `anchor`", skill)
 
     def test_skeptical_gate_pins_falsification_and_quality_rules(self):
         canonical = read("bootstrap/workspace/AGENTS.md")

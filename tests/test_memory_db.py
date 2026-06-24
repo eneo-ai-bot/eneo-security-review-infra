@@ -148,7 +148,13 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(
             context["repeat_review_findings"][0]["fingerprint"], result["fingerprint"]
         )
-        self.assertNotIn("evidence", context["repeat_review_findings"][0])
+        repeat = context["repeat_review_findings"][0]
+        self.assertNotIn("evidence", repeat)
+        self.assertEqual(
+            repeat["prior_claim"],
+            "The changed query writes a caller-controlled tenant identifier.",
+        )
+        self.assertIn("neither binds tenant_id", repeat["prior_disproof_checks"])
 
     def test_context_separates_same_pr_repeat_findings_from_cross_pr_history(self):
         same_pr = self.record()
@@ -189,6 +195,11 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(repeat["line"], 42)
         self.assertEqual(repeat["context_hash"], "d" * 40)
         self.assertNotIn("evidence", repeat)
+        self.assertEqual(
+            repeat["prior_claim"],
+            "The changed query writes a caller-controlled tenant identifier.",
+        )
+        self.assertEqual(repeat["previous_head"], "a" * 40)
 
         row = self.connection.execute(
             "SELECT occurrences FROM findings WHERE fingerprint = ?", (same_pr["fingerprint"],)
@@ -227,7 +238,10 @@ class ReviewMemoryTests(unittest.TestCase):
         markdown = result["markdown"]
         visible = markdown.split("<!--", 1)[0]
         self.assertEqual(result["findings_count"], 2)
-        self.assertIn("I found 2 findings: 1 Critical / P0 and 1 Medium / P2.", markdown)
+        self.assertIn(
+            "There are 2 current findings: 1 Critical / P0 and 1 Medium / P2.",
+            markdown,
+        )
         self.assertIn("### F1 - Critical / P0: Document creation omits tenant scope", markdown)
         self.assertIn("### F2 - Medium / P2: Regression test misses tenant failure path", markdown)
         self.assertIn("Copyable fix brief for a coding agent", markdown)
@@ -264,10 +278,10 @@ class ReviewMemoryTests(unittest.TestCase):
 
         result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
 
-        self.assertIn("I found 2 findings: 2 High / P1.", result["markdown"])
+        self.assertIn("There are 2 current findings: 2 High / P1.", result["markdown"])
         self.assertNotIn("I found 2 High / P1 finding.", result["markdown"])
 
-    def test_finalize_review_marks_previous_findings_resolved_on_next_head(self):
+    def test_finalize_review_carries_unobserved_previous_findings(self):
         first = self.finding
         second = dict(
             self.finding,
@@ -300,11 +314,105 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40)
 
-        self.assertEqual(result["findings_count"], 1)
-        self.assertEqual(result["resolved_count"], 1)
+        self.assertEqual(result["findings_count"], 2)
+        self.assertEqual(result["resolved_count"], 0)
         self.assertIn("Review updated for the latest commit.", result["markdown"])
-        self.assertIn("Resolved since the previous review: F1", result["markdown"])
+        self.assertIn("Needs recheck: F1", result["markdown"])
         self.assertIn("Still present: F2", result["markdown"])
+        self.assertIn(
+            "### F1 - Critical / P0: Document creation omits tenant scope",
+            result["markdown"],
+        )
+        self.assertIn("F1 - Critical / P0 - security", result["markdown"])
+        self.assertNotIn("Resolved since the previous review: F1", result["markdown"])
+
+    def test_carried_reference_is_not_reused_by_new_finding(self):
+        first = self.finding
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+        )
+        third = dict(
+            self.finding,
+            rule_id="reliability.unbounded-job",
+            category="reliability",
+            path="backend/jobs/migrate.py",
+            line=12,
+            anchor="run migration job",
+            title="Migration job can run without bounded retries",
+            severity="High",
+            publication_score=8,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [second],
+            context_hashes={second["path"]: "e" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40)
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "c" * 40,
+            [second, third],
+            context_hashes={second["path"]: "e" * 40, third["path"]: "f" * 40},
+        )
+
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "c" * 40)
+
+        self.assertIn("Still present: F2", result["markdown"])
+        self.assertIn("Needs recheck: F1", result["markdown"])
+        self.assertIn("New findings: F3", result["markdown"])
+        self.assertIn(
+            "### F3 - High / P1: Migration job can run without bounded retries",
+            result["markdown"],
+        )
+
+    def test_finalize_review_escapes_model_text_in_markdown_layout(self):
+        malicious = dict(
+            self.finding,
+            title="Break </details> <!-- hidden --> ``` fence",
+            evidence="Evidence tries </details> and <!-- hidden --> plus ```fence.",
+            impact="Impact closes </details> and starts <!-- hidden -->.",
+            smallest_fix="Fix uses ```not a fence``` and keeps layout intact.",
+            disproof_checks="Verify </details> is escaped and ``` is neutralized.",
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [malicious],
+            context_hashes={malicious["path"]: "d" * 40},
+        )
+
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        visible = result["markdown"].split("<!--\neneo-review:", 1)[0]
+
+        self.assertIn("&lt;/details&gt;", visible)
+        self.assertIn("&lt;!-- hidden --&gt;", visible)
+        self.assertNotIn("<!-- hidden", visible)
+        self.assertNotIn("```fence", visible)
+        self.assertEqual(result["markdown"].count("```"), 2)
 
     def test_repeat_review_findings_are_bounded_but_not_by_recent_history_limit(self):
         findings = []
@@ -337,6 +445,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(len(context["recent_findings"]), 30)
         self.assertEqual(len(context["repeat_review_findings"]), 35)
         self.assertNotIn("evidence", context["repeat_review_findings"][0])
+        self.assertIn("prior_claim", context["repeat_review_findings"][0])
 
     def test_repeat_review_findings_keep_latest_observation_per_fingerprint(self):
         first = self.record(line=42, context_hash="d" * 40, head_sha="a" * 40)
@@ -356,6 +465,8 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(repeat["line"], 99)
         self.assertEqual(repeat["context_hash"], "e" * 40)
         self.assertNotIn("smallest_fix", repeat)
+        self.assertEqual(repeat["prior_smallest_fix"], self.finding["smallest_fix"])
+        self.assertEqual(repeat["previous_head"], "b" * 40)
 
     def test_record_findings_rejects_runaway_batch(self):
         findings = [

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, TypedDict
+from typing import Any, Literal, Sequence, TypedDict
 
 try:
-    from .memory_validation import SEVERITY_ORDER, SEVERITY_PRIORITY
+    from .memory_validation import SEVERITY_ORDER, SEVERITY_PRIORITY, compact_text
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
-    from memory_validation import SEVERITY_ORDER, SEVERITY_PRIORITY
+    from memory_validation import SEVERITY_ORDER, SEVERITY_PRIORITY, compact_text
 
 
 class PublishedFinding(TypedDict):
     local_reference: str
     fingerprint: str
     context_hash: str
+    review_status: Literal["observed", "carried_forward"]
     rule_id: str
     category: str
     path: str
@@ -22,6 +23,7 @@ class PublishedFinding(TypedDict):
     severity: str
     publication_score: int
     evidence: str
+    disproof_checks: str
     impact: str
     smallest_fix: str
 
@@ -33,11 +35,18 @@ class ResolvedFinding(TypedDict):
     title: str
 
 
-def compact_text(value: Any, *, maximum: int = 800) -> str:
-    text = " ".join(str(value or "").strip().split())
-    if len(text) <= maximum:
-        return text
-    return text[: maximum - 1].rstrip() + "..."
+def safe_text(value: Any, *, maximum: int = 800) -> str:
+    text = compact_text(value, maximum=maximum)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("`", "'")
+    )
+
+
+def inline_code(value: Any, *, maximum: int = 800) -> str:
+    return f"`{safe_text(value, maximum=maximum)}`"
 
 
 def severity_summary(findings: Sequence[PublishedFinding]) -> str:
@@ -54,10 +63,11 @@ def severity_summary(findings: Sequence[PublishedFinding]) -> str:
     ]
     noun = "finding" if total == 1 else "findings"
     if len(parts) == 1:
-        return f"I found {total} {noun}: {parts[0]}."
+        verb = "is" if total == 1 else "are"
+        return f"There {verb} {total} current {noun}: {parts[0]}."
     if len(parts) == 2:
-        return f"I found {total} findings: {parts[0]} and {parts[1]}."
-    return f"I found {total} findings: {', '.join(parts[:-1])}, and {parts[-1]}."
+        return f"There are {total} current findings: {parts[0]} and {parts[1]}."
+    return f"There are {total} current findings: {', '.join(parts[:-1])}, and {parts[-1]}."
 
 
 def ordered_findings(items: Sequence[PublishedFinding]) -> list[PublishedFinding]:
@@ -97,20 +107,22 @@ def render_fix_brief(
         "",
     ]
     for item in findings:
+        verification = safe_text(item["disproof_checks"], maximum=420)
+        if not verification:
+            verification = (
+                "Add or run the focused checks that prove the demonstrated failure path."
+            )
         lines.extend(
             [
                 (
                     f"{item['local_reference']} - {item['severity']} / "
                     f"P{SEVERITY_PRIORITY[item['severity']]} - {item['category']}"
                 ),
-                f"Location: {item['path']}:{item['line']}",
-                f"Problem: {compact_text(item['title'], maximum=220)}",
-                f"Required outcome: {compact_text(item['impact'], maximum=420)}",
-                f"Suggested approach: {compact_text(item['smallest_fix'], maximum=520)}",
-                (
-                    "Verification: Add or run the focused checks that prove the "
-                    "demonstrated failure path."
-                ),
+                f"Location: {safe_text(item['path'], maximum=500)}:{item['line']}",
+                f"Problem: {safe_text(item['title'], maximum=220)}",
+                f"Required outcome: {safe_text(item['impact'], maximum=420)}",
+                f"Suggested approach: {safe_text(item['smallest_fix'], maximum=520)}",
+                f"Verification: {verification}",
                 "",
             ]
         )
@@ -141,10 +153,11 @@ def render_review_markdown(
     resolved: Sequence[ResolvedFinding],
     still_present: Sequence[str],
     new_refs: Sequence[str],
+    needs_recheck: Sequence[str],
 ) -> str:
     current = ordered_findings(findings)
     lines = ["## Eneo AI code & security review", ""]
-    if resolved or still_present or new_refs:
+    if resolved or still_present or new_refs or needs_recheck:
         lines.extend(["Review updated for the latest commit.", ""])
         if resolved:
             lines.append(
@@ -153,6 +166,8 @@ def render_review_markdown(
             )
         if still_present:
             lines.append("Still present: " + ", ".join(still_present))
+        if needs_recheck:
+            lines.append("Needs recheck: " + ", ".join(needs_recheck))
         if new_refs:
             lines.append("New findings: " + ", ".join(new_refs))
         lines.append("")
@@ -161,20 +176,31 @@ def render_review_markdown(
 
     for item in current:
         priority = f"P{SEVERITY_PRIORITY[item['severity']]}"
+        location = inline_code(f"{item['path']}:{item['line']}", maximum=520)
         lines.extend(
             [
                 (
                     f"### {item['local_reference']} - {item['severity']} / {priority}: "
-                    f"{compact_text(item['title'], maximum=160)}"
+                    f"{safe_text(item['title'], maximum=160)}"
                 ),
-                f"`{item['path']}:{item['line']}` · {item['category']}",
+                f"{location} · {item['category']}",
                 "",
-                compact_text(item["evidence"], maximum=900),
+                safe_text(item["evidence"], maximum=900),
                 "",
-                f"**Suggested change:** {compact_text(item['smallest_fix'], maximum=700)}",
+                f"**Suggested change:** {safe_text(item['smallest_fix'], maximum=700)}",
                 "",
             ]
         )
+        if item["review_status"] == "carried_forward":
+            lines.extend(
+                [
+                    (
+                        "**Recheck needed:** This previous finding was not explicitly "
+                        "observed in the latest run, so it remains current until verified."
+                    ),
+                    "",
+                ]
+            )
 
     if resolved:
         lines.extend(
@@ -186,7 +212,7 @@ def render_review_markdown(
         )
         for item in resolved:
             lines.append(
-                f"- {item['local_reference']} - {compact_text(item.get('title', ''), maximum=180)}"
+                f"- {item['local_reference']} - {safe_text(item.get('title', ''), maximum=180)}"
             )
         lines.extend(["", "</details>", ""])
 

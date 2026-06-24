@@ -151,8 +151,8 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 - Keep each finding compact. Spend words on evidence and the fix, never on
   padding.
 - Start with `## Eneo AI code & security review` and one natural-language summary
-  sentence that names the non-zero severity counts, for example `I found 2
-  findings: 1 High / P1 and 1 Medium / P2.`
+  sentence that names the non-zero severity counts, for example `There are 2
+  current findings: 1 High / P1 and 1 Medium / P2.`
 - Do not include a top-level per-finding table. Long paths and memory
   fingerprints render poorly in GitHub tables, and each finding already carries
   its own heading and location.
@@ -212,11 +212,12 @@ hide findings. Keep each finding concise and, when needed, split the output into
 deterministic continuation comments such as `Eneo review - 1 of 2` and `Eneo
 review - 2 of 2`. This should be exceptional, not the normal format.
 
-On a repeated review, show the current state first. Summarize resolved,
-still-present, partially resolved, invalidated, and new findings. Resolved
-findings should not remain as full active findings; list them briefly in a
-collapsed history section. Do not say "approved", "safe to merge", or "ready for
-production" when no current finding survives.
+On a repeated review, show the current state first. Summarize still-present,
+needs-recheck, and new findings. Do not infer resolution from absence in the new
+observation set; a prior current finding remains active until explicitly
+verified, suppressed by a current human decision, or handled by a future explicit
+verdict path. Do not say "approved", "safe to merge", or "ready for production"
+when no current finding survives.
 
 Use respectful language. Prefer “This path can…” and “A minimal fix is…” over
 “You did…” or “You forgot…”.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 try:
     from .memory_decisions import active_suppression
@@ -99,6 +99,62 @@ def _publication_findings(
     return [dict(row) for row in rows]
 
 
+def _finding_payload(
+    item: dict[str, Any],
+    *,
+    local_reference: str,
+    context_hash: str,
+    review_status: Literal["observed", "carried_forward"],
+) -> PublishedFinding:
+    return {
+        "local_reference": local_reference,
+        "fingerprint": str(item["fingerprint"]),
+        "context_hash": context_hash,
+        "review_status": review_status,
+        "rule_id": str(item["rule_id"]),
+        "category": str(item["category"]),
+        "path": str(item["path"]),
+        "line": int(item["line"]),
+        "title": str(item["title"]),
+        "severity": str(item["severity"]),
+        "publication_score": int(item["publication_score"]),
+        "evidence": str(item["evidence"]),
+        "disproof_checks": str(item["disproof_checks"]),
+        "impact": str(item["impact"]),
+        "smallest_fix": str(item["smallest_fix"]),
+    }
+
+
+def _latest_observation_for_pr(
+    connection: sqlite3.Connection,
+    repository: str,
+    pr_number: int,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT * FROM finding_observations
+        WHERE repository = ? AND pr_number = ? AND fingerprint = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (repository, pr_number, fingerprint),
+    ).fetchone()
+    if row:
+        return dict(row)
+    fallback = connection.execute(
+        """
+        SELECT fingerprint, rule_id, path, line, symbol, anchor, title, severity,
+               category, publication_score, confidence, context_hash, evidence,
+               disproof_checks, impact, smallest_fix
+        FROM findings
+        WHERE fingerprint = ?
+        """,
+        (fingerprint,),
+    ).fetchone()
+    return dict(fallback) if fallback else None
+
+
 def finalize_review(
     connection: sqlite3.Connection,
     repository: str,
@@ -139,21 +195,12 @@ def finalize_review(
                 connection, repository, pr_number, fingerprint, now=moment
             )
             current.append(
-                {
-                    "local_reference": local_reference,
-                    "fingerprint": fingerprint,
-                    "context_hash": context_hash,
-                    "rule_id": str(item["rule_id"]),
-                    "category": str(item["category"]),
-                    "path": str(item["path"]),
-                    "line": int(item["line"]),
-                    "title": str(item["title"]),
-                    "severity": str(item["severity"]),
-                    "publication_score": int(item["publication_score"]),
-                    "evidence": str(item["evidence"]),
-                    "impact": str(item["impact"]),
-                    "smallest_fix": str(item["smallest_fix"]),
-                }
+                _finding_payload(
+                    item,
+                    local_reference=local_reference,
+                    context_hash=context_hash,
+                    review_status="observed",
+                )
             )
 
         previous = _latest_publication(connection, repository, pr_number)
@@ -166,28 +213,41 @@ def finalize_review(
             if item.get("status") == "current"
         }
         current_by_fingerprint = {item["fingerprint"]: item for item in current}
+        # Explicit verdicts are intentionally deferred. Until that path exists,
+        # absence from the latest observation set carries a finding forward instead
+        # of treating it as resolved. This hook is kept so the future verdict slice
+        # can render resolved history without changing the renderer contract again.
         resolved: list[ResolvedFinding] = []
+        needs_recheck: list[str] = []
         for fingerprint, item in previous_current.items():
             if fingerprint not in current_by_fingerprint:
-                title_row = connection.execute(
-                    "SELECT title FROM findings WHERE fingerprint = ?", (fingerprint,)
-                ).fetchone()
-                resolved.append(
-                    {
-                        "local_reference": str(item["local_reference"]),
-                        "fingerprint": str(fingerprint),
-                        "context_hash": str(item["context_hash"]),
-                        "title": (
-                            str(title_row["title"])
-                            if title_row
-                            else str(fingerprint)[:12]
-                        ),
-                    }
+                # A carried finding has no fresh trusted file hash. Reuse the hash
+                # from the previously published finding so suppressions apply only
+                # to the exact file version a human or prior review saw.
+                context_hash = str(item["context_hash"])
+                if active_suppression(connection, fingerprint, context_hash=context_hash):
+                    continue
+                carried = _latest_observation_for_pr(
+                    connection, repository, pr_number, fingerprint
                 )
+                if carried is None:
+                    continue
+                local_reference = str(item["local_reference"])
+                current.append(
+                    _finding_payload(
+                        carried,
+                        local_reference=local_reference,
+                        context_hash=context_hash,
+                        review_status="carried_forward",
+                    )
+                )
+                current_by_fingerprint[fingerprint] = current[-1]
+                needs_recheck.append(local_reference)
         still_present = [
             item["local_reference"]
             for fingerprint, item in current_by_fingerprint.items()
             if fingerprint in previous_current
+            and item["review_status"] == "observed"
         ]
         new_refs = [
             item["local_reference"]
@@ -203,6 +263,7 @@ def finalize_review(
             resolved=resolved,
             still_present=sorted(still_present, key=local_reference_number),
             new_refs=sorted(new_refs, key=local_reference_number),
+            needs_recheck=sorted(needs_recheck, key=local_reference_number),
         )
         rendered_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 

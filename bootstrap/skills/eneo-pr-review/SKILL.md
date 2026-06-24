@@ -31,12 +31,14 @@ only the `eneo_review` tools available to this run.
    number. Treat `repeat_review_findings` as the resolution pass for this PR:
    re-check each prior unresolved finding against the latest code and classify it
    mentally as resolved, still present, partially resolved, invalidated, or
-   suppressed by a current human decision. Use prior findings as candidates, not
-   proof. If one still holds, reuse its exact `rule_id`, `symbol`, and `anchor`.
-   Treat other `recent_findings` as same-path history only; publish them only
-   when this diff independently introduces or worsens the issue. A human
-   decision is a suppression only when the final record tool confirms it still
-   matches the current file version.
+   suppressed by a current human decision. Use `prior_claim`,
+   `prior_disproof_checks`, `prior_impact`, and `prior_smallest_fix` to verify
+   the same claim without replaying a full old review. Use prior findings as
+   candidates, not proof. If one still holds, reuse its exact `rule_id`,
+   `symbol`, and `anchor`. Treat other `recent_findings` as same-path history
+   only; publish them only when this diff independently introduces or worsens the
+   issue. A human decision is a suppression only when the final record tool
+   confirms it still matches the current file version.
 3. Read the unified diff with `eneo_pr_diff`. Start with changed hunks. If the
    full diff is truncated, use path-specific diff reads. Call `eneo_pr_file` for
    bounded head or base ranges only when needed to establish causality, inspect
@@ -68,9 +70,11 @@ only the `eneo_review` tools available to this run.
    state, changed paths, file versions, and human suppressions.
 8. Call `eneo_review_finalize` with the same repository, PR number, and exact
    head SHA. It applies suppressions, assigns stable local `F` references,
-   tracks resolved/still-present findings against the previous review, renders
-   the AGENTS.md-compliant Markdown comment, and records publication metadata.
-   Return its `markdown` field unchanged.
+   tracks current/still-present/new findings against the previous review, and
+   carries forward any prior current finding that was not explicitly re-observed.
+   Absence from the new observation set is not treated as proof of resolution.
+   It then renders the AGENTS.md-compliant Markdown comment and records
+   publication metadata. Return its `markdown` field unchanged.
 9. Just before returning the final comment, call `eneo_review_run_complete` with
    the repository, PR number, `run_id` from run_start, status `generated`, and
    `findings_count` from `eneo_review_finalize` (use `failed` only if you could
