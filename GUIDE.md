@@ -2,7 +2,7 @@
 
 This guide explains the deployed reviewer in this repository: a manual,
 maintainer-triggered Hermes Agent review for Eneo pull requests. An allowlisted
-maintainer comments exactly `@review`; GitHub Actions verifies the requester;
+maintainer comments exactly `/review`; GitHub Actions verifies the requester;
 Hermes runs Codex with only the `eneo_review` toolset; the plugin reads bounded
 PR context, records every surviving finding in SQLite, renders the final review
 comment, and Hermes posts one structured GitHub comment back to the PR.
@@ -18,7 +18,7 @@ subagents, or mutate GitHub except through Hermes' final configured
 Use this flow first:
 
 ```text
-allowlisted maintainer comments @review
+allowlisted maintainer comments /review
         |
         v
 GitHub Actions verifies username + trusted repository association
@@ -216,6 +216,30 @@ what changed and identify any finding that was not implemented.
 
 </details>
 
+<details>
+<summary>Give feedback on this review</summary>
+
+Post one command as a new PR Conversation comment after replacing the text in angle brackets.
+Use the F reference from the relevant finding heading. The bot reacts 👍 when
+feedback is recorded.
+
+It does not need to be a reply to the bot comment. Do not edit an old feedback
+command after posting it.
+
+**The finding is incorrect**
+
+```text
+/review false-positive F1 because <what code, guard, or invariant disproves it>
+```
+
+**The review missed an important issue**
+
+```text
+/review feedback missed because <what concrete issue was missed and where>
+```
+
+</details>
+
 <!--
 eneo-review:
 head=a1b2c3d4e5f678901234567890abcdef12345678
@@ -224,7 +248,7 @@ F2=b2c3d4e5f6a1
 -->
 ````
 
-The collapsed brief is simpler than uploading a generated Markdown file. The developer can copy it directly into Claude Code or Codex. It is the only collapsed section for active findings. A separate artifact can be added later if the team proves it is useful.
+The collapsed fix brief is simpler than uploading a generated Markdown file. The developer can copy it directly into Claude Code or Codex. The feedback section is the only other collapsed section and is rendered deterministically by the plugin, not by the model. A separate artifact can be added later if the team proves it is useful.
 
 ## 5. Files in the starter bundle
 
@@ -238,7 +262,7 @@ bootstrap/workspace/AGENTS.md        canonical Eneo review contract
 bootstrap/skills/eneo-pr-review/     two-pass review procedure
 bootstrap/skills/ponytail/           vendored upstream skill and licence
 bootstrap/plugins/eneo_review_tools/ bounded GitHub reads + SQLite memory
-examples/github/ai-review-request.yml maintainer-only @review trigger
+examples/github/ai-review-request.yml maintainer-only /review trigger
 examples/comments/example-review.md  desired developer-facing style
 tools/eneo_review_memory.py          human triage and private coach CLI
 tools/eneo_review_coach*.py          bounded coach export and proposal helpers
@@ -379,19 +403,24 @@ The workflow:
 - allows up to 15 minutes for the review and comment delivery;
 - uses the original GitHub comment ID as the stable delivery ID, so a workflow retry does not create a duplicate agent run inside Hermes’ one-hour idempotency window.
 
+Expose the feedback bridge through Dokploy/Traefik with normal edge throttling
+available. The Python sidecar stays deliberately small: it verifies HMAC before
+GitHub or SQLite work, but it is not the right owner for generic IP rate-limit
+policy.
+
 ## 11. Request the first review
 
 On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 
 ```text
-@review
+/review
 ```
 
 Hermes reads the current PR head, performs both passes, consults the memory
 database, renders the final comment through the review plugin, and posts one
 comment through the dedicated GitHub identity.
 
-After fixing review findings, push the fix commit and comment `@review` again.
+After fixing review findings, push the fix commit and comment `/review` again.
 The rerun should feel like a reviewer following the PR through revisions:
 
 1. Re-check previous unresolved findings against the latest code.
@@ -480,16 +509,26 @@ untrusted PR text or autonomous prompt mutation. Keep finding-level feedback and
 review-quality feedback separate:
 
 ```text
-@review false-positive F2 <reason>
-@review intentional F2 ADR-0042 <reason>
+/review false-positive F2 <reason>
 
-@review feedback missed <issue link or description>
+/review feedback missed <issue link or description>
 ```
 
-`false-positive` and `intentional` are durable suppressive decisions and require
-an allowlisted maintainer. Intentional-design decisions require an accepted ADR.
-The core writer is implemented, but PR comments will not record these commands
-until a deterministic GitHub bridge calls it.
+`false-positive` is a durable suppressive decision and requires an allowlisted
+maintainer. `feedback missed` records review-quality feedback for metrics,
+replay cases, and private reviewer-improvement analysis. Post feedback as a new
+top-level PR Conversation comment; it does not need to be a reply to the bot
+comment. Do not edit an old command after posting it, reply in an inline diff
+thread, or quote the whole bot review. The bridge treats one source comment ID as
+one immutable feedback event.
+
+The deterministic bridge refetches the authoritative GitHub comment, verifies
+the numeric actor id against `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`, checks repository
+association and PR state, and then calls the atomic memory writer. Successful
+feedback receives a `+1` reaction. Invalid, stale, not-current, or unsupported
+commands receive a `confused` reaction and one short deterministic explanation.
+Intentional-design decisions remain CLI/governance-only until the bridge can
+deterministically validate that the referenced ADR exists and is accepted.
 Accepted-risk, reopen, and challenge commands remain governance CLI actions
 until there is a deterministic PR bridge that can preserve their stricter
 workflow requirements without routing through the review model.

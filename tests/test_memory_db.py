@@ -276,6 +276,12 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("### F1 - Critical / P0: Document creation omits tenant scope", markdown)
         self.assertIn("### F2 - Medium / P2: Regression test misses tenant failure path", markdown)
         self.assertIn("Copyable fix brief for a coding agent", markdown)
+        self.assertIn("Give feedback on this review", markdown)
+        self.assertIn("Post one command as a new PR Conversation comment", markdown)
+        self.assertIn("```text\n/review false-positive F1 because <what code, guard, or invariant disproves it>\n```", markdown)
+        self.assertIn("```text\n/review feedback missed because <what concrete issue was missed and where>\n```", markdown)
+        self.assertNotIn("@review false-positive", markdown)
+        self.assertNotIn("/review intentional", markdown)
         self.assertNotIn("| Severity |", markdown)
         for item in recorded:
             self.assertNotIn(item["fingerprint"], visible)
@@ -415,6 +421,8 @@ class ReviewMemoryTests(unittest.TestCase):
         )[1]
         self.assertNotIn("F1 - Critical / P0 - security", visible_brief)
         self.assertIn("F2 - Medium / P2 - tests", visible_brief)
+        self.assertNotIn("/review false-positive F1", result["markdown"])
+        self.assertIn("/review false-positive F2", result["markdown"])
         context = memory_db.memory_context(
             self.connection,
             "eneo/platform",
@@ -502,6 +510,9 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("Invalidated since the previous review: F1", result["markdown"])
         self.assertIn("No current findings survived this review.", result["markdown"])
         self.assertNotIn("Copyable fix brief for a coding agent", result["markdown"])
+        self.assertIn("Give feedback on this review", result["markdown"])
+        self.assertIn("/review feedback missed because <what concrete issue was missed and where>", result["markdown"])
+        self.assertNotIn("/review false-positive", result["markdown"])
 
     def test_finalize_review_closes_prior_finding_with_human_suppression(self):
         recorded = memory_db.record_findings(
@@ -749,7 +760,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("&lt;!-- hidden --&gt;", visible)
         self.assertNotIn("<!-- hidden", visible)
         self.assertNotIn("```fence", visible)
-        self.assertEqual(result["markdown"].count("```"), 2)
+        self.assertEqual(result["markdown"].count("```"), 6)
 
     def test_repeat_review_findings_are_bounded_but_not_by_recent_history_limit(self):
         findings = []

@@ -6,7 +6,7 @@ health endpoint. No secrets, no writes, nothing that can affect the live reviewe
 
   python3 scripts/review_status.py
 
-Shows: gateway health, recent @review triggers (who / which PR / dispatched vs
+Shows: gateway health, recent /review triggers (who / which PR / dispatched vs
 ignored), and where to drill in (per-run logs + the findings registry).
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ def _recent_runs():
     return json.loads(result.stdout or "{}").get("workflow_runs", []), None
 
 
-_MARK = {"success": "REVIEW DISPATCHED", "skipped": "ignored (not exact @review / not allowed)"}
+_MARK = {"success": "REVIEW DISPATCHED", "skipped": "ignored (not exact /review / not allowed)"}
 
 
 def main() -> int:
@@ -49,14 +49,14 @@ def main() -> int:
 
     runs, error = _recent_runs()
     if error is not None:
-        print(f"\n@review triggers: could not query GitHub Actions ({error})")
+        print(f"\n/review triggers: could not query GitHub Actions ({error})")
         return 1
 
     runs = runs or []
     dispatched = sum(1 for r in runs if r.get("conclusion") == "success")
     ignored = sum(1 for r in runs if r.get("conclusion") == "skipped")
     print(
-        f"\n@review triggers (last {len(runs)}): "
+        f"\n/review triggers (last {len(runs)}): "
         f"{dispatched} dispatched a review, {ignored} ignored\n"
     )
     for run in runs[:12]:

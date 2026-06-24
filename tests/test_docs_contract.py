@@ -56,11 +56,16 @@ class DocsContractTests(unittest.TestCase):
                 )
                 self.assertNotIn("<summary>Medium / P2", body)
                 self.assertIn("Copyable fix brief for a coding agent", body)
+                self.assertIn("Give feedback on this review", body)
                 self.assertIn("```text\nTask:", body)
                 self.assertIn("Findings:", body)
                 self.assertIn("F1 - High / P1", body)
                 self.assertIn("F2 - Medium / P2", body)
                 self.assertIn("Re-check every finding against the current PR head", body)
+                self.assertIn("/review false-positive F1 because", body)
+                self.assertIn("/review feedback missed because", body)
+                self.assertNotIn("@review false-positive", body)
+                self.assertNotIn("/review intentional", body)
 
     def test_repeated_reviews_reexamine_prior_findings(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
@@ -118,9 +123,11 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("Render every published finding as a normal expanded `###` section", canonical)
         self.assertIn("Lower severity controls priority and ordering", canonical)
         self.assertIn("not\n  visibility", canonical)
-        self.assertIn("This is the only collapsed section for active findings", canonical)
+        self.assertIn("The only allowed collapsed sections", canonical)
         self.assertIn("one complete brief in a single `text` fenced code block", canonical)
         self.assertIn("include every published finding", canonical)
+        self.assertIn("Give feedback on this review", canonical)
+        self.assertIn("Do not advertise feedback commands that are not", canonical)
 
     def test_machine_metadata_is_hidden_from_reading_path(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
@@ -142,9 +149,11 @@ class DocsContractTests(unittest.TestCase):
         readme = read("README.md")
         for body in [guide, readme]:
             with self.subTest(body=body[:30]):
-                self.assertIn("@review false-positive F2 <reason>", body)
-                self.assertIn("@review feedback", body)
+                self.assertIn("/review false-positive F2 <reason>", body)
+                self.assertIn("/review feedback", body)
                 self.assertIn("missed", body)
+                self.assertNotIn("@review false-positive", body)
+                self.assertNotIn("/review intentional F2", body)
         self.assertIn("ADRs are context, not immunity", guide)
         self.assertIn("automatically rewrite reviewer policy", guide)
         self.assertIn("learning-report", guide)
@@ -153,8 +162,8 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("does not read `review-learning/`", readme)
         self.assertIn("allowlisted feedback command", guide)
         self.assertIn("allowlisted feedback command", readme)
-        self.assertIn("deterministic GitHub bridge", readme)
-        self.assertIn("deterministic GitHub bridge", guide)
+        self.assertIn("deterministic bridge", readme)
+        self.assertIn("deterministic bridge", guide)
 
     def test_learning_pipeline_boundary_is_tool_surface_first(self):
         config = read("bootstrap/config.yaml")

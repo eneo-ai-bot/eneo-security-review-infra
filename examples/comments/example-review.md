@@ -77,6 +77,30 @@ what changed and identify any finding that was not implemented.
 
 </details>
 
+<details>
+<summary>Give feedback on this review</summary>
+
+Post one command as a new PR Conversation comment after replacing the text in angle brackets.
+Use the F reference from the relevant finding heading. The bot reacts 👍 when
+feedback is recorded.
+
+It does not need to be a reply to the bot comment. Do not edit an old feedback
+command after posting it.
+
+**The finding is incorrect**
+
+```text
+/review false-positive F1 because <what code, guard, or invariant disproves it>
+```
+
+**The review missed an important issue**
+
+```text
+/review feedback missed because <what concrete issue was missed and where>
+```
+
+</details>
+
 <!--
 eneo-review:
 head=a1b2c3d4e5f678901234567890abcdef12345678

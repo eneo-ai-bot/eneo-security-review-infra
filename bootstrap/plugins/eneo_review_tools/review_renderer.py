@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal, Sequence, TypedDict
 
 try:
+    from .feedback_contract import feedback_templates
     from .memory_validation import (
         SEVERITY_ORDER,
         SEVERITY_PRIORITY,
@@ -12,6 +13,7 @@ try:
         local_reference_number,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from feedback_contract import feedback_templates
     from memory_validation import (
         SEVERITY_ORDER,
         SEVERITY_PRIORITY,
@@ -179,6 +181,59 @@ def render_fix_brief(
     return "\n".join(lines)
 
 
+def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
+    local_reference = findings[0]["local_reference"] if findings else None
+    templates = feedback_templates(local_reference)
+    lines = [
+        "<details>",
+        "<summary>Give feedback on this review</summary>",
+        "",
+    ]
+    if local_reference:
+        lines.extend(
+            [
+                (
+                    "Post one command as a new PR Conversation comment after "
+                    "replacing the text in angle brackets."
+                ),
+                (
+                    "Use the F reference from the relevant finding heading. "
+                    "The bot reacts 👍 when feedback is recorded."
+                ),
+                "",
+                (
+                    "It does not need to be a reply to the bot comment. Do not "
+                    "edit an old feedback command after posting it."
+                ),
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Did the review miss something important? Post this as a new PR Conversation comment:",
+                "",
+            ]
+        )
+
+    for template in templates:
+        lines.extend(
+            [
+                f"**{template.title}**",
+                "",
+                "```text",
+                template.command,
+                "```",
+                "",
+            ]
+        )
+
+    if not local_reference:
+        lines.extend(["The bot reacts 👍 when feedback is recorded.", ""])
+    lines.append("</details>")
+    return "\n".join(lines)
+
+
 def render_review_markdown(
     *,
     repository: str,
@@ -278,6 +333,8 @@ def render_review_markdown(
 
     if current:
         lines.extend([render_fix_brief(repository, pr_number, head_sha, current), ""])
+
+    lines.extend([render_feedback_help(current), ""])
 
     lines.extend(["<!--", "eneo-review:", f"head={head_sha}"])
     for item in current:

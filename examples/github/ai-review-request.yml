@@ -13,8 +13,8 @@ concurrency:
 jobs:
   request-review:
     # Coarse gate: a PR comment that starts with the trigger token. The Python step
-    # below is the precise, security-relevant gate (exact token after strip + allowlist
-    # + association), so a trailing space or newline no longer silently drops a request.
+    # below is the precise, security-relevant gate and separates review requests
+    # from deterministic feedback commands.
     if: >-
       github.event.issue.pull_request &&
       (startsWith(github.event.comment.body, '@review') || startsWith(github.event.comment.body, '/review')) &&
@@ -24,6 +24,8 @@ jobs:
     env:
       HERMES_REVIEW_URL: ${{ secrets.HERMES_REVIEW_URL }}
       HERMES_WEBHOOK_SECRET: ${{ secrets.HERMES_WEBHOOK_SECRET }}
+      HERMES_REVIEW_FEEDBACK_URL: ${{ secrets.HERMES_REVIEW_FEEDBACK_URL }}
+      HERMES_REVIEW_FEEDBACK_SECRET: ${{ secrets.HERMES_REVIEW_FEEDBACK_SECRET }}
       ALLOWED_USERS: ${{ vars.AI_REVIEW_ALLOWED_USERS }}
 
     steps:
@@ -41,10 +43,24 @@ jobs:
           with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
               event = json.load(handle)
 
-          # Precise gate: exactly "@review" or "/review" after trimming whitespace.
           trigger = event["comment"]["body"].strip()
-          if trigger not in {"@review", "/review"}:
-              raise SystemExit(f"ignored: trigger must be exactly '@review' or '/review' (got {trigger!r})")
+          if event["comment"]["user"].get("type") == "Bot":
+              raise SystemExit("ignored: bot comments cannot invoke the reviewer")
+
+          if trigger in {"@review", "/review"}:
+              mode = "review"
+              webhook_url = os.environ["HERMES_REVIEW_URL"]
+              webhook_secret = os.environ["HERMES_WEBHOOK_SECRET"]
+              delivery_id = str(event["comment"]["id"])
+          elif re.match(r"^[@/]review\s+", trigger, flags=re.IGNORECASE):
+              mode = "feedback"
+              webhook_url = os.environ.get("HERMES_REVIEW_FEEDBACK_URL", "").strip()
+              webhook_secret = os.environ.get("HERMES_REVIEW_FEEDBACK_SECRET", "").strip()
+              if not webhook_url or not webhook_secret:
+                  raise SystemExit("feedback bridge secrets are not configured")
+              delivery_id = f"{event['comment']['id']}:feedback"
+          else:
+              raise SystemExit(f"ignored: comment is not an Eneo review command ({trigger!r})")
 
           requester = event["comment"]["user"]["login"]
           allowed = {
@@ -68,20 +84,20 @@ jobs:
               "request": {"comment_id": event["comment"]["id"]},
           }
           body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-          secret = os.environ["HERMES_WEBHOOK_SECRET"].encode("utf-8")
+          secret = webhook_secret.encode("utf-8")
           signature = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
 
           request = urllib.request.Request(
-              os.environ["HERMES_REVIEW_URL"],
+              webhook_url,
               data=body,
               method="POST",
               headers={
                   "Content-Type": "application/json",
-                  "User-Agent": "Eneo-AI-Review-Trigger/2.0",
+                  "User-Agent": "Eneo-AI-Review-Trigger/3.0",
                   "X-GitHub-Event": "issue_comment",
                   # Keep this stable across workflow retries so Hermes' one-hour
                   # idempotency cache cannot start a duplicate agent run.
-                  "X-GitHub-Delivery": str(event["comment"]["id"]),
+                  "X-GitHub-Delivery": delivery_id,
                   "X-Hub-Signature-256": signature,
               },
           )
@@ -89,9 +105,9 @@ jobs:
           try:
               with urllib.request.urlopen(request, timeout=900) as response:
                   text = response.read(4096).decode("utf-8", errors="replace")
-                  print(f"Hermes accepted the request: HTTP {response.status} {text}")
+                  print(f"Eneo {mode} webhook accepted the request: HTTP {response.status} {text}")
           except urllib.error.HTTPError as error:
               detail = error.read(4096).decode("utf-8", errors="replace")
-              raise SystemExit(f"Hermes rejected the request: HTTP {error.code} {detail}")
+              raise SystemExit(f"Eneo {mode} webhook rejected the request: HTTP {error.code} {detail}")
           except urllib.error.URLError as error:
-              raise SystemExit(f"Hermes could not be reached: {error.reason}")
+              raise SystemExit(f"Eneo {mode} webhook could not be reached: {error.reason}")

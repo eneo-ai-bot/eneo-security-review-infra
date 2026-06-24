@@ -49,6 +49,7 @@ FeedbackStatus = Literal[
     "stale",
     "unauthorized",
     "ignored",
+    "unsupported",
 ]
 
 __all__ = (
@@ -384,6 +385,16 @@ def record_review_feedback_comment(
     command = parse_review_feedback_command(body)
     if command is None:
         return FeedbackResult(status="ignored", event_id=event_id)
+    if (
+        not isinstance(command, ReviewQualityFeedbackCommand)
+        and command.decision == "intentional_by_design"
+    ):
+        return FeedbackResult(
+            status="unsupported",
+            event_id=event_id,
+            local_reference=command.local_reference,
+            adr_id=command.adr_id,
+        )
 
     repository = normalize_repository(repository)
     pr_number = int(pr_number)

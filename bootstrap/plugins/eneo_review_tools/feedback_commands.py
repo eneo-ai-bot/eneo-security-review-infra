@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 try:
+    from .feedback_contract import contains_placeholder
     from .memory_validation import (
         ReviewMemoryError,
         clean_multiline,
@@ -14,6 +15,7 @@ try:
         local_reference_number,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from feedback_contract import contains_placeholder
     from memory_validation import (
         ReviewMemoryError,
         clean_multiline,
@@ -65,7 +67,10 @@ def _local_reference(value: str) -> str:
 
 
 def _reason(value: str) -> str:
-    return clean_multiline(value, field="reason", maximum=2000)
+    reason = clean_multiline(value, field="reason", maximum=2000)
+    if contains_placeholder(reason):
+        raise ReviewMemoryError("replace placeholder text before submitting feedback")
+    return reason
 
 
 def _adr_id(value: str) -> str:

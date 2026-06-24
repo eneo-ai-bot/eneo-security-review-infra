@@ -162,7 +162,28 @@ class FeedbackIngestionTests(unittest.TestCase):
                 "@review false-positive F1 reason\n@review feedback missed another"
             )
 
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "replace placeholder"):
+            memory_db.parse_review_feedback_command(
+                "/review false-positive F1 because <what code disproves it>"
+            )
+
         self.assertIsNone(memory_db.parse_review_feedback_command("@review"))
+
+    def test_rendered_feedback_templates_match_parser_contract(self) -> None:
+        for template in memory_db.feedback_templates("F2"):
+            with self.subTest(command=template.command):
+                with self.assertRaisesRegex(memory_db.ReviewMemoryError, "replace placeholder"):
+                    memory_db.parse_review_feedback_command(template.command)
+                command = template.command
+                command = command.replace(
+                    memory_db.FALSE_POSITIVE_PLACEHOLDER,
+                    "the repository binds tenant_id before the query",
+                )
+                command = command.replace(
+                    memory_db.MISSED_ISSUE_PLACEHOLDER,
+                    "the review missed backend/api/documents.py rollback behavior",
+                )
+                self.assertIsNotNone(memory_db.parse_review_feedback_command(command))
 
     def test_authorization_uses_numeric_actor_id_and_fails_closed(self) -> None:
         self.assertEqual(
@@ -318,6 +339,18 @@ class FeedbackIngestionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(memory_db.ReviewMemoryError, "ADR id"):
             self.feedback("@review intentional F1 this is intentional")
+
+    def test_pr_comment_intentional_is_unsupported_without_adr_validation(self) -> None:
+        self.record()
+        self.finalize()
+
+        result = self.feedback(
+            "@review intentional F1 ADR-0042 This boundary is deliberate."
+        )
+
+        self.assertEqual(result.status, "unsupported")
+        self.assertIsNone(memory_db.feedback_event(self.connection, "github:issue-comment:500"))
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
 
     def test_feedback_missed_records_quality_feedback_and_replay_is_noop(self) -> None:
         publication = self.finalize_after_recording_empty_review()

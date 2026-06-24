@@ -58,6 +58,10 @@ class DockerfileToolsTests(unittest.TestCase):
             "cp /usr/local/bin/eneo_review_memory.py /usr/local/bin/eneo-review-memory",
             dockerfile,
         )
+        self.assertIn(
+            "cp /usr/local/bin/eneo_review_feedback_bridge.py /usr/local/bin/eneo-review-feedback-bridge",
+            dockerfile,
+        )
 
     def test_installed_memory_cli_imports_support_modules(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -68,6 +72,10 @@ class DockerfileToolsTests(unittest.TestCase):
                 install_dir / "eneo_review_memory.py",
                 install_dir / "eneo-review-memory",
             )
+            shutil.copy2(
+                install_dir / "eneo_review_feedback_bridge.py",
+                install_dir / "eneo-review-feedback-bridge",
+            )
 
             completed = subprocess.run(
                 [sys.executable, str(install_dir / "eneo-review-memory"), "--help"],
@@ -75,8 +83,20 @@ class DockerfileToolsTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+            bridge_completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(install_dir / "eneo-review-feedback-bridge"),
+                    "--help",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={"PYTHONPATH": str(ROOT / "bootstrap" / "plugins")},
+            )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(0, bridge_completed.returncode, bridge_completed.stderr)
 
 
 if __name__ == "__main__":

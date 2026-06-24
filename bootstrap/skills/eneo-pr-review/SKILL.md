@@ -3,7 +3,7 @@ name: eneo-pr-review
 description: >
   Perform a two-pass, evidence-gated Eneo pull-request review using bounded
   read-only GitHub context and human-curated SQLite finding memory. Use only for
-  an allowlisted @review webhook request.
+  an allowlisted /review webhook request.
 version: 2.0.0
 metadata:
   hermes:

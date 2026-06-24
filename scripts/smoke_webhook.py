@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a signed local/test @review payload to the Hermes webhook."""
+"""Send a signed local/test /review payload to the Hermes webhook."""
 
 from __future__ import annotations
 

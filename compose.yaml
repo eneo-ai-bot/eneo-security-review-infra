@@ -45,6 +45,48 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  hermes-review-feedback:
+    build:
+      context: .
+      args:
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    restart: unless-stopped
+    user: "10000:10000"
+    entrypoint: ["/usr/local/bin/eneo-review-feedback-bridge"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "8645"]
+    env_file:
+      - .env
+    expose:
+      - "8645"
+    networks:
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      # Prefer a separate Dokploy domain or path routed to service port 8645.
+      # Fallback labels can mirror hermes-review with a distinct router/service.
+    volumes:
+      - hermes_review_data:/opt/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8645/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+          pids: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 networks:
   dokploy-network:
     external: true

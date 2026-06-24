@@ -204,13 +204,25 @@ GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
 After the visible review, add one collapsed `<details>` section titled
 `Copyable fix brief for a coding agent` only when findings exist. Keep it compact
 and put one complete brief in a single `text` fenced code block so GitHub shows
-one copy button. This is the only collapsed section for active findings. The
+one copy button. The only allowed collapsed sections are this fix brief and the
+deterministic `Give feedback on this review` help section. The
 brief must include every published finding by local reference, severity, file,
 problem, required outcome, suggested approach, and verification. It must tell the
 coding agent to re-check every finding against the current PR head and skip
 anything already fixed. Keep it self-contained so the author can paste it into
 Codex or Claude Code. Do not attach a file or create a second artifact in phase
 one.
+
+After the fix brief, add the deterministic `Give feedback on this review`
+section. It must be rendered by code, not invented by the model. Document `/review`
+as the canonical command and keep `@review` only as a compatibility alias. Use
+one single-line fenced block per deployed feedback command so each command has
+its own copy button. Tell the developer to copy one command, replace the text in
+angle brackets, and post it as a new PR Conversation comment; it does not need
+to reply to the bot comment. Do not advertise feedback commands that are not
+deployed. Feedback is recorded for future reviews and private
+reviewer-improvement analysis; do not claim it automatically teaches or rewrites
+the reviewer.
 
 If the final review would exceed the delivery budget, never silently truncate or
 hide findings. Keep each finding concise and, when needed, split the output into

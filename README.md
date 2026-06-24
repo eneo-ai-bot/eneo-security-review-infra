@@ -4,7 +4,7 @@ This repository contains the deployable Eneo PR reviewer: a locked-down Hermes
 Agent gateway, an Eneo-specific review contract, bounded GitHub read tools, and a
 SQLite registry for findings and human feedback.
 
-A trusted maintainer writes exactly `@review` on an open pull request. GitHub
+A trusted maintainer writes exactly `/review` on an open pull request. GitHub
 Actions validates the requester and sends a signed webhook to Hermes. Hermes uses
 Codex through ChatGPT OAuth, reads only bounded PR context through the bundled
 plugin, runs a two-pass evidence review, records every surviving finding in
@@ -21,7 +21,8 @@ browser, delegation, or code execution.
 
 - A Dokploy-ready Compose service and derived Hermes image.
 - Codex subscription login through `hermes model`; no OpenAI API key is required.
-- A maintainer-only `@review` GitHub Actions trigger.
+- A maintainer-only `/review` GitHub Actions trigger, with `@review` kept as a
+  compatibility alias.
 - Native Hermes `github_comment` delivery through the GitHub CLI.
 - Eneo-specific `SOUL.md`, `AGENTS.md`, and a two-pass review skill.
 - Ponytail v4.7.0 to prefer the smallest correct remediation without weakening
@@ -37,7 +38,7 @@ browser, delegation, or code execution.
 ## Review flow
 
 ```text
-trusted maintainer comments @review
+trusted maintainer comments /review
         |
         v
 GitHub Actions checks username + repository association
@@ -73,11 +74,12 @@ repository with:
 
 - **Contents: read**
 - **Pull requests: read and write**
+- **Issues: read and write**
 - **Metadata: read**
 
-GitHub also accepts **Issues: write** for issue-style PR comments, but one write
-permission is sufficient. Store this token only as `GH_TOKEN` on the VPS. Do not
-put it in the public repository or in the trigger workflow.
+Issues write is needed for feedback reactions and short deterministic error
+comments on PR conversation comments. Store this token only as `GH_TOKEN` on the
+VPS. Do not put it in the public repository or in the trigger workflow.
 
 ## 2. Deploy with Dokploy
 
@@ -88,8 +90,10 @@ Copy `.env.example` to `.env` and set at least:
 
 ```dotenv
 WEBHOOK_SECRET=<output of: openssl rand -hex 32>
+ENEO_FEEDBACK_WEBHOOK_SECRET=<different output of: openssl rand -hex 32>
 GH_TOKEN=<fine-grained GitHub bot token>
 ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
+ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
 ```
 
 Keep these defaults:
@@ -103,8 +107,12 @@ API_SERVER_ENABLED=false
 ```
 
 Attach an HTTPS domain such as `review-bot.example.org` to service
-`hermes-review`, container port `8644`. Only the webhook service should be
-reachable. The dashboard and OpenAI-compatible API are disabled.
+`hermes-review`, container port `8644`. Attach a second HTTPS route such as
+`review-feedback.example.org` to service `hermes-review-feedback`, container
+port `8645`. Only these webhook services should be reachable. The dashboard and
+OpenAI-compatible API are disabled. Keep edge rate limiting available on the
+feedback route in Dokploy/Traefik; the sidecar verifies HMAC before GitHub or DB
+work, but abuse throttling belongs at the HTTP edge.
 
 The named `hermes_review_data` volume is mounted at `/opt/data`. It contains
 Hermes configuration, Codex OAuth state, sessions, skills, plugins, and the
@@ -155,6 +163,8 @@ Create these Actions secrets:
 ```text
 HERMES_REVIEW_URL=https://review-bot.example.org/webhooks/eneo-review
 HERMES_WEBHOOK_SECRET=<same value as WEBHOOK_SECRET>
+HERMES_REVIEW_FEEDBACK_URL=https://review-feedback.example.org/webhooks/eneo-review-feedback
+HERMES_REVIEW_FEEDBACK_SECRET=<same value as ENEO_FEEDBACK_WEBHOOK_SECRET>
 ```
 
 Create this Actions variable:
@@ -186,7 +196,7 @@ a duplicate review.
 On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 
 ```text
-@review
+/review
 ```
 
 Hermes reviews the current head and posts one structured PR comment. It
@@ -197,7 +207,7 @@ findings exist, one collapsed **Copyable fix brief for a coding agent** contains
 every published finding in a single fenced code block that can be copied into
 Codex or Claude Code.
 
-After fixing findings, push the fix commit and comment `@review` again. The
+After fixing findings, push the fix commit and comment `/review` again. The
 rerun re-checks previous unresolved findings, reviews the new fix delta, and
 performs a compact safety sweep of the current PR. Prior current findings stay
 active when the latest run does not explicitly classify them; the review marks
@@ -379,15 +389,18 @@ eneo-review-memory decide <fingerprint> reopen \
   --reason "The trusted guard changed."
 ```
 
-Deterministic PR-comment feedback separates finding decisions from review-quality
-feedback. Finding commands use local references from the current generated
-review, for example `@review false-positive F2 <reason>` and
-`@review intentional F2 ADR-0042 <reason>`. Review-quality commands such as
-`@review feedback missed <issue>` feed metrics and replay cases, not automatic
-suppressions. The feedback path requires an allowlisted numeric GitHub actor id
-from `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`; normal `@review` trigger comments do not
-record feedback. The core writer is implemented, but PR comments will not record
-these commands until a deterministic GitHub bridge calls it.
+The deterministic bridge for PR-comment feedback separates finding decisions
+from review-quality feedback. Finding commands use local references from the
+latest generated review,
+for example `/review false-positive F2 <reason>`. Review-quality commands such
+as `/review feedback missed <issue>` feed metrics and replay cases, not automatic
+suppressions. Post feedback as a new top-level PR Conversation comment; do not
+edit an old command or reply in an inline diff thread. The feedback path requires
+an allowlisted numeric GitHub actor id from `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`.
+Successful feedback receives a `+1` reaction. Invalid, stale, or unsupported
+commands receive a `confused` reaction and one short deterministic explanation.
+Intentional-design and accepted-risk decisions remain CLI/governance-only until
+there is deterministic ADR validation for PR comments.
 
 Only allowlisted human feedback or a human CLI command can create a suppression.
 The model may record a finding, but it cannot mark itself correct, dismiss
