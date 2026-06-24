@@ -8,14 +8,14 @@ A trusted maintainer writes exactly `@review` on an open pull request. GitHub
 Actions validates the requester and sends a signed webhook to Hermes. Hermes uses
 Codex through ChatGPT OAuth, reads only bounded PR context through the bundled
 plugin, runs a two-pass evidence review, records every surviving finding in
-SQLite, removes matching human-approved suppressions, and posts one structured PR
-comment.
+SQLite, renders the final comment through the plugin finalizer, removes matching
+human-approved suppressions, and posts one structured PR comment.
 
-The comment includes a short severity-count summary, expanded Critical/High
-findings, collapsed Medium/Low findings, quiet fingerprints for feedback, and
-one copyable all-findings fix brief for a coding agent. The reviewer does not
-get a shell, file-write tool, general GitHub write tool, web browser,
-delegation, or code execution.
+The comment includes a short severity-count summary, every active finding as an
+expanded section with a local reference such as `F1`, hidden fingerprint metadata
+for routing, and one copyable all-findings fix brief for a coding agent. The
+reviewer does not get a shell, file-write tool, general GitHub write tool, web
+browser, delegation, or code execution.
 
 ## What is included
 
@@ -26,8 +26,8 @@ delegation, or code execution.
 - Eneo-specific `SOUL.md`, `AGENTS.md`, and a two-pass review skill.
 - Ponytail v4.7.0 to prefer the smallest correct remediation without weakening
   validation, security, reliability, data protection, or accessibility.
-- A native Hermes plugin that reads bounded GitHub PR context and stores finding
-  history in SQLite.
+- A native Hermes plugin that reads bounded GitHub PR context, stores finding
+  history in SQLite, and renders the final review comment.
 - Human-only decisions for false positives, accepted risks, duplicates,
   resolutions, and reopenings.
 - An optional, disabled later-design note for `code-review-graph`.
@@ -50,6 +50,9 @@ Hermes + Codex
         |
         v
 SQLite finding/suppression check
+        |
+        v
+deterministic comment finalizer
         |
         v
 one structured GitHub PR comment
@@ -185,12 +188,18 @@ On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 ```
 
 Hermes reviews the current head and posts one structured PR comment. It
-publishes every finding that survives the evidence gate. Medium and Low findings
-are collapsed behind GitHub disclosure arrows so lower-priority feedback is
-available without making the main review hard to scan. When findings exist, one
-collapsed **Copyable fix brief for a coding agent** contains every published
-finding in a single fenced code block that can be copied into Codex or Claude
-Code.
+publishes every unsuppressed, evidence-backed, independent root-cause finding
+that survives the skeptical gate. Medium and Low findings remain visible and
+expanded; lower severity controls ordering and priority, not visibility. When
+findings exist, one collapsed **Copyable fix brief for a coding agent** contains
+every published finding in a single fenced code block that can be copied into
+Codex or Claude Code.
+
+After fixing findings, push the fix commit and comment `@review` again. The
+rerun re-checks previous unresolved findings, reviews the new fix delta, and
+performs a compact safety sweep of the current PR. A later publisher slice should
+update one current bot review comment per PR and preserve stable `F1`/`F2`
+references across review iterations.
 
 The reviewer covers:
 
@@ -240,8 +249,9 @@ A finding is publishable only when all of the following hold:
 
 Medium and Low findings are reserved for concrete, actionable feedback. They are
 published when they survive the same evidence gate as higher-severity findings,
-but their details are collapsed in the visible review to keep the comment
-scannable.
+and their details stay expanded in the visible review. Compact writing and
+deterministic ordering keep the comment scannable; visibility is not the
+severity control.
 
 This is a lightweight council pattern inside one Codex run: proposer first,
 skeptic second, editor last. The passes share the same PR context and the second
@@ -267,7 +277,9 @@ List findings:
 eneo-review-memory list --repo eneo-ai/eneo
 ```
 
-Inspect one using the 12-character prefix shown in the PR footer:
+Inspect one using its 12-character fingerprint prefix. Fingerprints are operator
+metadata; the developer-facing review body should use local references such as
+`F1` and `F2` once publication mapping lands.
 
 ```bash
 eneo-review-memory show a1b2c3d4e5f6
@@ -303,6 +315,13 @@ eneo-review-memory decide <fingerprint> reopen \
   --actor "github:alice" \
   --reason "The trusted guard changed."
 ```
+
+Future PR-comment feedback should separate finding decisions from review-quality
+feedback. Finding commands can use local references, for example
+`@review false-positive F2 <reason>`, `@review intentional F2 ADR-0042`, and
+`@review reopen F2 <reason>`. Review-quality commands such as
+`@review feedback unclear F2 <reason>` or `@review feedback missed <issue>`
+should feed metrics and replay cases, not automatic suppressions.
 
 Only a human CLI command can create a suppression. The model may record a
 finding, but it cannot mark itself correct, dismiss itself, or alter prior human
@@ -380,6 +399,8 @@ reviews completed or incomplete
 findings published
 findings accepted and fixed
 findings rejected as false positive
+review-quality feedback
+missed issues reported
 findings repeated after a prior decision
 median visible comment length
 ```

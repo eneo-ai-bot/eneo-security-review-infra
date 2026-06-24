@@ -5,11 +5,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PLUGIN = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins" / "eneo_review_tools"
 sys.path.insert(0, str(PLUGIN))
 
 import memory_db  # noqa: E402
+import memory_schema  # noqa: E402
 
 
 class ReviewMemoryTests(unittest.TestCase):
@@ -39,14 +41,21 @@ class ReviewMemoryTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def record(self, line=42, context_hash="d" * 40, pr_number=17, **overrides):
+    def record(
+        self,
+        line=42,
+        context_hash="d" * 40,
+        pr_number=17,
+        head_sha="a" * 40,
+        **overrides,
+    ):
         finding = dict(self.finding, line=line)
         finding.update(overrides)
         return memory_db.record_findings(
             self.connection,
             "Eneo/Platform",
             pr_number,
-            "a" * 40,
+            head_sha,
             [finding],
             context_hashes={finding["path"]: context_hash},
         )[0]
@@ -59,8 +68,15 @@ class ReviewMemoryTests(unittest.TestCase):
             "SELECT occurrences, line FROM findings WHERE fingerprint = ?",
             (first["fingerprint"],),
         ).fetchone()
-        self.assertEqual(row["occurrences"], 2)
+        self.assertEqual(row["occurrences"], 1)
         self.assertEqual(row["line"], 97)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM finding_observations WHERE fingerprint = ?",
+                (first["fingerprint"],),
+            ).fetchone()[0],
+            1,
+        )
 
     def test_human_decision_suppresses_exact_file_version_and_reopen_restores(self):
         result = self.record()
@@ -128,7 +144,11 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(recent[0]["pr_number"], 17)
         self.assertFalse(recent[0]["suppressed_for_last_seen_file_version"])
         self.assertIsNone(recent[0]["latest_decision"])
-        self.assertEqual(context["repeat_review_findings"], recent)
+        self.assertEqual(len(context["repeat_review_findings"]), 1)
+        self.assertEqual(
+            context["repeat_review_findings"][0]["fingerprint"], result["fingerprint"]
+        )
+        self.assertNotIn("evidence", context["repeat_review_findings"][0])
 
     def test_context_separates_same_pr_repeat_findings_from_cross_pr_history(self):
         same_pr = self.record()
@@ -153,7 +173,109 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         self.assertEqual(context["repeat_review_findings"][0]["pr_number"], 17)
 
-    def test_repeat_review_findings_are_not_truncated_by_recent_history_limit(self):
+    def test_same_fingerprint_in_other_pr_does_not_overwrite_repeat_candidate(self):
+        same_pr = self.record(line=42, pr_number=17, context_hash="d" * 40)
+        other_pr = self.record(line=99, pr_number=99, context_hash="e" * 40)
+        self.assertEqual(same_pr["fingerprint"], other_pr["fingerprint"])
+
+        context = memory_db.memory_context(
+            self.connection, "eneo/platform", ["backend/api/documents.py"], pr_number=17
+        )
+
+        self.assertEqual(len(context["repeat_review_findings"]), 1)
+        repeat = context["repeat_review_findings"][0]
+        self.assertEqual(repeat["fingerprint"], same_pr["fingerprint"])
+        self.assertEqual(repeat["pr_number"], 17)
+        self.assertEqual(repeat["line"], 42)
+        self.assertEqual(repeat["context_hash"], "d" * 40)
+        self.assertNotIn("evidence", repeat)
+
+        row = self.connection.execute(
+            "SELECT occurrences FROM findings WHERE fingerprint = ?", (same_pr["fingerprint"],)
+        ).fetchone()
+        self.assertEqual(row["occurrences"], 2)
+
+    def test_finalize_review_renders_all_current_findings_with_hidden_fingerprints(self):
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+            evidence="The changed test covers success but not the rejected cross-tenant path.",
+            impact="A future tenant-scope regression can ship without a failing test.",
+            smallest_fix="Add a focused test that asserts cross-tenant creation is rejected.",
+        )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding, second],
+            context_hashes={
+                self.finding["path"]: "d" * 40,
+                second["path"]: "e" * 40,
+            },
+        )
+
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+
+        markdown = result["markdown"]
+        visible = markdown.split("<!--", 1)[0]
+        self.assertEqual(result["findings_count"], 2)
+        self.assertIn("I found 1 Critical / P0 and 1 Medium / P2 findings.", markdown)
+        self.assertIn("### F1 - Critical / P0: Document creation omits tenant scope", markdown)
+        self.assertIn("### F2 - Medium / P2: Regression test misses tenant failure path", markdown)
+        self.assertIn("Copyable fix brief for a coding agent", markdown)
+        self.assertNotIn("| Severity |", markdown)
+        for item in recorded:
+            self.assertNotIn(item["fingerprint"], visible)
+            self.assertIn(item["fingerprint"], markdown)
+
+    def test_finalize_review_marks_previous_findings_resolved_on_next_head(self):
+        first = self.finding
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
+        )
+        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "b" * 40,
+            [second],
+            context_hashes={second["path"]: "e" * 40},
+        )
+        result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40)
+
+        self.assertEqual(result["findings_count"], 1)
+        self.assertEqual(result["resolved_count"], 1)
+        self.assertIn("Review updated for the latest commit.", result["markdown"])
+        self.assertIn("Resolved since the previous review: F1", result["markdown"])
+        self.assertIn("Still present: F2", result["markdown"])
+
+    def test_repeat_review_findings_are_bounded_but_not_by_recent_history_limit(self):
         findings = []
         context_hashes = {}
         for index in range(35):
@@ -183,6 +305,26 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         self.assertEqual(len(context["recent_findings"]), 30)
         self.assertEqual(len(context["repeat_review_findings"]), 35)
+        self.assertNotIn("evidence", context["repeat_review_findings"][0])
+
+    def test_repeat_review_findings_keep_latest_observation_per_fingerprint(self):
+        first = self.record(line=42, context_hash="d" * 40, head_sha="a" * 40)
+        second = self.record(line=99, context_hash="e" * 40, head_sha="b" * 40)
+        self.assertEqual(first["fingerprint"], second["fingerprint"])
+
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            ["backend/api/documents.py"],
+            pr_number=17,
+        )
+
+        self.assertEqual(len(context["repeat_review_findings"]), 1)
+        repeat = context["repeat_review_findings"][0]
+        self.assertEqual(repeat["fingerprint"], first["fingerprint"])
+        self.assertEqual(repeat["line"], 99)
+        self.assertEqual(repeat["context_hash"], "e" * 40)
+        self.assertNotIn("smallest_fix", repeat)
 
     def test_record_findings_rejects_runaway_batch(self):
         findings = [
@@ -506,6 +648,87 @@ class ReviewMemoryTests(unittest.TestCase):
             context_hashes={medium["path"]: "e" * 40},
         )
 
+    def test_legacy_backfill_is_gated_after_schema_version_is_set(self):
+        self.connection.close()
+        db = str(Path(self.temp.name) / "backfill.sqlite3")
+        created = memory_db.isoformat()
+        fingerprint = memory_db.compute_fingerprint(
+            "eneo/platform",
+            "tenant.missing-scope",
+            "backend/api/documents.py",
+            "create_document",
+            "POST /v1/documents:create",
+        )
+        raw = sqlite3.connect(db)
+        raw.executescript(
+            """
+            CREATE TABLE findings (
+                fingerprint TEXT PRIMARY KEY,
+                repository TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                line INTEGER,
+                symbol TEXT NOT NULL DEFAULT '',
+                anchor TEXT NOT NULL,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'correctness',
+                publication_score INTEGER NOT NULL DEFAULT 8,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                context_hash TEXT NOT NULL DEFAULT '',
+                pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                disproof_checks TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                smallest_fix TEXT NOT NULL,
+                introduced_by_diff INTEGER NOT NULL CHECK (introduced_by_diff IN (0, 1)),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1
+            );
+            """
+        )
+        raw.execute(
+            """
+            INSERT INTO findings (
+                fingerprint, repository, rule_id, path, line, symbol, anchor, title,
+                severity, category, publication_score, confidence, context_hash, pr_number,
+                head_sha, evidence, disproof_checks, impact, smallest_fix,
+                introduced_by_diff, first_seen_at, last_seen_at, occurrences
+            ) VALUES (?, 'eneo/platform', 'tenant.missing-scope', 'backend/api/documents.py',
+                42, 'create_document', 'POST /v1/documents:create',
+                'Document creation omits tenant scope', 'High', 'security', 9, 0.93,
+                ?, 17, ?, 'evidence', 'checks', 'impact', 'fix', 1, ?, ?, 1)
+            """,
+            (fingerprint, "d" * 40, "a" * 40, created, created),
+        )
+        raw.commit()
+        raw.close()
+
+        with patch.object(
+            memory_schema,
+            "_backfill_observations",
+            wraps=memory_schema._backfill_observations,
+        ) as backfill:
+            self.connection = memory_db.connect(db)
+            self.assertEqual(backfill.call_count, 1)
+        self.connection.close()
+
+        with patch.object(
+            memory_schema,
+            "_backfill_observations",
+            wraps=memory_schema._backfill_observations,
+        ) as backfill:
+            self.connection = memory_db.connect(db)
+            self.assertEqual(backfill.call_count, 0)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM finding_observations"
+            ).fetchone()[0],
+            1,
+        )
+
     def test_missing_line_is_rejected(self):
         invalid = dict(self.finding)
         invalid.pop("line")
@@ -553,8 +776,11 @@ class ReviewMemoryTests(unittest.TestCase):
             expires_days=180,
         )
         state = memory_db.export_state(self.connection)
-        self.assertEqual(state["schema_version"], 2)
+        self.assertEqual(state["schema_version"], memory_db.SCHEMA_VERSION)
         self.assertEqual(len(state["findings"]), 1)
+        self.assertEqual(len(state["review_subjects"]), 1)
+        self.assertEqual(len(state["finding_observations"]), 1)
+        self.assertEqual(len(state["pr_finding_references"]), 1)
         self.assertEqual(len(state["decisions"]), 1)
         self.assertEqual(state["findings"][0]["fingerprint"], result["fingerprint"])
 

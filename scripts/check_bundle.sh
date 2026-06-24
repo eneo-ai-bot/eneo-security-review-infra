@@ -3,6 +3,11 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 python3 -m compileall -q "$ROOT/bootstrap" "$ROOT/tools" "$ROOT/scripts" "$ROOT/tests"
+if ! command -v pyright >/dev/null 2>&1; then
+  printf '%s\n' "pyright is required for bundle checks. Install pyright and rerun." >&2
+  exit 1
+fi
+pyright -p "$ROOT"
 PYTHONPATH="$ROOT/bootstrap/plugins" python3 -m unittest discover -s "$ROOT/tests" -v
 
 python3 - "$ROOT" <<'PY'

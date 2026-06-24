@@ -4,8 +4,8 @@ This guide explains the deployed reviewer in this repository: a manual,
 maintainer-triggered Hermes Agent review for Eneo pull requests. An allowlisted
 maintainer comments exactly `@review`; GitHub Actions verifies the requester;
 Hermes runs Codex with only the `eneo_review` toolset; the plugin reads bounded
-PR context and records every surviving finding in SQLite; Hermes posts one
-structured GitHub comment back to the PR.
+PR context, records every surviving finding in SQLite, renders the final review
+comment, and Hermes posts one structured GitHub comment back to the PR.
 
 The reviewer is advisory. CI, CodeQL, dependency review, tests, type checks,
 human ownership, and migration checks remain the merge gates. The model cannot
@@ -33,6 +33,7 @@ Hermes Agent on Dokploy
         +--> bounded GitHub PR read tools
         +--> Eneo SOUL.md + AGENTS.md + review skill
         +--> SQLite findings and decision registry
+        +--> deterministic comment finalizer
         |
         v
 Hermes native github_comment delivery
@@ -68,7 +69,8 @@ The phase-one reviewer uses a small internal council pattern inside one Codex ru
 
 1. **Proposer pass:** produce every concrete candidate finding tied to the diff.
 2. **Skeptic pass:** try to disprove every candidate by checking guards, callers, callees, base behavior, framework guarantees, transactions, and tests.
-3. **Editor pass:** publish every surviving finding in natural language, with lower-priority details collapsed.
+3. **Editor pass:** publish every surviving finding as an expanded, compact
+   section in natural language.
 
 A finding may be published only when it:
 
@@ -83,7 +85,8 @@ A finding may be published only when it:
 
 Medium and Low findings are for actionable lower-priority feedback only. They are
 published when they survive the same evidence gate as higher-severity findings,
-but their details are collapsed so they do not crowd the main review.
+and they remain expanded in the review. Lower severity controls ordering and
+priority, not visibility.
 
 This mirrors the useful part of an iterative peer-review loop without making one model call another model or exposing internal deliberation to the developer.
 
@@ -111,8 +114,8 @@ The canonical live contract for the visible comment is
 - one summary sentence that names the non-zero severity counts;
 - every surviving finding;
 - a short prose budget spent on evidence and the fix;
-- one compact section per finding;
-- collapsed details for Medium and Low findings;
+- one compact expanded section per finding;
+- stable local references such as `F1` and `F2`;
 - one collapsed, copyable fix brief containing all findings when findings exist.
 
 Each finding contains:
@@ -122,7 +125,9 @@ Each finding contains:
 - the verified behavior and concrete consequence;
 - the smallest practical correction.
 
-The review footer contains quiet 12-character fingerprints for later triage.
+Machine metadata such as fingerprints, confidence, policy version, model version,
+and full commit SHA stays out of the developer reading path. Fingerprints are
+kept in hidden metadata or the database for later routing and operator triage.
 
 The reviewer must not post:
 
@@ -142,48 +147,84 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 ````md
 ## Eneo AI code & security review
 
-I found one High / P1 and one Medium / P2 finding that survived the evidence gate.
+I found one High / P1 and one Medium / P2 finding.
 
-### High / P1 important - Tenant context is dropped before the background job
+### F1 - High / P1: Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 
-**Suggested change:** include the trusted tenant ID in the job payload and scope the worker lookup by both tenant and document ID. Add a regression test where a job created under tenant A cannot load tenant B's document.
+**Suggested change:** include the trusted tenant ID in the job payload and scope the worker lookup by both tenant and document ID.
 
-<details>
-<summary>Medium / P2 useful improvement - Regression test misses the cross-tenant worker path - backend/tests/jobs/test_service.py:88</summary>
+**Verify:** add a regression test where a job created under tenant A cannot load tenant B's document.
 
+### F2 - Medium / P2: Regression test misses the cross-tenant worker path
 `backend/tests/jobs/test_service.py:88` · tests
 
 The added test covers the happy path for a worker loading its own document, but it would also have passed before the tenant boundary fix because it never creates a second tenant with a conflicting document ID.
 
 **Suggested change:** add a regression case with tenant A and tenant B documents and assert that the worker created under tenant A cannot load tenant B's row.
 
-</details>
+**Verify:** the new test must fail against the unsafe worker lookup and pass only when tenant ID is part of the lookup.
 
 <details>
 <summary>Copyable fix brief for a coding agent</summary>
 
 ```text
-Goal: Preserve the verified tenant boundary across the background job.
+Task:
+Address all confirmed findings from the Eneo PR review.
+
+Review basis:
+PR #123 at commit a1b2c3d.
+
+Before changing code:
+Re-check every finding against the current PR head. Skip anything already fixed
+and explain why. Do not blindly apply this brief if the code has changed.
+
 Findings:
-1. High / P1 security - backend/src/intric/jobs/service.py:142 - Tenant context is dropped before the background job. Carry tenant_id in the job payload and scope the worker lookup by tenant_id + document_id.
-2. Medium / P2 tests - backend/tests/jobs/test_service.py:88 - Regression test misses the cross-tenant worker path. Add a two-tenant regression case proving tenant A cannot load tenant B's row.
-Files:
-- backend/src/intric/jobs/service.py
-- backend/tests/jobs/test_service.py
-Changes: Preserve tenant_id through enqueue and worker lookup; add the missing cross-tenant regression test.
-Constraints: Reuse the existing tenant-scoped repository/service; do not add a second authorization path.
-Verification: Add a regression test proving tenant A cannot load tenant B's document, then run the focused backend tests and strict Pyright for changed modules.
+
+F1 - High / P1 - security
+Location: backend/src/intric/jobs/service.py:142
+Problem: Tenant context is dropped before the background job.
+Required outcome: The worker lookup remains scoped to the tenant that created
+the job.
+Suggested approach: Carry tenant_id in the job payload and scope the worker
+lookup by tenant_id and document_id.
+Verification: Add a regression test proving a tenant A job cannot load tenant B's
+document.
+
+F2 - Medium / P2 - tests
+Location: backend/tests/jobs/test_service.py:88
+Problem: The regression test misses the cross-tenant worker path.
+Required outcome: The test fails against the unsafe lookup and passes only when
+tenant_id is part of the lookup.
+Suggested approach: Add tenant A and tenant B documents with conflicting IDs or
+equivalent fixtures, then assert the tenant A job cannot load tenant B's row.
+Verification: Run the focused backend tests and strict Pyright for changed
+modules.
+
+Constraints:
+- Reuse the existing tenant-scoped repository or service.
+- Do not add a second authorization path.
+- Avoid unrelated refactoring.
+- Do not weaken validation or error handling.
+
+Completion:
+Run the focused tests, relevant type checks, and formatting checks. Summarize
+what changed and identify any finding that was not implemented.
 ```
 
 </details>
 
-<sub>Eneo two-pass review · findings `a1b2c3d4e5f6`, `b2c3d4e5f6a1`</sub>
+<!--
+eneo-review:
+head=a1b2c3d4e5f678901234567890abcdef12345678
+F1=a1b2c3d4e5f6
+F2=b2c3d4e5f6a1
+-->
 ````
 
-The collapsed brief is simpler than uploading a generated Markdown file. The developer can copy it directly into Claude Code or Codex. A separate artifact can be added later if the team proves it is useful.
+The collapsed brief is simpler than uploading a generated Markdown file. The developer can copy it directly into Claude Code or Codex. It is the only collapsed section for active findings. A separate artifact can be added later if the team proves it is useful.
 
 ## 5. Files in the starter bundle
 
@@ -345,9 +386,24 @@ On an open, non-draft pull request, an allowlisted maintainer comments exactly:
 @review
 ```
 
-Hermes reads the current PR head, performs both passes, consults the memory database, and posts one comment through the dedicated GitHub identity.
+Hermes reads the current PR head, performs both passes, consults the memory
+database, renders the final comment through the review plugin, and posts one
+comment through the dedicated GitHub identity.
 
-To review an updated head, write a new `@review` comment. A new comment ID intentionally starts a new review. Re-running the same Actions job reuses the original ID and should not duplicate it.
+After fixing review findings, push the fix commit and comment `@review` again.
+The rerun should feel like a reviewer following the PR through revisions:
+
+1. Re-check previous unresolved findings against the latest code.
+2. Review the new fix delta for regressions introduced by the fix.
+3. Perform a compact safety sweep of the current full PR.
+
+The current phase may post another review comment on each manual rerun. The
+finalizer keeps stable `F1`/`F2` references and shows resolved, still-present,
+and new finding references when a previous review exists. Updating one current
+bot review comment in place remains a future delivery slice because Hermes owns
+the final `github_comment` post. Re-running the same Actions job reuses the
+original delivery ID and should not duplicate it inside Hermes' idempotency
+window.
 
 A direct smoke test is included:
 
@@ -413,6 +469,41 @@ A false-positive or accepted-risk suppression is valid only when its trusted fil
 
 Suppressions expire by default after 180 days. This prevents a one-time decision from silently hiding a later regression forever.
 
+### Developer feedback roadmap
+
+The public reviewer should learn from explicit human decisions, not from
+untrusted PR text or autonomous prompt mutation. Keep finding-level feedback and
+review-quality feedback separate:
+
+```text
+@review challenge F2 <reason>
+@review false-positive F2 <reason>
+@review intentional F2 ADR-0042
+@review accepted-risk F2 until 2026-12-31 <reason>
+@review reopen F2 <reason>
+
+@review feedback useful
+@review feedback too-verbose
+@review feedback unclear F2 <reason>
+@review feedback missed <issue link or description>
+```
+
+`challenge` asks the reviewer to re-check evidence and does not suppress
+anything. `false-positive`, `intentional`, `accepted-risk`, and `reopen` are
+durable decisions and should require an allowlisted maintainer. Accepted risks
+require an expiry. Intentional-design decisions require an accepted ADR.
+
+ADRs are context, not immunity. The reviewer should load accepted ADRs from the
+base commit and use them to avoid architectural false positives while still
+checking the invariants the ADR says must remain true. ADR or review-policy
+changes in the PR under review are proposed context only until merged.
+
+Use a separate review-coach profile later if Hermes learning is useful. The
+webhook reviewer should stay locked down and write structured observations. A
+coach can read curated metrics and propose small AGENTS, skill, ADR, or replay
+fixture changes for human review. Do not allow public PR content to
+automatically rewrite reviewer policy.
+
 ### Triage commands
 
 List findings:
@@ -421,7 +512,9 @@ List findings:
 eneo-review-memory list --repo eneo-ai/eneo
 ```
 
-Inspect one using the 12-character fingerprint shown in the PR comment:
+Inspect one using its 12-character fingerprint. Fingerprints are operator
+metadata; developer-facing review commands should use local references such as
+`F2` once publication mapping lands.
 
 ```bash
 eneo-review-memory show a1b2c3d4e5f6
@@ -545,6 +638,8 @@ reviews completed or incomplete
 findings published
 findings accepted and fixed
 findings rejected as false positives
+review-quality feedback
+missed issues reported
 findings repeated after a prior human decision
 median visible comment length
 ```

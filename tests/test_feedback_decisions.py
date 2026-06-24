@@ -91,7 +91,9 @@ class FeedbackDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(result["fingerprint"], fp)
         self.assertIsNotNone(memory_db.active_suppression(self.connection, fp))
-        self.assertIsNotNone(memory_db.feedback_event(self.connection, "evt-1"))
+        self.assertEqual(
+            memory_db.feedback_event(self.connection, "evt-1")["outcome"], "recorded"
+        )
 
     def test_replay_is_noop(self):
         fp, ch = self.record_finding()
@@ -99,9 +101,11 @@ class FeedbackDecisionTests(unittest.TestCase):
         self.assertEqual(self.feedback(event_id="evt-x")["status"], "recorded")
         self.assertIsNone(self.feedback(event_id="evt-x"))  # same event id -> no-op
 
-    def test_no_mapping_is_noop_without_claiming_event(self):
+    def test_no_mapping_is_noop_with_recorded_outcome(self):
         self.assertIsNone(self.feedback(event_id="evt-2", review_comment_id=777))
-        self.assertIsNone(memory_db.feedback_event(self.connection, "evt-2"))
+        self.assertEqual(
+            memory_db.feedback_event(self.connection, "evt-2")["outcome"], "no_mapping"
+        )
 
     def test_stale_when_file_changed(self):
         fp, _ = self.record_finding(context_hash="d" * 40)
@@ -109,7 +113,9 @@ class FeedbackDecisionTests(unittest.TestCase):
         self.record_finding(context_hash="e" * 40)  # file changed since the comment
         result = self.feedback(event_id="evt-3")
         self.assertEqual(result["status"], "stale")
-        self.assertIsNotNone(memory_db.feedback_event(self.connection, "evt-3"))
+        self.assertEqual(
+            memory_db.feedback_event(self.connection, "evt-3")["outcome"], "stale"
+        )
         self.assertIsNone(memory_db.active_suppression(self.connection, fp))
 
     def test_reopen_restores(self):

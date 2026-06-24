@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import ast
+import importlib
+import sys
+import unittest
+from pathlib import Path
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
+PLUGIN = PACKAGE_ROOT / "eneo_review_tools"
+sys.path.insert(0, str(PACKAGE_ROOT))
+
+
+OWNER_MODULES = [
+    "memory_validation",
+    "memory_schema",
+    "memory_identity",
+    "memory_decisions",
+    "memory_findings",
+    "memory_publications",
+    "memory_feedback",
+    "memory_reporting",
+    "memory_runs",
+]
+
+
+class MemoryModuleBoundaryTests(unittest.TestCase):
+    def test_owner_modules_import_without_facade_cycles(self):
+        for module in OWNER_MODULES:
+            with self.subTest(module=module):
+                importlib.import_module(f"eneo_review_tools.{module}")
+
+    def test_owner_modules_do_not_import_memory_db_facade(self):
+        for module in OWNER_MODULES:
+            with self.subTest(module=module):
+                source = (PLUGIN / f"{module}.py").read_text(encoding="utf-8")
+                tree = ast.parse(source)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported = {alias.name for alias in node.names}
+                        self.assertNotIn("memory_db", imported)
+                        self.assertNotIn("eneo_review_tools.memory_db", imported)
+                    elif isinstance(node, ast.ImportFrom):
+                        imported = {alias.name for alias in node.names}
+                        if node.level == 1 and node.module is None:
+                            self.assertNotIn("memory_db", imported)
+                        self.assertNotEqual(node.module, "memory_db")
+                        self.assertNotEqual(node.module, "eneo_review_tools.memory_db")
+                        self.assertFalse(
+                            node.level == 1 and node.module == "memory_db"
+                        )
+
+
+if __name__ == "__main__":
+    unittest.main()

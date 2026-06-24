@@ -1,0 +1,26 @@
+{
+  "include": [
+    "bootstrap/plugins/eneo_review_tools"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache"
+  ],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "reportImportCycles": "error",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "error",
+  "reportMissingTypeStubs": "error",
+  "executionEnvironments": [
+    {
+      "root": "bootstrap/plugins",
+      "extraPaths": [
+        "bootstrap/plugins"
+      ]
+    }
+  ]
+}

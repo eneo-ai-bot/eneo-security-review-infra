@@ -14,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
 from eneo_review_tools import memory_db, schemas, tools  # noqa: E402
+import eneo_review_tools  # noqa: E402
 
 
 class _FakeResponse:
@@ -31,6 +32,18 @@ class _FakeResponse:
 
     def read(self, _n: int = -1) -> bytes:
         return self._body
+
+
+class _FakeRegistry:
+    def __init__(self):
+        self.tools = {}
+
+    def register_tool(self, *, name, toolset, schema, handler):
+        self.tools[name] = {
+            "toolset": toolset,
+            "schema": schema,
+            "handler": handler,
+        }
 
 
 class ToolValidationTests(unittest.TestCase):
@@ -72,6 +85,29 @@ class ToolValidationTests(unittest.TestCase):
             "findings"
         ]["items"]["properties"]["severity"]
         self.assertEqual(severity_schema["enum"], sorted(memory_db.SEVERITIES))
+
+    def test_plugin_registers_all_declared_tools(self):
+        registry = _FakeRegistry()
+
+        eneo_review_tools.register(registry)
+
+        self.assertEqual(
+            set(registry.tools),
+            {
+                "eneo_pr_overview",
+                "eneo_pr_diff",
+                "eneo_pr_file",
+                "eneo_review_memory_context",
+                "eneo_review_memory_record",
+                "eneo_review_run_start",
+                "eneo_review_finalize",
+                "eneo_review_run_complete",
+            },
+        )
+        for item in registry.tools.values():
+            self.assertEqual(item["toolset"], "eneo_review")
+            self.assertIsInstance(item["schema"], dict)
+            self.assertTrue(callable(item["handler"]))
 
     def test_non_allowlisted_repository_is_denied_before_network(self):
         with patch.dict(os.environ, self.env, clear=False):
@@ -217,6 +253,75 @@ class ToolValidationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(result["recorded"][0]["context_hash"], "a" * 40)
+
+    def test_finalize_rejects_stale_head_sha(self):
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "changed_files": 1,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+        ):
+            result = json.loads(
+                tools.review_finalize(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "b" * 40,
+                    }
+                )
+            )
+        self.assertIn("does not match", result["error"])
+
+    def test_finalize_returns_markdown_from_recorded_findings(self):
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "changed_files": 1,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(
+                tools,
+                "_changed_files",
+                return_value=[
+                    {
+                        "path": "backend/changed.py",
+                        "context_hash": "c" * 40,
+                        "context_hash_source": "blob",
+                    }
+                ],
+            ),
+        ):
+            record_result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "findings": [self.finding],
+                    }
+                )
+            )
+            finalize_result = json.loads(
+                tools.review_finalize(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                    }
+                )
+            )
+
+        self.assertEqual(finalize_result["findings_count"], 1)
+        self.assertIn("### F1 - Critical / P0: Tenant scope omitted", finalize_result["markdown"])
+        self.assertIn("Copyable fix brief for a coding agent", finalize_result["markdown"])
+        self.assertNotIn(record_result["recorded"][0]["fingerprint"], finalize_result["markdown"].split("<!--", 1)[0])
 
     def test_pr_file_reads_head_from_fork_repository(self):
         pull = {

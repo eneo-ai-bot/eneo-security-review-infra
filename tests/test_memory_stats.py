@@ -42,13 +42,20 @@ class ReviewStatsTests(unittest.TestCase):
         base.update(over)
         return base
 
-    def _record(self, *, repo="eneo/platform", context_hash="d" * 40, **over):
+    def _record(
+        self,
+        *,
+        repo="eneo/platform",
+        context_hash="d" * 40,
+        head_sha="a" * 40,
+        **over,
+    ):
         finding = self._finding(**over)
         return memory_db.record_findings(
             self.connection,
             repo,
             1,
-            "a" * 40,
+            head_sha,
             [finding],
             context_hashes={finding["path"]: context_hash},
         )[0]
@@ -150,8 +157,8 @@ class ReviewStatsTests(unittest.TestCase):
             self.connection, result["fingerprint"], "false_positive", "reason", "github:alice",
             expires_days=180,
         )
-        # The same finding is recorded again after the human decision (occurrences -> 2).
-        self._record(context_hash="d" * 40)
+        # A later commit still contains the same finding after the human decision.
+        self._record(context_hash="d" * 40, head_sha="b" * 40)
         stats = memory_db.compute_stats(self.connection, repository="eneo/platform")
         self.assertEqual(stats["repeats_after_decision_approx"], 1)
 
