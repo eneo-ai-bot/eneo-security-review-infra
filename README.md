@@ -94,6 +94,10 @@ Create a second fine-grained token for deterministic review publication:
 
 Store that token as `ENEO_REVIEW_PUBLISH_GH_TOKEN`. It is used only by the
 publisher tool to create or update the canonical PR review comment.
+The publisher uses `GITHUB_READ_TOKEN` first for PR metadata and comment
+discovery, then uses `ENEO_REVIEW_PUBLISH_GH_TOKEN` for comment create, update,
+and delete operations. Keeping the read and write tokens separate makes GitHub
+403 failures easier to diagnose without giving the reviewer write access to code.
 
 Create a second fine-grained token for the deterministic feedback sidecar:
 
@@ -233,8 +237,12 @@ eneo-review-memory publications --repo eneo-ai/eneo --pr 123
 
 `generated` with no `posting` timestamp means an old review skill did not call
 the delivery tool. `publish_failed` means GitHub publication was attempted and
-failed; read `failure=` for the root cause such as `github_401`, `github_403`,
-or `body_too_large`. `stale` means the PR base or head changed before posting.
+failed; read `failure=` for the root cause. Endpoint-specific failures such as
+`github_403_get_pull_request`, `github_403_list_issue_comments`, or
+`github_403_create_issue_comment` identify which GitHub token permission or org
+approval path to fix. `body_too_large` means the review could not fit within the
+configured comment budget, and `stale` means the PR base or head changed before
+posting.
 If a container crash leaves a run `running`, mark only stale runs failed:
 
 ```bash

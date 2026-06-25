@@ -1,14 +1,34 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest import mock
 
 PLUGIN_PARENT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PLUGIN_PARENT))
 
 from eneo_review_tools import memory_db, review_publisher  # noqa: E402
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            return self._body
+        return self._body[:size]
+
+    def __enter__(self) -> FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
 
 
 class FakeGitHub:
@@ -442,6 +462,108 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertTrue(result["recovered"])
         self.assertEqual(result["comment_id"], 88)
         self.assertEqual(github.created, [])
+
+    def test_http_gateway_uses_read_token_for_pr_and_write_token_for_comment(
+        self,
+    ) -> None:
+        seen: list[tuple[str, str, str]] = []
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            del timeout
+            seen.append(
+                (
+                    request.get_method(),
+                    request.full_url,
+                    request.get_header("Authorization", ""),
+                )
+            )
+            if request.get_method() == "GET":
+                return FakeHTTPResponse(
+                    {
+                        "state": "open",
+                        "draft": False,
+                        "base": {"sha": "b" * 40},
+                        "head": {"sha": "a" * 40},
+                    }
+                )
+            return FakeHTTPResponse(
+                {
+                    "id": 123,
+                    "body": "review",
+                    "user": {"login": "eneo-ai-bot"},
+                }
+            )
+
+        gateway = review_publisher.GitHubIssueCommentGateway(
+            "write-token", read_token="read-token"
+        )
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            gateway.get_pull_request("eneo-ai/eneo", 240)
+            gateway.create_issue_comment("eneo-ai/eneo", 240, "review")
+
+        self.assertEqual(seen[0][0], "GET")
+        self.assertEqual(seen[0][2], "Bearer read-token")
+        self.assertEqual(seen[1][0], "POST")
+        self.assertEqual(seen[1][2], "Bearer write-token")
+
+    def test_http_gateway_falls_back_to_write_token_when_read_token_is_forbidden(
+        self,
+    ) -> None:
+        authorizations: list[str] = []
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            del timeout
+            authorization = request.get_header("Authorization", "")
+            authorizations.append(authorization)
+            if authorization == "Bearer read-token":
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    403,
+                    "Resource not accessible by personal access token",
+                    {},
+                    None,
+                )
+            return FakeHTTPResponse(
+                {
+                    "state": "open",
+                    "draft": False,
+                    "base": {"sha": "b" * 40},
+                    "head": {"sha": "a" * 40},
+                }
+            )
+
+        gateway = review_publisher.GitHubIssueCommentGateway(
+            "write-token", read_token="read-token"
+        )
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            pull = gateway.get_pull_request("eneo-ai/eneo", 240)
+
+        self.assertEqual(pull.state, "open")
+        self.assertEqual(authorizations, ["Bearer read-token", "Bearer write-token"])
+
+    def test_http_gateway_reports_endpoint_specific_write_403(self) -> None:
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            del timeout
+            raise urllib.error.HTTPError(
+                request.full_url,
+                403,
+                "Resource not accessible by personal access token",
+                {},
+                None,
+            )
+
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(review_publisher.GitHubPublicationError) as error:
+                gateway.create_issue_comment("eneo-ai/eneo", 240, "review")
+
+        self.assertEqual(error.exception.code, "github_403_create_issue_comment")
 
 
 if __name__ == "__main__":

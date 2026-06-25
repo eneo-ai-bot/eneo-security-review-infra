@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 try:
     from . import memory_publications
@@ -23,7 +23,9 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
 _API_ROOT = "https://api.github.com"
 _MAX_ATTEMPTS = 3
 _RETRYABLE_STATUS = frozenset({502, 503, 504})
+_READ_TOKEN_FALLBACK_STATUS = frozenset({401, 403, 404})
 DEFAULT_MAX_COMMENT_BYTES = 60_000
+GitHubAuthPurpose = Literal["read", "write"]
 
 
 @dataclass(frozen=True)
@@ -68,9 +70,13 @@ class GitHubPublicationGateway(Protocol):
 
 
 class GitHubPublicationError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self, code: str, *, status: int | None = None, operation: str = ""
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.status = status
+        self.operation = operation
 
 
 def _owner_repo(repository: str) -> str:
@@ -89,13 +95,26 @@ def _json_list(value: Any, code: str) -> list[Any]:
     return cast(list[Any], value)
 
 
+def _github_failure_code(status: int, operation: str) -> str:
+    suffix = f"_{operation}" if operation else ""
+    if status in {401, 403, 404}:
+        return f"github_{status}{suffix}"
+    return f"github_http_{status}{suffix}"
+
+
 class GitHubIssueCommentGateway:
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, read_token: str = "") -> None:
         token = token.strip()
         if not token:
             raise GitHubPublicationError("missing_publish_token")
         self._token = token
+        self._read_token = read_token.strip()
         self._current_user_login: str | None = None
+
+    def _tokens_for(self, auth: GitHubAuthPurpose) -> tuple[str, ...]:
+        if auth == "read" and self._read_token and self._read_token != self._token:
+            return (self._read_token, self._token)
+        return (self._token,)
 
     def _request_json(
         self,
@@ -104,15 +123,49 @@ class GitHubIssueCommentGateway:
         *,
         payload: dict[str, object] | None = None,
         max_bytes: int = 2_000_000,
+        auth: GitHubAuthPurpose = "write",
+        operation: str = "",
     ) -> Any:
         if not endpoint.startswith("/") or "//" in endpoint:
             raise GitHubPublicationError("invalid_github_endpoint")
+        tokens = self._tokens_for(auth)
+        last_error: GitHubPublicationError | None = None
+        for index, token in enumerate(tokens):
+            try:
+                return self._request_json_with_token(
+                    method,
+                    endpoint,
+                    token=token,
+                    payload=payload,
+                    max_bytes=max_bytes,
+                    operation=operation,
+                )
+            except GitHubPublicationError as exc:
+                last_error = exc
+                has_fallback = index + 1 < len(tokens)
+                if has_fallback and exc.status in _READ_TOKEN_FALLBACK_STATUS:
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        raise GitHubPublicationError("github_unreachable")
+
+    def _request_json_with_token(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        token: str,
+        payload: dict[str, object] | None,
+        max_bytes: int,
+        operation: str,
+    ) -> Any:
         body = None
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "Eneo-Hermes-Review-Publisher/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {token}",
         }
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -128,13 +181,11 @@ class GitHubIssueCommentGateway:
                 if exc.code in _RETRYABLE_STATUS and attempt + 1 < _MAX_ATTEMPTS:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                if exc.code == 404:
-                    raise GitHubPublicationError("github_404") from exc
-                if exc.code == 401:
-                    raise GitHubPublicationError("github_401") from exc
-                if exc.code == 403:
-                    raise GitHubPublicationError("github_403") from exc
-                raise GitHubPublicationError(f"github_http_{exc.code}") from exc
+                raise GitHubPublicationError(
+                    _github_failure_code(exc.code, operation),
+                    status=exc.code,
+                    operation=operation,
+                ) from exc
             except urllib.error.URLError as exc:
                 raise GitHubPublicationError("github_unreachable") from exc
             if len(data) > max_bytes:
@@ -149,7 +200,12 @@ class GitHubIssueCommentGateway:
 
     def get_pull_request(self, repository: str, pr_number: int) -> PullRequestState:
         root = _json_object(
-            self._request_json("GET", f"/repos/{_owner_repo(repository)}/pulls/{pr_number}"),
+            self._request_json(
+                "GET",
+                f"/repos/{_owner_repo(repository)}/pulls/{pr_number}",
+                auth="read",
+                operation="get_pull_request",
+            ),
             "github_bad_pr_response",
         )
         base = _json_object(root.get("base"), "github_bad_pr_response")
@@ -163,7 +219,15 @@ class GitHubIssueCommentGateway:
 
     def current_user_login(self) -> str:
         if self._current_user_login is None:
-            root = _json_object(self._request_json("GET", "/user"), "github_bad_user_response")
+            root = _json_object(
+                self._request_json(
+                    "GET",
+                    "/user",
+                    auth="write",
+                    operation="get_authenticated_user",
+                ),
+                "github_bad_user_response",
+            )
             login = str(root.get("login", "")).strip()
             if not login:
                 raise GitHubPublicationError("github_bad_user_response")
@@ -180,6 +244,8 @@ class GitHubIssueCommentGateway:
                     "GET",
                     f"/repos/{_owner_repo(repository)}/issues/{issue_number}/comments"
                     f"?per_page=100&page={page}",
+                    auth="read",
+                    operation="list_issue_comments",
                 ),
                 "github_bad_comments_response",
             )
@@ -215,6 +281,8 @@ class GitHubIssueCommentGateway:
                 "PATCH",
                 f"/repos/{_owner_repo(repository)}/issues/comments/{comment_id}",
                 payload={"body": body},
+                auth="write",
+                operation="update_issue_comment",
             ),
             "github_bad_comment_response",
         )
@@ -233,6 +301,8 @@ class GitHubIssueCommentGateway:
                 "POST",
                 f"/repos/{_owner_repo(repository)}/issues/{issue_number}/comments",
                 payload={"body": body},
+                auth="write",
+                operation="create_issue_comment",
             ),
             "github_bad_comment_response",
         )
@@ -248,6 +318,8 @@ class GitHubIssueCommentGateway:
             "DELETE",
             f"/repos/{_owner_repo(repository)}/issues/comments/{comment_id}",
             max_bytes=0,
+            auth="write",
+            operation="delete_issue_comment",
         )
 
 
@@ -264,7 +336,8 @@ def _max_comment_bytes() -> int:
 
 def _default_gateway() -> GitHubIssueCommentGateway:
     return GitHubIssueCommentGateway(
-        os.environ.get("ENEO_REVIEW_PUBLISH_GH_TOKEN", "").strip()
+        os.environ.get("ENEO_REVIEW_PUBLISH_GH_TOKEN", "").strip(),
+        read_token=os.environ.get("GITHUB_READ_TOKEN", "").strip(),
     )
 
 
