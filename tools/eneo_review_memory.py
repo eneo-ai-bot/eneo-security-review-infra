@@ -11,6 +11,7 @@ import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol, cast
@@ -104,6 +105,15 @@ class MemoryDbModule(Protocol):
         repository: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, object]]: ...
+    def mark_stale_runs_failed(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        older_than_minutes: int = 30,
+        repository: str | None = None,
+        pr_number: int | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, object]: ...
     def run_is_stale(self, run: Mapping[str, object]) -> bool: ...
     def record_coach_run(
         self, connection: sqlite3.Connection, item: MemoryCoachRunInput
@@ -314,6 +324,20 @@ def print_runs(memory_db: MemoryDbModule, runs: Sequence[JsonObject]) -> None:
         )
 
 
+def print_mark_stalled_result(result: JsonObject) -> None:
+    count = result["failed_count"]
+    print(
+        f"Marked {count} stale running review run(s) as failed "
+        f"(older than {result['older_than_minutes']}m, cutoff={result['cutoff']})."
+    )
+    runs = cast(Sequence[JsonObject], result.get("runs", ()))
+    for run in runs:
+        print(
+            f"#{run['id']:<5} failed   {run['repository']}#{run['pr_number']}  "
+            f"started={run['started_at']}  completed={run['completed_at']}"
+        )
+
+
 def print_run_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
@@ -398,9 +422,25 @@ def main() -> int:
 
     runs_parser = sub.add_parser("runs", help="List recent review runs, or --stats for run metrics.")
     runs_parser.add_argument("--repo", help="Limit to owner/repository.")
+    runs_parser.add_argument(
+        "--pr",
+        type=int,
+        help="Limit --mark-stalled to one pull request. Requires --repo.",
+    )
     runs_parser.add_argument("--limit", type=int, default=50)
     runs_parser.add_argument(
         "--stats", action="store_true", help="Show aggregate run metrics instead of a list."
+    )
+    runs_parser.add_argument(
+        "--mark-stalled",
+        action="store_true",
+        help="Mark stale running runs as failed, then print the affected runs.",
+    )
+    runs_parser.add_argument(
+        "--older-than-minutes",
+        type=int,
+        default=30,
+        help="Age threshold for --mark-stalled. Default: 30.",
     )
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
     runs_parser.add_argument("--json", action="store_true")
@@ -618,7 +658,11 @@ def main() -> int:
         return 0
 
     opener = memory_db.connect if args.command == "init" else memory_db.connect_existing
-    with closing(opener(args.db)) as connection:
+    try:
+        connection = opener(args.db)
+    except memory_db.ReviewMemoryError as exc:
+        raise SystemExit(str(exc)) from exc
+    with closing(connection) as connection:
         if args.command == "init":
             print(f"Ready: {memory_db.database_path(args.db)}")
             return 0
@@ -706,7 +750,25 @@ def main() -> int:
             return 0
 
         if args.command == "runs":
-            if args.stats:
+            if args.mark_stalled:
+                if args.stats:
+                    raise SystemExit("--mark-stalled cannot be combined with --stats")
+                if args.pr is not None and not args.repo:
+                    raise SystemExit("--pr requires --repo")
+                try:
+                    result = memory_db.mark_stale_runs_failed(
+                        connection,
+                        repository=args.repo,
+                        pr_number=args.pr,
+                        older_than_minutes=args.older_than_minutes,
+                    )
+                except memory_db.ReviewMemoryError as exc:
+                    raise SystemExit(str(exc)) from exc
+                if args.json:
+                    print(memory_db.json_dumps(result))
+                else:
+                    print_mark_stalled_result(result)
+            elif args.stats:
                 run_metrics = memory_db.run_stats(connection, repository=args.repo, days=args.days)
                 if args.json:
                     print(memory_db.json_dumps(run_metrics))

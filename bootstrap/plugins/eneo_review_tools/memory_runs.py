@@ -42,7 +42,14 @@ def start_run(
     repository = normalize_repository(repository)
     if pr_number < 1:
         raise ReviewMemoryError("pr_number must be positive")
-    started = isoformat(now)
+    moment = now or utc_now()
+    mark_stale_runs_failed(
+        connection,
+        repository=repository,
+        pr_number=pr_number,
+        now=moment,
+    )
+    started = isoformat(moment)
     with connection:
         cursor = connection.execute(
             """
@@ -74,6 +81,77 @@ def start_run(
         "base_sha": base_sha,
         "status": "running",
         "started_at": started,
+    }
+
+
+def mark_stale_runs_failed(
+    connection: sqlite3.Connection,
+    *,
+    older_than_minutes: int = 30,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Move abandoned running runs to failed.
+
+    Review execution itself is not resumable. This cleanup keeps operator state honest
+    after a container restart or crashed model call without introducing a queue.
+    """
+    if isinstance(older_than_minutes, bool) or int(older_than_minutes) < 1:
+        raise ReviewMemoryError("older_than_minutes must be a positive integer")
+    older_than = int(older_than_minutes)
+    moment = now or utc_now()
+    cutoff = isoformat(moment - timedelta(minutes=older_than))
+    completed = isoformat(moment)
+
+    conditions = ["status = 'running'", "started_at < ?"]
+    params: list[Any] = [cutoff]
+    repo = normalize_repository(repository) if repository else None
+    if repo is not None:
+        conditions.append("repository = ?")
+        params.append(repo)
+    if pr_number is not None:
+        if isinstance(pr_number, bool) or int(pr_number) < 1:
+            raise ReviewMemoryError("pr_number must be positive")
+        conditions.append("pr_number = ?")
+        params.append(int(pr_number))
+    where = " AND ".join(conditions)
+
+    with connection:
+        rows = [
+            dict(row)
+            for row in connection.execute(
+                f"""
+                SELECT id, repository, pr_number, status, findings_count,
+                       posted_comment_id, started_at, completed_at
+                FROM review_runs
+                WHERE {where}
+                ORDER BY started_at ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        ]
+        if rows:
+            connection.execute(
+                f"""
+                UPDATE review_runs
+                SET status = 'failed', completed_at = ?
+                WHERE {where}
+                """,
+                [completed, *params],
+            )
+
+    for row in rows:
+        row["status"] = "failed"
+        row["completed_at"] = completed
+    return {
+        "failed_count": len(rows),
+        "older_than_minutes": older_than,
+        "cutoff": cutoff,
+        "repository": repo,
+        "pr_number": pr_number,
+        "completed_at": completed,
+        "runs": rows,
     }
 
 
@@ -210,7 +288,11 @@ def run_stats(
             stalled_running += 1
         started = parse_time(item.get("started_at"))
         completed = parse_time(item.get("completed_at"))
-        if started is not None and completed is not None:
+        if (
+            item.get("status") == "generated"
+            and started is not None
+            and completed is not None
+        ):
             durations.append((completed - started).total_seconds())
         if item.get("status") == "generated" and item.get("findings_count") is not None:
             findings_total += int(item["findings_count"])
