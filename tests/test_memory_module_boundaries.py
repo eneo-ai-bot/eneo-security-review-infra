@@ -17,6 +17,7 @@ OWNER_MODULES = [
     "feedback_commands",
     "memory_validation",
     "memory_schema",
+    "memory_migration",
     "memory_identity",
     "memory_decisions",
     "memory_findings",

@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
+import threading
 from types import ModuleType
 from typing import Protocol, cast
+
+REQUEST_TIMEOUT_SECONDS = 10.0
+MAX_CONCURRENT_REQUESTS = 8
 
 
 class FeedbackBridgeModule(Protocol):
@@ -23,6 +29,7 @@ class FeedbackBridgeModule(Protocol):
     UnauthorizedFeedback: type[Exception]
 
     def load_config(self) -> object: ...
+    def ready_check(self, config: object) -> Mapping[str, object]: ...
     def verify_signature(self, body: bytes, signature: str, secret: str) -> bool: ...
     def decode_request_body(self, body: bytes) -> object: ...
     def process_feedback(
@@ -72,14 +79,36 @@ def load_feedback_bridge() -> FeedbackBridgeModule:
 
 
 class FeedbackRequestHandler(BaseHTTPRequestHandler):
+    def setup(self) -> None:
+        super().setup()
+        server = cast(FeedbackServer, self.server)
+        self.connection.settimeout(server.request_timeout_seconds)
+
     def do_GET(self) -> None:
-        bridge, _, _ = self._state()
+        bridge, config, _ = self._state()
         if self.path == "/health":
             self._write(200, b'{"status":"ok"}')
+            return
+        if self.path == "/ready":
+            try:
+                self._write(200, _json_body(bridge.ready_check(config)))
+            except Exception as exc:
+                self._write(503, bridge.response_body("not_ready", str(exc)))
             return
         self._write(404, bridge.response_body("not_found"))
 
     def do_POST(self) -> None:
+        server = cast(FeedbackServer, self.server)
+        if not server.acquire_request_slot():
+            bridge, _, _ = self._state()
+            self._write(503, bridge.response_body("busy"))
+            return
+        try:
+            self._do_POST()
+        finally:
+            server.release_request_slot()
+
+    def _do_POST(self) -> None:
         bridge, config, github = self._state()
         if self.path != bridge.DEFAULT_PATH:
             self._write(404, bridge.response_body("not_found"))
@@ -142,11 +171,21 @@ class FeedbackServer(ThreadingHTTPServer):
         bridge: FeedbackBridgeModule,
         config: ConfigLike,
         github: object,
+        request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+        max_concurrent_requests: int = MAX_CONCURRENT_REQUESTS,
     ) -> None:
         super().__init__(server_address, FeedbackRequestHandler)
         self.bridge = bridge
         self.config = config
         self.github = github
+        self.request_timeout_seconds = request_timeout_seconds
+        self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
+
+    def acquire_request_slot(self) -> bool:
+        return self._request_slots.acquire(blocking=False)
+
+    def release_request_slot(self) -> None:
+        self._request_slots.release()
 
 
 def serve(host: str, port: int, bridge: FeedbackBridgeModule | None = None) -> None:
@@ -174,11 +213,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=bridge.DEFAULT_PORT)
     args = parser.parse_args(argv)
     if args.command == "verify-config":
-        bridge.load_config()
+        config = bridge.load_config()
+        bridge.ready_check(config)
         print("ok")
         return 0
     serve(str(args.host), int(args.port), bridge)
     return 0
+
+
+def _json_body(value: Mapping[str, object]) -> bytes:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 if __name__ == "__main__":

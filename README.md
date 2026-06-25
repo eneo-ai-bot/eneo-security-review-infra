@@ -137,9 +137,21 @@ and `/review-memory` in the feedback sidecar. Never run two Hermes gateways
 against the same `hermes_review_data` volume.
 
 If upgrading from an older deployment that stored the database under
-`/opt/data/review-memory` inside `hermes_review_data`, copy
-`review_memory.sqlite3` into the new `review_memory_data` volume before relying
-on prior findings or feedback history.
+`/opt/data/review-memory` inside `hermes_review_data`, do not copy the SQLite
+file directly while services are running. Stop the reviewer and feedback
+services, mount the old path and new volume into a one-shot shell, then run:
+
+```bash
+eneo-review-memory migrate-volume \
+  --source /legacy/review_memory.sqlite3 \
+  --destination /review-memory/review_memory.sqlite3 \
+  --owner-uid 10000 \
+  --owner-gid 10000
+```
+
+The command checkpoints WAL, uses SQLite's backup API, verifies integrity and
+foreign keys, compares table counts, and leaves the source untouched unless the
+new destination was written successfully.
 
 Deploy the application.
 
@@ -162,6 +174,13 @@ curl -fsS http://127.0.0.1:8644/health
 gh auth status
 hermes doctor
 hermes plugins list
+```
+
+In the `hermes-review-feedback` container, verify the sidecar readiness check:
+
+```bash
+curl -fsS http://127.0.0.1:8645/ready
+eneo-review-feedback-bridge verify-config
 ```
 
 `GH_TOKEN` is consumed directly by the GitHub CLI, so an interactive `gh auth
@@ -582,8 +601,8 @@ review, tests, type checking, migration checks, or human ownership.
 
 ## Updating and validation
 
-For production, pin `HERMES_IMAGE` to a reviewed immutable digest. After an
-update:
+`HERMES_IMAGE` is pinned to a reviewed immutable digest in `.env.example`,
+`compose.yaml`, and `Dockerfile`. After an update:
 
 ```bash
 /opt/eneo-bootstrap/install.sh

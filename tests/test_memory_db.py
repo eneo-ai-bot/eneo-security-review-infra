@@ -13,6 +13,7 @@ sys.path.insert(0, str(PLUGIN))
 
 import memory_db  # noqa: E402
 import memory_schema  # noqa: E402
+import review_renderer  # noqa: E402
 
 
 class ReviewMemoryTests(unittest.TestCase):
@@ -326,6 +327,87 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("There are 2 current findings: 2 High (P1).", result["markdown"])
         self.assertNotIn("I found 2 High (P1) finding.", result["markdown"])
 
+    def test_lifecycle_summary_pluralizes_reference_groups(self):
+        summary = review_renderer.lifecycle_summary(
+            findings=[],
+            closed=[],
+            still_present=[],
+            partially_resolved=[],
+            new_refs=["F4", "F3"],
+            needs_recheck=["F2", "F1"],
+        )
+
+        self.assertIn("F1 and F2 need recheck", summary)
+        self.assertIn("F3 and F4 are new", summary)
+
+    def test_runtime_connection_requires_initialized_schema(self):
+        missing = str(Path(self.temp.name) / "missing.sqlite3")
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "run `eneo-review-memory init`"):
+            memory_db.connect_existing(missing)
+
+        empty = str(Path(self.temp.name) / "empty.sqlite3")
+        sqlite3.connect(empty).close()
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "schema version 0"):
+            memory_db.connect_existing(empty)
+
+        runtime = memory_db.connect_existing(self.db)
+        try:
+            self.assertEqual(
+                runtime.execute("PRAGMA user_version").fetchone()[0],
+                memory_db.SCHEMA_VERSION,
+            )
+        finally:
+            runtime.close()
+
+    def test_required_table_contract_matches_fresh_schema(self):
+        fresh_path = str(Path(self.temp.name) / "fresh.sqlite3")
+        fresh = memory_db.connect(fresh_path)
+        try:
+            actual_tables = {
+                str(row["name"])
+                for row in fresh.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    """
+                )
+            }
+        finally:
+            fresh.close()
+
+        self.assertEqual(actual_tables, memory_schema.REQUIRED_TABLES)
+
+    def test_migrate_volume_uses_sqlite_backup_and_preserves_committed_wal_rows(self):
+        source_path = Path(self.temp.name) / "source.sqlite3"
+        destination_path = Path(self.temp.name) / "dest" / "review_memory.sqlite3"
+        source = memory_db.connect(str(source_path))
+        try:
+            source.execute("PRAGMA wal_checkpoint(FULL)")
+            memory_db.start_run(
+                source,
+                "eneo/platform",
+                17,
+                trigger_comment_id=123,
+                trigger_user="github:alice",
+                head_sha="a" * 40,
+            )
+
+            result = memory_db.migrate_volume(str(source_path), str(destination_path))
+        finally:
+            source.close()
+
+        self.assertEqual(result["schema_version"], memory_db.SCHEMA_VERSION)
+        self.assertEqual(result["table_counts"]["review_runs"], 1)
+        migrated = memory_db.connect_existing(str(destination_path))
+        try:
+            self.assertEqual(
+                migrated.execute("SELECT COUNT(*) FROM review_runs").fetchone()[0],
+                1,
+            )
+        finally:
+            migrated.close()
+
     def test_finalize_review_omits_feedback_help_when_disabled(self):
         self.record()
 
@@ -372,7 +454,7 @@ class ReviewMemoryTests(unittest.TestCase):
 
         self.assertEqual(result["findings_count"], 2)
         self.assertEqual(result["resolved_count"], 0)
-        self.assertIn("I rechecked the latest commit.", result["markdown"])
+        self.assertIn("**Since the previous review:**", result["markdown"])
         self.assertIn("F1 needs recheck", result["markdown"])
         self.assertIn("F2 still present", result["markdown"])
         self.assertIn(
@@ -748,7 +830,7 @@ class ReviewMemoryTests(unittest.TestCase):
 
         self.assertIn("F2 still present", result["markdown"])
         self.assertIn("F1 needs recheck", result["markdown"])
-        self.assertIn("F3 new", result["markdown"])
+        self.assertIn("F3 is new", result["markdown"])
         self.assertIn(
             "### F3 · High (P1): Migration job can run without bounded retries",
             result["markdown"],
@@ -760,7 +842,7 @@ class ReviewMemoryTests(unittest.TestCase):
             title="Break </details> <!-- hidden --> ``` fence",
             evidence="Evidence tries </details> and <!-- hidden --> plus ```fence.",
             impact="Impact closes </details> and starts <!-- hidden -->.",
-            smallest_fix="Fix uses ```not a fence``` and keeps layout intact.",
+            smallest_fix="Fix uses ```not a fence``` plus List<T> and a && b.",
             disproof_checks="Verify </details> is escaped and ``` is neutralized.",
         )
         memory_db.record_findings(
@@ -774,12 +856,24 @@ class ReviewMemoryTests(unittest.TestCase):
 
         result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
         visible = result["markdown"].split("<!--\neneo-review:", 1)[0]
+        rendered_prose = visible.split("```text\nTask:", 1)[0]
 
-        self.assertIn("&lt;/details&gt;", visible)
-        self.assertIn("&lt;!-- hidden --&gt;", visible)
-        self.assertNotIn("<!-- hidden", visible)
-        self.assertNotIn("```fence", visible)
+        self.assertIn("&lt;/details&gt;", rendered_prose)
+        self.assertIn("&lt;!-- hidden --&gt;", rendered_prose)
+        self.assertIn(
+            "[`backend/api/documents.py:42`](https://github.com/eneo/platform/blob/"
+            + "a" * 40
+            + "/backend/api/documents.py#L42)",
+            rendered_prose,
+        )
+        self.assertNotIn("<!-- hidden", rendered_prose)
+        self.assertNotIn("```fence", rendered_prose)
         self.assertEqual(result["markdown"].count("```"), 6)
+        brief = result["markdown"].split("```text\nTask:", 1)[1].split("\n```", 1)[0]
+        self.assertIn("List<T>", brief)
+        self.assertIn("a && b", brief)
+        self.assertIn("` ` `not a fence` ` `", brief)
+        self.assertNotIn("List&lt;T&gt;", brief)
 
     def test_repeat_review_findings_are_bounded_but_not_by_recent_history_limit(self):
         findings = []
@@ -1213,7 +1307,7 @@ class ReviewMemoryTests(unittest.TestCase):
             ).fetchone()[0],
             1,
         )
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.connection.execute(
                 "SELECT name FROM sqlite_master WHERE name = 'review_comment_links'"
             ).fetchone()

@@ -150,7 +150,7 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 There are 2 current findings: 1 High (P1) and 1 Medium (P2).
 
 ### F1 · High (P1): Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · security
+[`backend/src/intric/jobs/service.py:142`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/service.py#L142) · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 
@@ -161,7 +161,7 @@ The new enqueue path passes the document ID but not the verified tenant ID. The 
 **Reviewer checks:** confirmed the enqueue path has document ID only, and the worker lookup does not re-bind the tenant context.
 
 ### F2 · Medium (P2): Regression test misses the cross-tenant worker path
-`backend/tests/jobs/test_service.py:88` · tests
+[`backend/tests/jobs/test_service.py:88`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/tests/jobs/test_service.py#L88) · tests
 
 The added test covers the happy path for a worker loading its own document, but it would also have passed before the tenant boundary fix because it never creates a second tenant with a conflicting document ID.
 
@@ -179,7 +179,7 @@ Task:
 Review and address all current findings from the Eneo PR review.
 
 Review basis:
-PR #123 at commit a1b2c3d.
+eneo-ai/eneo PR #123 at commit a1b2c3d.
 
 Before changing code:
 Re-check every finding against the current PR head. Skip anything already fixed
@@ -317,7 +317,7 @@ Put the starter bundle in a private infrastructure repository. Create a Dokploy 
 Copy `.env.example` to `.env` and set:
 
 ```dotenv
-HERMES_IMAGE=nousresearch/hermes-agent:latest
+HERMES_IMAGE=nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc
 TZ=Europe/Stockholm
 
 WEBHOOK_ENABLED=true
@@ -330,7 +330,6 @@ ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
 GH_PROMPT_DISABLED=1
 
 ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
-ENEO_REVIEW_DB=/opt/data/review-memory/review_memory.sqlite3
 ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
 ENEO_REVIEW_FEEDBACK_ENABLED=true
 
@@ -339,7 +338,8 @@ API_SERVER_ENABLED=false
 PYTHONUNBUFFERED=1
 ```
 
-For production, replace `latest` with a reviewed immutable image digest after the initial proof of concept.
+The default image is pinned by digest. Update it through a reviewed dependency
+PR instead of changing the deployment to `latest`.
 
 Route an HTTPS domain to service `hermes-review`, container port `8644`. Route a
 second HTTPS domain or path to service `hermes-review-feedback`, container port
@@ -355,6 +355,12 @@ configuration, and sessions. The SQLite review database lives in the separate
 `review_memory_data` volume so the feedback sidecar can write feedback without
 reading full Hermes state. Never run two Hermes gateways against the same
 `hermes_review_data` volume.
+
+`ENEO_REVIEW_DB` is not a public `.env` setting in Compose. The reviewer uses
+`/opt/data/review-memory/review_memory.sqlite3`, the feedback sidecar uses
+`/review-memory/review_memory.sqlite3`, and both paths point at the same named
+`review_memory_data` volume. The `review-memory-init` service owns schema
+creation and migration before either long-running service starts.
 
 Deploy the service.
 
@@ -391,6 +397,13 @@ curl -fsS http://127.0.0.1:8644/health
 gh auth status
 hermes doctor
 hermes plugins list
+```
+
+In the `hermes-review-feedback` container:
+
+```bash
+curl -fsS http://127.0.0.1:8645/ready
+eneo-review-feedback-bridge verify-config
 ```
 
 Expected webhook health response:

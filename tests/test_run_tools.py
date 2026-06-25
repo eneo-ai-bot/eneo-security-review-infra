@@ -20,6 +20,7 @@ class RunToolTests(unittest.TestCase):
         self._env = dict(os.environ)
         os.environ["ENEO_REVIEW_DB"] = str(Path(self.temp.name) / "memory.sqlite3")
         os.environ["ENEO_ALLOWED_REPOSITORIES"] = "eneo-ai/eneo"
+        memory_db.connect(os.environ["ENEO_REVIEW_DB"]).close()
 
     def tearDown(self):
         os.environ.clear()

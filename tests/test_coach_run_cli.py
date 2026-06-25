@@ -71,6 +71,7 @@ class CoachRunCliTests(unittest.TestCase):
             output_dir = root / "coach-run"
             db_path = root / "memory.sqlite3"
             export_path.write_text(json.dumps(memory_export()), encoding="utf-8")
+            memory_db.connect(str(db_path)).close()
 
             completed = subprocess.run(
                 [

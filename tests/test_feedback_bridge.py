@@ -108,7 +108,7 @@ class FeedbackBridgeTests(unittest.TestCase):
             secret="secret",
             token="token",
             allowed_repositories=frozenset({"eneo/platform"}),
-            allowed_actor_ids="12345",
+            allowed_actor_ids=frozenset({"12345"}),
             database_path=self.db,
         )
 
@@ -124,7 +124,7 @@ class FeedbackBridgeTests(unittest.TestCase):
         }
 
     def count_rows(self, table: str) -> int:
-        with closing(memory_db.connect(self.db)) as connection:
+        with closing(memory_db.connect_existing(self.db)) as connection:
             return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
     def test_signature_verification_uses_hmac_sha256(self) -> None:
@@ -142,6 +142,7 @@ class FeedbackBridgeTests(unittest.TestCase):
             "ENEO_FEEDBACK_WEBHOOK_SECRET": "secret",
             "ENEO_ALLOWED_REPOSITORIES": "eneo/platform",
             "GH_TOKEN": "broader-review-token",
+            "ENEO_FEEDBACK_ALLOWED_ACTOR_IDS": "12345",
         }
 
         with patch.dict(os.environ, environment, clear=True):
@@ -153,6 +154,25 @@ class FeedbackBridgeTests(unittest.TestCase):
             config = feedback_bridge.load_config()
 
         self.assertEqual(config.token, "feedback-token")
+        self.assertEqual(config.allowed_actor_ids, frozenset({"12345"}))
+
+    def test_config_rejects_malformed_actor_allowlist_at_startup(self) -> None:
+        environment = {
+            "ENEO_FEEDBACK_WEBHOOK_SECRET": "secret",
+            "ENEO_FEEDBACK_GH_TOKEN": "feedback-token",
+            "ENEO_ALLOWED_REPOSITORIES": "eneo/platform",
+            "ENEO_FEEDBACK_ALLOWED_ACTOR_IDS": "12345,nope",
+        }
+
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(memory_db.ReviewMemoryError, "malformed actor id"):
+                feedback_bridge.load_config()
+
+    def test_ready_check_verifies_initialized_database(self) -> None:
+        self.assertEqual(
+            feedback_bridge.ready_check(self.config)["status"],
+            "ready",
+        )
 
     def test_false_positive_records_and_confirms_with_success_reaction_only(self) -> None:
         github = FakeGitHub(

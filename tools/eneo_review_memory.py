@@ -42,8 +42,17 @@ class MemoryDbModule(Protocol):
     CoachRunInput: type[MemoryCoachRunInput]
 
     def connect(self, explicit: str | None = None) -> sqlite3.Connection: ...
+    def connect_existing(self, explicit: str | None = None) -> sqlite3.Connection: ...
     def database_path(self, explicit: str | None = None) -> Path: ...
     def json_dumps(self, value: object) -> str: ...
+    def migrate_volume(
+        self,
+        source: str,
+        destination: str,
+        *,
+        owner_uid: int | None = None,
+        owner_gid: int | None = None,
+    ) -> Mapping[str, object]: ...
     def list_findings(
         self,
         connection: sqlite3.Connection,
@@ -273,6 +282,15 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="Create or migrate the database schema.")
+
+    migrate_parser = sub.add_parser(
+        "migrate-volume",
+        help="Safely copy an initialized review-memory database into a new volume.",
+    )
+    migrate_parser.add_argument("--source", required=True)
+    migrate_parser.add_argument("--destination", required=True)
+    migrate_parser.add_argument("--owner-uid", type=int)
+    migrate_parser.add_argument("--owner-gid", type=int)
 
     list_parser = sub.add_parser("list", help="List recent findings.")
     list_parser.add_argument("--repo", help="Limit to owner/repository.")
@@ -522,7 +540,7 @@ def main() -> int:
             artifact_dir=str(artifacts.paths.output_dir),
             candidates=candidates,
         )
-        with closing(memory_db.connect(args.db)) as connection:
+        with closing(memory_db.connect_existing(args.db)) as connection:
             run = memory_db.record_coach_run(connection, run_input)
         print(
             memory_db.json_dumps(
@@ -535,7 +553,21 @@ def main() -> int:
         return 0
 
     memory_db = load_memory_module()
-    with closing(memory_db.connect(args.db)) as connection:
+    if args.command == "migrate-volume":
+        try:
+            result = memory_db.migrate_volume(
+                args.source,
+                args.destination,
+                owner_uid=args.owner_uid,
+                owner_gid=args.owner_gid,
+            )
+        except memory_db.ReviewMemoryError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(memory_db.json_dumps(result))
+        return 0
+
+    opener = memory_db.connect if args.command == "init" else memory_db.connect_existing
+    with closing(opener(args.db)) as connection:
         if args.command == "init":
             print(f"Ready: {memory_db.database_path(args.db)}")
             return 0

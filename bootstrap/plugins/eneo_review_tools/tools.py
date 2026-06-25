@@ -541,7 +541,7 @@ def review_memory_context(args: dict[str, Any], **_: Any) -> str:
         paths = [_path(item) for item in raw_paths]
         raw_pr_number = args.get("pr_number")
         pr_number = _pr_number(raw_pr_number) if raw_pr_number is not None else None
-        with closing(memory_db.connect()) as connection:
+        with closing(memory_db.connect_existing()) as connection:
             return _output(
                 memory_db.memory_context(
                     connection, repository, paths, pr_number=pr_number
@@ -601,7 +601,7 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
                 else head_sha
             )
 
-        with closing(memory_db.connect()) as connection:
+        with closing(memory_db.connect_existing()) as connection:
             recorded = memory_db.record_findings(
                 connection,
                 repository,
@@ -637,7 +637,7 @@ def review_finalize(args: dict[str, Any], **_: Any) -> str:
             )
 
         _validate_open_pr_head(repository, number, head_sha)
-        with closing(memory_db.connect()) as connection:
+        with closing(memory_db.connect_existing()) as connection:
             result = memory_db.finalize_review(
                 connection,
                 repository,
@@ -661,7 +661,7 @@ def review_run_start(args: dict[str, Any], **_: Any) -> str:
             raise ToolInputError(
                 "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
             )
-        with closing(memory_db.connect()) as connection:
+        with closing(memory_db.connect_existing()) as connection:
             run = memory_db.start_run(connection, repository, number, head_sha=head_sha)
         return _output(
             {
@@ -697,7 +697,7 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
                 raise ToolInputError("findings_count must be an integer")
             if findings_count < 0:
                 raise ToolInputError("findings_count must be zero or greater")
-        with closing(memory_db.connect()) as connection:
+        with closing(memory_db.connect_existing()) as connection:
             result = memory_db.complete_run(
                 connection,
                 run_id,

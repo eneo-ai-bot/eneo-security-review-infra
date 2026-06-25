@@ -167,8 +167,30 @@ class FeedbackIngestionTests(unittest.TestCase):
                 "/review false-positive F1 because "
                 "<what code, guard, or invariant disproves it>"
             )
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "reason is required"):
+            memory_db.parse_review_feedback_command("/review false-positive F1 because")
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "reason is required"):
+            memory_db.parse_review_feedback_command("/review feedback missed because")
 
         self.assertIsNone(memory_db.parse_review_feedback_command("@review"))
+
+    def test_parser_strips_optional_leading_because_from_reasons(self) -> None:
+        finding = memory_db.parse_review_feedback_command(
+            "@review false-positive F1 because The repository scopes tenant_id."
+        )
+        missed = memory_db.parse_review_feedback_command(
+            "/review feedback missed because backend/api/documents.py lacks rollback coverage."
+        )
+
+        self.assertIsNotNone(finding)
+        self.assertIsNotNone(missed)
+        assert finding is not None
+        assert missed is not None
+        self.assertEqual(finding.reason, "The repository scopes tenant_id.")
+        self.assertEqual(
+            missed.reason,
+            "backend/api/documents.py lacks rollback coverage.",
+        )
 
     def test_rendered_feedback_templates_match_parser_contract(self) -> None:
         for template in memory_db.feedback_templates("F2"):
@@ -184,7 +206,10 @@ class FeedbackIngestionTests(unittest.TestCase):
                     memory_db.MISSED_ISSUE_PLACEHOLDER,
                     "the review missed backend/api/documents.py rollback behavior",
                 )
-                self.assertIsNotNone(memory_db.parse_review_feedback_command(command))
+                parsed = memory_db.parse_review_feedback_command(command)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertNotRegex(parsed.reason, r"(?i)^because\b")
 
     def test_authorization_uses_numeric_actor_id_and_fails_closed(self) -> None:
         self.assertEqual(

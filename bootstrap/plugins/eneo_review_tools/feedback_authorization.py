@@ -20,6 +20,7 @@ __all__ = (
     "AuthorizedFeedbackActor",
     "authorize_feedback_actor",
     "feedback_allowlist_version",
+    "parse_feedback_actor_allowlist",
 )
 
 
@@ -29,7 +30,7 @@ class AuthorizedFeedbackActor:
     allowlist_version: str
 
 
-def _parse_actor_allowlist(raw: str) -> frozenset[str]:
+def parse_feedback_actor_allowlist(raw: str) -> frozenset[str]:
     values: set[str] = set()
     for item in re.split(r"[\s,]+", raw.strip()):
         if not item:
@@ -49,14 +50,16 @@ def feedback_allowlist_version(actor_ids: frozenset[str]) -> str:
 def authorize_feedback_actor(
     actor_user_id: Any,
     *,
-    allowed_actor_ids: str | None = None,
+    allowed_actor_ids: str | frozenset[str] | None = None,
 ) -> AuthorizedFeedbackActor | None:
-    raw = (
-        os.environ.get(FEEDBACK_ALLOWED_ACTOR_IDS_ENV, "")
-        if allowed_actor_ids is None
-        else allowed_actor_ids
-    )
-    allowlist = _parse_actor_allowlist(raw)
+    if allowed_actor_ids is None:
+        allowlist = parse_feedback_actor_allowlist(
+            os.environ.get(FEEDBACK_ALLOWED_ACTOR_IDS_ENV, "")
+        )
+    elif isinstance(allowed_actor_ids, frozenset):
+        allowlist = allowed_actor_ids
+    else:
+        allowlist = parse_feedback_actor_allowlist(allowed_actor_ids)
     if not allowlist:
         return None
     if type(actor_user_id) is not int or actor_user_id < 1:

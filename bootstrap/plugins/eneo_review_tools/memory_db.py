@@ -8,6 +8,7 @@ try:
     from .feedback_commands import *  # noqa: F403
     from .memory_validation import *  # noqa: F403
     from .memory_schema import *  # noqa: F403
+    from .memory_migration import *  # noqa: F403
     from .memory_identity import *  # noqa: F403
     from .memory_decisions import *  # noqa: F403
     from .memory_findings import *  # noqa: F403
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from feedback_commands import *  # noqa: F403
     from memory_validation import *  # noqa: F403
     from memory_schema import *  # noqa: F403
+    from memory_migration import *  # noqa: F403
     from memory_identity import *  # noqa: F403
     from memory_decisions import *  # noqa: F403
     from memory_findings import *  # noqa: F403

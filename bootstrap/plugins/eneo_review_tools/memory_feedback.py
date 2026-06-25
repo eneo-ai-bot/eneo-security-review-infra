@@ -368,7 +368,7 @@ def record_review_feedback_comment(
     author_association: str = "",
     source_comment_id: object,
     source_comment_url: str = "",
-    allowed_actor_ids: str | None = None,
+    allowed_actor_ids: str | frozenset[str] | None = None,
     expires_days: int | None = None,
     now: datetime | None = None,
 ) -> FeedbackResult:

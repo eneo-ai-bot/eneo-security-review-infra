@@ -54,6 +54,7 @@ class ToolValidationTests(unittest.TestCase):
             "ENEO_ALLOWED_REPOSITORIES": "eneo/platform",
             "ENEO_REVIEW_DB": self.db,
         }
+        memory_db.connect(self.db).close()
         self.finding = {
             "rule_id": "tenant.missing-scope",
             "category": "security",

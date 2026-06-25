@@ -57,6 +57,7 @@ __all__ = (
 _TRIGGER_RE = re.compile(r"^\s*[@/]review\b", re.IGNORECASE | re.MULTILINE)
 _COMMAND_RE = re.compile(r"^\s*[@/]review(?:\s+(?P<body>.*))?\s*$", re.IGNORECASE | re.DOTALL)
 _ADR_RE = re.compile(r"ADR-[A-Za-z0-9][A-Za-z0-9._-]{0,76}$")
+_LEADING_BECAUSE_RE = re.compile(r"^because\b(?:\s*[:,-]?\s*)?", re.IGNORECASE)
 
 
 def _local_reference(value: str) -> str:
@@ -67,7 +68,11 @@ def _local_reference(value: str) -> str:
 
 
 def _reason(value: str) -> str:
-    reason = clean_multiline(value, field="reason", maximum=2000)
+    reason = clean_multiline(
+        _LEADING_BECAUSE_RE.sub("", value.strip(), count=1).strip(),
+        field="reason",
+        maximum=2000,
+    )
     if contains_placeholder(reason):
         raise ReviewMemoryError("replace placeholder text before submitting feedback")
     return reason

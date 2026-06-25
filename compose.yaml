@@ -1,11 +1,35 @@
 services:
+  review-memory-init:
+    build:
+      context: .
+      args:
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc}
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /review-memory
+        && eneo-review-memory init --db /review-memory/review_memory.sqlite3
+        && chown -R 10000:10000 /review-memory
+        && chmod 0750 /review-memory
+        && chmod 0640 /review-memory/review_memory.sqlite3*
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - review_memory_data:/review-memory
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+
   hermes-review:
     build:
       context: .
       args:
-        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc}
     restart: unless-stopped
     command: gateway run
+    depends_on:
+      review-memory-init:
+        condition: service_completed_successfully
     environment:
       TZ: "${TZ:-Europe/Stockholm}"
       WEBHOOK_ENABLED: "${WEBHOOK_ENABLED:-true}"
@@ -62,11 +86,14 @@ services:
     build:
       context: .
       args:
-        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+        HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc}
     restart: unless-stopped
     user: "10000:10000"
     entrypoint: ["/usr/local/bin/eneo-review-feedback-bridge"]
     command: ["serve", "--host", "0.0.0.0", "--port", "8645"]
+    depends_on:
+      review-memory-init:
+        condition: service_completed_successfully
     environment:
       TZ: "${TZ:-Europe/Stockholm}"
       ENEO_REVIEW_DB: /review-memory/review_memory.sqlite3
@@ -75,6 +102,7 @@ services:
       ENEO_ALLOWED_REPOSITORIES: "${ENEO_ALLOWED_REPOSITORIES:?set ENEO_ALLOWED_REPOSITORIES}"
       ENEO_FEEDBACK_ALLOWED_ACTOR_IDS: "${ENEO_FEEDBACK_ALLOWED_ACTOR_IDS:?set ENEO_FEEDBACK_ALLOWED_ACTOR_IDS}"
       PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
     expose:
       - "8645"
     networks:
@@ -86,11 +114,16 @@ services:
       # Fallback labels can mirror hermes-review with a distinct router/service.
     volumes:
       - review_memory_data:/review-memory
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8645/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8645/ready >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5

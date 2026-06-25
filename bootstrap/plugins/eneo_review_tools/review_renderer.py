@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Sequence, TypedDict
+import urllib.parse
 
 try:
     from .feedback_contract import feedback_templates
@@ -61,8 +62,28 @@ def safe_text(value: Any, *, maximum: int = 800) -> str:
     )
 
 
+def safe_fenced_text(value: Any, *, maximum: int = 800) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    cleaned = "".join(
+        character
+        if character in {"\n", "\t"} or ord(character) >= 32
+        else " "
+        for character in text
+    )
+    if len(cleaned) > maximum:
+        cleaned = cleaned[: maximum - 1].rstrip() + "..."
+    return cleaned.replace("```", "` ` `")
+
+
 def inline_code(value: Any, *, maximum: int = 800) -> str:
     return f"`{safe_text(value, maximum=maximum)}`"
+
+
+def source_link(repository: str, head_sha: str, path: str, line: int) -> str:
+    repository_part = urllib.parse.quote(repository, safe="/")
+    path_part = urllib.parse.quote(path, safe="/")
+    label = safe_text(f"{path}:{line}", maximum=520)
+    return f"[`{label}`](https://github.com/{repository_part}/blob/{head_sha}/{path_part}#L{line})"
 
 
 def severity_label(severity: str) -> str:
@@ -101,6 +122,14 @@ def joined_refs(items: Sequence[str]) -> str:
     return f"{', '.join(ordered[:-1])}, and {ordered[-1]}"
 
 
+def ref_clause(items: Sequence[str], singular: str, plural: str) -> str:
+    ordered = ordered_refs(items)
+    if not ordered:
+        return ""
+    suffix = singular if len(ordered) == 1 else plural
+    return f"{joined_refs(ordered)} {suffix}"
+
+
 def lifecycle_summary(
     *,
     findings: Sequence[PublishedFinding],
@@ -118,27 +147,41 @@ def lifecycle_summary(
         grouped = _closed_by_verdict(closed)
         if grouped["resolved"]:
             clauses.append(
-                f"{joined_refs([item['local_reference'] for item in grouped['resolved']])} resolved"
+                ref_clause(
+                    [item["local_reference"] for item in grouped["resolved"]],
+                    "resolved",
+                    "resolved",
+                )
             )
         if grouped["invalidated"]:
             clauses.append(
-                f"{joined_refs([item['local_reference'] for item in grouped['invalidated']])} withdrawn after recheck"
+                ref_clause(
+                    [item["local_reference"] for item in grouped["invalidated"]],
+                    "withdrawn after recheck",
+                    "withdrawn after recheck",
+                )
             )
         if grouped["suppressed"]:
             clauses.append(
-                f"{joined_refs([item['local_reference'] for item in grouped['suppressed']])} suppressed by human decision"
+                ref_clause(
+                    [item["local_reference"] for item in grouped["suppressed"]],
+                    "suppressed by human decision",
+                    "suppressed by human decision",
+                )
             )
     if still_present:
-        clauses.append(f"{joined_refs(still_present)} still present")
+        clauses.append(ref_clause(still_present, "still present", "still present"))
     if partially_resolved:
-        clauses.append(f"{joined_refs(partially_resolved)} partially resolved")
+        clauses.append(
+            ref_clause(partially_resolved, "partially resolved", "partially resolved")
+        )
     if needs_recheck:
-        clauses.append(f"{joined_refs(needs_recheck)} needs recheck")
+        clauses.append(ref_clause(needs_recheck, "needs recheck", "need recheck"))
     if new_refs:
-        clauses.append(f"{joined_refs(new_refs)} new")
+        clauses.append(ref_clause(new_refs, "is new", "are new"))
 
-    detail = "; ".join(clauses)
-    return f"I rechecked the latest commit. {detail}. {severity_summary(findings)}"
+    detail = " · ".join(clauses)
+    return f"**Since the previous review:** {detail}\n\n{severity_summary(findings)}"
 
 
 def ordered_findings(items: Sequence[PublishedFinding]) -> list[PublishedFinding]:
@@ -199,7 +242,7 @@ def render_fix_brief(
         "",
     ]
     for item in findings:
-        verification = safe_text(item["disproof_checks"], maximum=420)
+        verification = safe_fenced_text(item["disproof_checks"], maximum=420)
         if not verification:
             verification = (
                 "Add or run the focused checks that prove the demonstrated failure path."
@@ -207,13 +250,14 @@ def render_fix_brief(
         lines.extend(
             [
                 (
-                    f"{item['local_reference']} - {severity_label(item['severity'])} "
-                    f"- {item['category']}"
+                    f"{safe_fenced_text(item['local_reference'], maximum=12)} - "
+                    f"{severity_label(item['severity'])} - "
+                    f"{safe_fenced_text(item['category'], maximum=80)}"
                 ),
-                f"Location: {safe_text(item['path'], maximum=500)}:{item['line']}",
-                f"Problem: {safe_text(item['title'], maximum=220)}",
-                f"Impact: {safe_text(item['impact'], maximum=420)}",
-                f"Suggested approach: {safe_text(item['smallest_fix'], maximum=520)}",
+                f"Location: {safe_fenced_text(item['path'], maximum=500)}:{item['line']}",
+                f"Problem: {safe_fenced_text(item['title'], maximum=220)}",
+                f"Impact: {safe_fenced_text(item['impact'], maximum=420)}",
+                f"Suggested approach: {safe_fenced_text(item['smallest_fix'], maximum=520)}",
                 f"Reviewer checks: {verification}",
                 "",
             ]
@@ -319,7 +363,12 @@ def render_review_markdown(
     )
 
     for item in current:
-        location = inline_code(f"{item['path']}:{item['line']}", maximum=520)
+        location = source_link(
+            repository,
+            head_sha,
+            str(item["path"]),
+            int(item["line"]),
+        )
         lines.extend(
             [
                 (

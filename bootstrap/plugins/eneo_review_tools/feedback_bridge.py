@@ -15,22 +15,24 @@ import urllib.parse
 import urllib.request
 
 try:
+    from .feedback_authorization import parse_feedback_actor_allowlist
     from .feedback_contract import usage_lines
     from .memory_feedback import (
         FeedbackStatus,
         feedback_event,
         record_review_feedback_comment,
     )
-    from .memory_schema import connect
+    from .memory_schema import connect_existing, verify_database_ready
     from .memory_validation import ReviewMemoryError
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from feedback_authorization import parse_feedback_actor_allowlist
     from feedback_contract import usage_lines
     from memory_feedback import (
         FeedbackStatus,
         feedback_event,
         record_review_feedback_comment,
     )
-    from memory_schema import connect
+    from memory_schema import connect_existing, verify_database_ready
     from memory_validation import ReviewMemoryError
 
 Reaction = Literal["+1", "confused"]
@@ -109,7 +111,7 @@ class BridgeConfig:
         secret: str,
         token: str,
         allowed_repositories: frozenset[str],
-        allowed_actor_ids: str,
+        allowed_actor_ids: frozenset[str],
         database_path: str | None,
     ) -> None:
         self.secret = secret
@@ -170,15 +172,29 @@ def load_config() -> BridgeConfig:
     token = os.environ.get("ENEO_FEEDBACK_GH_TOKEN", "").strip()
     if not token:
         raise SystemExit("ENEO_FEEDBACK_GH_TOKEN is required")
+    allowed_actor_ids = parse_feedback_actor_allowlist(
+        os.environ.get("ENEO_FEEDBACK_ALLOWED_ACTOR_IDS", "")
+    )
+    if not allowed_actor_ids:
+        raise SystemExit("ENEO_FEEDBACK_ALLOWED_ACTOR_IDS is empty; deny by default")
     return BridgeConfig(
         secret=secret,
         token=token,
         allowed_repositories=parse_repository_allowlist(
             os.environ.get("ENEO_ALLOWED_REPOSITORIES", "")
         ),
-        allowed_actor_ids=os.environ.get("ENEO_FEEDBACK_ALLOWED_ACTOR_IDS", ""),
+        allowed_actor_ids=allowed_actor_ids,
         database_path=os.environ.get("ENEO_REVIEW_DB") or None,
     )
+
+
+def ready_check(config: BridgeConfig) -> dict[str, object]:
+    result = verify_database_ready(config.database_path)
+    return {
+        "status": "ready",
+        "database": result,
+        "allowed_actor_count": len(config.allowed_actor_ids),
+    }
 
 
 def event_lookup(payload: object) -> tuple[str, int, int]:
@@ -450,7 +466,7 @@ def process_feedback(
         )
 
     event_id = f"github:issue-comment:{comment_id}"
-    with closing(connect(config.database_path)) as connection:
+    with closing(connect_existing(config.database_path)) as connection:
         try:
             result = record_review_feedback_comment(
                 connection,

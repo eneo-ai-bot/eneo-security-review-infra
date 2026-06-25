@@ -33,6 +33,23 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
 DEFAULT_DB_NAME = "review_memory.sqlite3"
 SCHEMA_VERSION = 6
 OBSERVATION_BACKFILL_VERSION = 3
+REQUIRED_TABLES = frozenset(
+    {
+        "findings",
+        "decisions",
+        "review_runs",
+        "coach_runs",
+        "coach_candidates",
+        "review_subjects",
+        "finding_observations",
+        "pr_finding_references",
+        "review_publications",
+        "publication_findings",
+        "review_quality_feedback",
+        "processed_feedback_events",
+        "decision_audit",
+    }
+)
 
 
 def database_path(explicit: str | None = None) -> Path:
@@ -46,14 +63,69 @@ def database_path(explicit: str | None = None) -> Path:
 def connect(explicit: str | None = None) -> sqlite3.Connection:
     path = database_path(explicit)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = open_connection(path)
     connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA synchronous = NORMAL")
-    connection.execute("PRAGMA busy_timeout = 5000")
     init_schema(connection)
     return connection
+
+
+def connect_existing(explicit: str | None = None) -> sqlite3.Connection:
+    path = database_path(explicit)
+    if not path.exists():
+        raise ReviewMemoryError(
+            f"review memory database does not exist at {path}; "
+            "run `eneo-review-memory init` first"
+        )
+    connection = open_connection(path)
+    try:
+        verify_schema(connection)
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
+def open_connection(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(str(path), timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA synchronous = NORMAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    return connection
+
+
+def verify_schema(connection: sqlite3.Connection) -> None:
+    existing_version = _user_version(connection)
+    if existing_version != SCHEMA_VERSION:
+        raise ReviewMemoryError(
+            f"review memory schema version {existing_version} does not match "
+            f"expected version {SCHEMA_VERSION}; run `eneo-review-memory init`"
+        )
+    existing_tables = {
+        str(row["name"])
+        for row in connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+            """
+        )
+    }
+    missing = sorted(REQUIRED_TABLES - existing_tables)
+    if missing:
+        raise ReviewMemoryError(
+            "review memory database is missing required tables: "
+            + ", ".join(missing)
+        )
+
+
+def verify_database_ready(explicit: str | None = None) -> dict[str, object]:
+    path = database_path(explicit)
+    with connect_existing(explicit) as connection:
+        connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+    return {"path": str(path), "schema_version": SCHEMA_VERSION}
 
 
 def _ensure_column(
@@ -718,7 +790,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "head_sha",
         "TEXT NOT NULL DEFAULT ''",
     )
-    connection.execute("DROP TABLE IF EXISTS review_comment_links")
     connection.commit()
     existing_version = _user_version(connection)
     _migrate_findings_severity_check(connection)

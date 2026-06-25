@@ -3,7 +3,7 @@
 There are 2 current findings: 1 High (P1) and 1 Medium (P2).
 
 ### F1 · High (P1): Tenant context is dropped before the background job
-`backend/src/intric/jobs/service.py:142` · security
+[`backend/src/intric/jobs/service.py:142`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/service.py#L142) · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The
 worker later reloads the row by primary key, so the authorization boundary from
@@ -18,7 +18,7 @@ the worker lookup by both tenant and document ID.
 worker lookup does not re-bind the tenant context.
 
 ### F2 · Medium (P2): Regression test misses the cross-tenant worker path
-`backend/tests/jobs/test_service.py:88` · tests
+[`backend/tests/jobs/test_service.py:88`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/tests/jobs/test_service.py#L88) · tests
 
 The added test covers the happy path for a worker loading its own document, but it
 would also have passed before the tenant boundary fix because it never creates a
@@ -40,7 +40,7 @@ Task:
 Review and address all current findings from the Eneo PR review.
 
 Review basis:
-PR #123 at commit a1b2c3d.
+eneo-ai/eneo PR #123 at commit a1b2c3d.
 
 Before changing code:
 Re-check every finding against the current PR head. Skip anything already fixed
