@@ -178,6 +178,9 @@ class DocsContractTests(unittest.TestCase):
 
     def test_feedback_sidecar_uses_least_privilege_deployment(self):
         compose = read("compose.yaml")
+        init_section = compose.split("  review-memory-init:", 1)[1].split(
+            "\n  hermes-review:", 1
+        )[0]
         reviewer_section = compose.split("  hermes-review:", 1)[1].split(
             "\n  hermes-review-feedback:", 1
         )[0]
@@ -205,6 +208,31 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("--hold-on-config-error", feedback_section)
         self.assertIn("  review-memory-init:", compose)
         self.assertIn("condition: service_completed_successfully", compose)
+        self.assertIn("/opt/eneo-bootstrap/install.sh --force-agents", init_section)
+        self.assertIn("HERMES_HOME: /opt/data", init_section)
+        self.assertIn(
+            "ENEO_REVIEW_DB: /opt/data/review-memory/review_memory.sqlite3",
+            init_section,
+        )
+        self.assertIn("hermes_review_data:/opt/data", init_section)
+        self.assertIn("review_memory_data:/opt/data/review-memory", init_section)
+        self.assertNotIn("/opt/eneo-bootstrap/install.sh", reviewer_section)
+
+    def test_docs_explain_deploy_time_profile_and_schema_refresh(self):
+        readme = read("README.md")
+        guide = read("GUIDE.md")
+
+        for body in [readme, guide]:
+            with self.subTest(body=body[:30]):
+                self.assertIn("review-memory-init", body)
+                self.assertIn("refreshes", body)
+                self.assertIn("managed", body)
+                self.assertIn("/opt/data", body)
+                self.assertIn("SQLite", body)
+                self.assertIn("Exited (0)", body)
+                self.assertIn("Manual recovery only", body)
+                self.assertIn("/opt/eneo-bootstrap/install.sh --force-agents", body)
+                self.assertIn("eneo-review-memory init", body)
 
     def test_review_delivery_uses_deterministic_publisher_not_github_comment(self):
         config = read("bootstrap/config.yaml")
@@ -289,7 +317,8 @@ class DocsContractTests(unittest.TestCase):
         self.assertNotIn("nousresearch/hermes-agent:latest", compose)
         self.assertNotIn("nousresearch/hermes-agent:latest", env_example)
         self.assertNotIn("ENEO_REVIEW_DB=", env_example)
-        self.assertIn("eneo-review-memory --db /review-memory/review_memory.sqlite3 init", compose)
+        self.assertIn("/opt/eneo-bootstrap/install.sh --force-agents", compose)
+        self.assertIn("ENEO_REVIEW_DB: /opt/data/review-memory/review_memory.sqlite3", compose)
         self.assertIn("eneo-review-memory migrate-volume", readme)
         self.assertIn("SQLite's backup API", readme)
         self.assertIn("`ENEO_REVIEW_DB` is not a public `.env` setting", guide)

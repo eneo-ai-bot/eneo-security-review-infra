@@ -386,8 +386,11 @@ reading full Hermes state. Never run two Hermes gateways against the same
 `ENEO_REVIEW_DB` is not a public `.env` setting in Compose. The reviewer uses
 `/opt/data/review-memory/review_memory.sqlite3`, the feedback sidecar uses
 `/review-memory/review_memory.sqlite3`, and both paths point at the same named
-`review_memory_data` volume. The `review-memory-init` service owns schema
-creation and migration before either long-running service starts.
+`review_memory_data` volume. The `review-memory-init` service mounts both
+volumes, refreshes the managed reviewer profile and plugin under `/opt/data`,
+and runs schema creation or migration before either long-running service starts.
+An `Exited (0)` init container is a successful one-shot run, not a service that
+should keep running.
 
 Deploy the service.
 
@@ -405,12 +408,11 @@ posts only a reaction or short deterministic explanation. Human feedback,
 learning reports, and coach exports require human review before any prompt,
 skill, suppression, or policy change.
 
-## 9. Install the Eneo reviewer and connect Codex
+## 9. Connect Codex
 
 Open a terminal in the running `hermes-review` container:
 
 ```bash
-/opt/eneo-bootstrap/install.sh
 hermes plugins list
 hermes model
 ```
@@ -439,7 +441,18 @@ Expected webhook health response:
 {"status":"ok","platform":"webhook"}
 ```
 
-The installer copies the policy, skill, and plugin into `/opt/data`, creates the SQLite database, and enables the `eneo-review-tools` plugin. It preserves model/provider configuration written by `hermes model`.
+The deploy-time installer copies the policy, skill, and plugin into `/opt/data`,
+creates or migrates the SQLite database, and enables the `eneo-review-tools`
+plugin. It preserves model/provider configuration written by `hermes model`.
+
+The installer normally runs through `review-memory-init` on every deploy.
+Manual recovery only: run it directly if a deploy was interrupted or the
+persistent profile is suspect, then restart:
+
+```bash
+/opt/eneo-bootstrap/install.sh --force-agents
+eneo-review-memory init
+```
 
 ## 10. Install the GitHub trigger
 
@@ -792,11 +805,9 @@ Do not put dependency versions, temporary exceptions, or hundreds of past false 
 
 The current prompt explicitly treats PR metadata, source, comments, and diffs as untrusted data. Repository text cannot override the system policy or request new tools.
 
-After changing version-controlled prompt files, rebuild/redeploy and run:
-
-```bash
-/opt/eneo-bootstrap/install.sh --force-agents
-```
+After changing version-controlled prompt files, rebuild and redeploy. The
+`review-memory-init` service copies the updated managed prompt, skill, and
+plugin into the persistent `/opt/data` volume before the gateway starts.
 
 ## 14. Should Eneo index the codebase now?
 

@@ -156,6 +156,13 @@ and plugins. The SQLite review database lives in the separate
 and `/review-memory` in the feedback sidecar. Never run two Hermes gateways
 against the same `hermes_review_data` volume.
 
+The `review-memory-init` one-shot service runs before the reviewer and feedback
+sidecar on each deploy. It refreshes the managed profile, skills, and plugin
+under `/opt/data`, then runs the idempotent review-memory schema migration
+against `/opt/data/review-memory/review_memory.sqlite3`. Seeing the init
+container as `Exited (0)` is expected; use its logs for startup failures and use
+the running `hermes-review` container for shell commands.
+
 If upgrading from an older deployment that stored the database under
 `/opt/data/review-memory` inside `hermes_review_data`, do not copy the SQLite
 file directly while services are running. Stop the reviewer and feedback
@@ -175,12 +182,11 @@ new destination was written successfully.
 
 Deploy the application.
 
-## 3. Install the reviewer and connect Codex
+## 3. Connect Codex
 
 Open a terminal in the `hermes-review` container and run:
 
 ```bash
-/opt/eneo-bootstrap/install.sh
 hermes plugins list
 hermes model
 ```
@@ -204,6 +210,14 @@ eneo-review-feedback-bridge verify-config
 
 The review container does not need a generic `GH_TOKEN`; comment writes go
 through `ENEO_REVIEW_PUBLISH_GH_TOKEN`.
+
+Manual recovery only: if a deploy was interrupted or the persistent profile is
+suspect, run this in the `hermes-review` container and restart the service:
+
+```bash
+/opt/eneo-bootstrap/install.sh --force-agents
+eneo-review-memory init
+```
 
 If GitHub shows the eyes reaction on `/review` but no review comment appears,
 inspect the durable run and publication ledgers in the `hermes-review`
@@ -583,15 +597,10 @@ mechanical enforcement belongs in plugin code and tests, and replay behavior
 belongs under `review-learning/replay/`. Do not add a second production policy
 file for unapproved lessons.
 
-After editing the version-controlled source, rebuild/redeploy and run:
-
-```bash
-/opt/eneo-bootstrap/install.sh --force-agents
-```
-
-The installer preserves a live `AGENTS.md` by default to avoid destroying local
-edits. Prefer editing the source and forcing an explicit update rather than
-allowing policy drift inside the volume.
+After editing the version-controlled source, rebuild and redeploy. The
+`review-memory-init` one-shot service refreshes the managed profile and plugin
+inside the persistent volume before the gateway starts. Prefer editing the
+source and redeploying rather than allowing policy drift inside the volume.
 
 ## 9. Indexing recommendation
 
@@ -641,13 +650,9 @@ review, tests, type checking, migration checks, or human ownership.
 ## Updating and validation
 
 `HERMES_IMAGE` is pinned to a reviewed immutable digest in `.env.example`,
-`compose.yaml`, and `Dockerfile`. After an update:
-
-```bash
-/opt/eneo-bootstrap/install.sh
-```
-
-Then restart and request a review on a controlled PR.
+`compose.yaml`, and `Dockerfile`. After an update, redeploy and request a
+review on a controlled PR. The deploy-time init service refreshes `/opt/data`
+and migrates the SQLite schema automatically.
 
 Run the bundle checks locally:
 
