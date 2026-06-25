@@ -222,6 +222,49 @@ def publication_comment_ids(
     return _publication_comment_ids(connection, publication_id)
 
 
+def list_publications(
+    connection: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if pr_number is not None:
+        pr_number = int(pr_number)
+        if pr_number < 1:
+            raise ReviewMemoryError("pr_number must be positive")
+    repository = normalize_repository(repository) if repository else None
+    limit = max(1, min(int(limit), 500))
+
+    conditions: list[str] = []
+    params: list[object] = []
+    if repository:
+        conditions.append("repository = ?")
+        params.append(repository)
+    if pr_number is not None:
+        conditions.append("pr_number = ?")
+        params.append(pr_number)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = connection.execute(
+        f"""
+        SELECT id, review_run_id, repository, pr_number, delivery_status,
+               comment_id, failure_code, generated_at, posting_started_at,
+               posted_at, publish_failed_at, superseded_at, base_sha, head_sha
+        FROM review_publications
+        {where}
+        ORDER BY generated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (*params, limit),
+    ).fetchall()
+    publications: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["comment_ids"] = _publication_comment_ids(connection, int(item["id"]))
+        publications.append(item)
+    return publications
+
+
 def _publication_findings(
     connection: sqlite3.Connection, publication_id: int
 ) -> list[dict[str, Any]]:

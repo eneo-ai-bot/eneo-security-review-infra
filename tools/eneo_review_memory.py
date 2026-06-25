@@ -105,6 +105,14 @@ class MemoryDbModule(Protocol):
         repository: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, object]]: ...
+    def list_publications(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        pr_number: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]: ...
     def mark_stale_runs_failed(
         self,
         connection: sqlite3.Connection,
@@ -338,6 +346,27 @@ def print_mark_stalled_result(result: JsonObject) -> None:
         )
 
 
+def print_publications(publications: Sequence[JsonObject]) -> None:
+    if not publications:
+        print("No review publications.")
+        return
+    for item in publications:
+        run_id = item["review_run_id"] if item.get("review_run_id") is not None else "-"
+        comment_id = item["comment_id"] if item.get("comment_id") is not None else "-"
+        failure_code = item.get("failure_code") or "-"
+        print(
+            f"#{item['id']:<5} {str(item['delivery_status']):14} "
+            f"{item['repository']}#{item['pr_number']}  run={run_id}  "
+            f"comment={comment_id}  failure={failure_code}"
+        )
+        print(
+            f"       generated={item.get('generated_at') or '-'}  "
+            f"posting={item.get('posting_started_at') or '-'}  "
+            f"posted={item.get('posted_at') or '-'}  "
+            f"failed={item.get('publish_failed_at') or '-'}"
+        )
+
+
 def print_run_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
@@ -444,6 +473,19 @@ def main() -> int:
     )
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
     runs_parser.add_argument("--json", action="store_true")
+
+    publications_parser = sub.add_parser(
+        "publications",
+        help="List generated, posted, stale, and failed review publications.",
+    )
+    publications_parser.add_argument("--repo", help="Limit to owner/repository.")
+    publications_parser.add_argument(
+        "--pr",
+        type=int,
+        help="Limit to one pull request. Requires --repo.",
+    )
+    publications_parser.add_argument("--limit", type=int, default=50)
+    publications_parser.add_argument("--json", action="store_true")
 
     learning_parser = sub.add_parser(
         "learning-report",
@@ -780,6 +822,21 @@ def main() -> int:
                     print(memory_db.json_dumps(runs))
                 else:
                     print_runs(memory_db, runs)
+            return 0
+
+        if args.command == "publications":
+            if args.pr is not None and not args.repo:
+                raise SystemExit("--pr requires --repo")
+            publications = memory_db.list_publications(
+                connection,
+                repository=args.repo,
+                pr_number=args.pr,
+                limit=args.limit,
+            )
+            if args.json:
+                print(memory_db.json_dumps(publications))
+            else:
+                print_publications(publications)
             return 0
 
     return 1

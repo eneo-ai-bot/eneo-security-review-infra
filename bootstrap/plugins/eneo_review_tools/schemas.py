@@ -313,6 +313,69 @@ ENEO_REVIEW_PUBLISH = {
     },
 }
 
+ENEO_REVIEW_DELIVER = {
+    "name": "eneo_review_deliver",
+    "description": (
+        "Finalize the stored findings, publish the canonical GitHub PR comment, "
+        "and complete the review run in one deterministic lifecycle step. Use this "
+        "as the final write action for normal reviews so failures are recorded as "
+        "stale or publish_failed publication rows instead of leaving generated "
+        "comments unposted."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string"},
+            "pr_number": {"type": "integer", "minimum": 1},
+            "head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40,64}$",
+                "description": "Exact pull-request head commit SHA from eneo_pr_overview.",
+            },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_run_start for this review.",
+            },
+            "previous_verdicts": {
+                "type": "array",
+                "maxItems": memory_contract.MAX_FINDINGS_PER_REVIEW,
+                "description": (
+                    "Optional explicit verdicts for prior F references returned through "
+                    "repeat_review_findings. Omitted prior findings default to not_checked "
+                    "and remain current until explicitly resolved, invalidated, suppressed, "
+                    "or observed again."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "local_reference": {
+                            "type": "string",
+                            "pattern": "^F[1-9][0-9]*$",
+                        },
+                        "verdict": {
+                            "type": "string",
+                            "enum": list(memory_contract.PRIOR_FINDING_VERDICTS),
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": (
+                                "Short reason for resolved, invalidated, suppressed, or "
+                                "partially resolved verdicts. Keep empty when omitted or "
+                                "not checked."
+                            ),
+                        },
+                    },
+                    "required": ["local_reference", "verdict"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["repository", "pr_number", "head_sha", "run_id"],
+        "additionalProperties": False,
+    },
+}
+
 ENEO_REVIEW_RUN_COMPLETE = {
     "name": "eneo_review_run_complete",
     "description": (

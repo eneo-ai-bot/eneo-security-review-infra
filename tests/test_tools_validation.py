@@ -95,6 +95,13 @@ class ToolValidationTests(unittest.TestCase):
             verdict_schema["enum"],
             list(memory_db.PRIOR_FINDING_VERDICTS),
         )
+        deliver_verdict_schema = schemas.ENEO_REVIEW_DELIVER["parameters"]["properties"][
+            "previous_verdicts"
+        ]["items"]["properties"]["verdict"]
+        self.assertEqual(
+            deliver_verdict_schema["enum"],
+            list(memory_db.PRIOR_FINDING_VERDICTS),
+        )
 
     def test_plugin_registers_all_declared_tools(self):
         registry = _FakeRegistry()
@@ -112,6 +119,7 @@ class ToolValidationTests(unittest.TestCase):
                 "eneo_review_run_start",
                 "eneo_review_finalize",
                 "eneo_review_publish",
+                "eneo_review_deliver",
                 "eneo_review_run_complete",
             },
         )

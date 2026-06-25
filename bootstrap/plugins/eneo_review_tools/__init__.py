@@ -72,6 +72,12 @@ def register(ctx: ToolRegistry) -> None:
         handler=getattr(tools, "review_publish"),
     )
     ctx.register_tool(
+        name="eneo_review_deliver",
+        toolset="eneo_review",
+        schema=getattr(schemas, "ENEO_REVIEW_DELIVER"),
+        handler=getattr(tools, "review_deliver"),
+    )
+    ctx.register_tool(
         name="eneo_review_run_complete",
         toolset="eneo_review",
         schema=getattr(schemas, "ENEO_REVIEW_RUN_COMPLETE"),

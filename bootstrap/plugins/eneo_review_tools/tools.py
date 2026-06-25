@@ -735,6 +735,12 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
             posted_comment_id = _positive_id(
                 posted_comment_id, field="posted_comment_id"
             )
+        if status == "generated" and posted_comment_id is None:
+            raise ToolInputError(
+                "posted_comment_id is required when status is generated; use "
+                "eneo_review_deliver so finalize, publish, and run completion stay "
+                "in one auditable delivery step"
+            )
         with closing(memory_db.connect_existing()) as connection:
             result = memory_db.complete_run(
                 connection,
@@ -763,6 +769,122 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
         return _error(str(exc))
     except Exception:
         return _error("unexpected run-complete failure")
+
+
+def _mark_run_failed(
+    *,
+    repository: str,
+    pr_number: int,
+    run_id: int,
+    findings_count: int | None = None,
+) -> None:
+    try:
+        with closing(memory_db.connect_existing()) as connection:
+            memory_db.complete_run(
+                connection,
+                run_id,
+                repository=repository,
+                pr_number=pr_number,
+                status="failed",
+                findings_count=findings_count,
+            )
+    except Exception:
+        # The primary error is returned to the caller. A best-effort telemetry
+        # update must not mask the root cause.
+        pass
+
+
+def review_deliver(args: dict[str, Any], **_: Any) -> str:
+    repository = ""
+    number = 0
+    run_id = 0
+    try:
+        repository = _allowlisted_repository(args.get("repository"))
+        number = _pr_number(args.get("pr_number"))
+        head_sha = str(args.get("head_sha", "")).strip().lower()
+        if not _SHA_RE.fullmatch(head_sha):
+            raise ToolInputError(
+                "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
+            )
+        run_id = _positive_id(args.get("run_id"), field="run_id")
+
+        _validate_open_pr_head(repository, number, head_sha)
+        with closing(memory_db.connect_existing()) as connection:
+            finalized = memory_db.finalize_review(
+                connection,
+                repository,
+                number,
+                head_sha,
+                review_run_id=run_id,
+                previous_verdicts=args.get("previous_verdicts"),
+            )
+            publication_id = int(finalized["publication_id"])
+            findings_count = int(finalized["findings_count"])
+            published = review_publisher.publish_review(
+                connection,
+                publication_id=publication_id,
+                review_run_id=run_id,
+            )
+            if bool(published.get("published")):
+                comment_id = _positive_id(
+                    published.get("comment_id"), field="comment_id"
+                )
+                completed = memory_db.complete_run(
+                    connection,
+                    run_id,
+                    repository=repository,
+                    pr_number=number,
+                    status="generated",
+                    findings_count=findings_count,
+                    posted_comment_id=comment_id,
+                )
+                return _output(
+                    {
+                        "stage": "delivered",
+                        "published": True,
+                        "run_id": run_id,
+                        "run_updated": completed is not None,
+                        "publication_id": publication_id,
+                        "delivery_status": published.get("delivery_status"),
+                        "comment_id": comment_id,
+                        "comment_ids": published.get("comment_ids", [comment_id]),
+                        "findings_count": findings_count,
+                        "resolved_count": finalized["resolved_count"],
+                    }
+                )
+
+            memory_db.complete_run(
+                connection,
+                run_id,
+                repository=repository,
+                pr_number=number,
+                status="failed",
+                findings_count=findings_count,
+            )
+            return _output(
+                {
+                    "stage": "publish_failed",
+                    "published": False,
+                    "run_id": run_id,
+                    "publication_id": publication_id,
+                    "delivery_status": published.get("delivery_status"),
+                    "failure_code": published.get("failure_code", ""),
+                    "findings_count": findings_count,
+                    "resolved_count": finalized["resolved_count"],
+                    "operator_hint": (
+                        "Run `eneo-review-memory publications --repo "
+                        f"{repository} --pr {number}` to inspect the publication ledger."
+                    ),
+                }
+            )
+    except (ToolInputError, memory_db.ReviewMemoryError) as exc:
+        if repository and number and run_id:
+            _mark_run_failed(repository=repository, pr_number=number, run_id=run_id)
+        return _error(str(exc))
+    except Exception:
+        if repository and number and run_id:
+            _mark_run_failed(repository=repository, pr_number=number, run_id=run_id)
+        return _error("unexpected review-deliver failure")
 
 
 def review_publish(args: dict[str, Any], **_: Any) -> str:

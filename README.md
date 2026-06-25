@@ -24,7 +24,7 @@ browser, delegation, or code execution.
 - Codex subscription login through `hermes model`; no OpenAI API key is required.
 - A maintainer-only `/review` GitHub Actions trigger, with `@review` kept as a
   compatibility alias.
-- Deterministic GitHub comment publication through `eneo_review_publish`.
+- Deterministic GitHub comment delivery through `eneo_review_deliver`.
 - Eneo-specific `SOUL.md`, `AGENTS.md`, and a two-pass review skill.
 - Ponytail v4.7.0 to prefer the smallest correct remediation without weakening
   validation, security, reliability, data protection, or accessibility.
@@ -59,7 +59,7 @@ SQLite finding/suppression check
 deterministic comment finalizer
         |
         v
-deterministic publisher verifies base/head + stored body
+deterministic delivery verifies base/head + stored body
         |
         v
 one structured GitHub PR comment
@@ -67,8 +67,9 @@ one structured GitHub PR comment
 
 The model does not receive a general shell, repository write tool, or arbitrary
 GitHub mutation tool. The final Hermes response is logged only; the
-`eneo_review_publish` tool loads the stored body and PR target from SQLite,
-verifies the exact base/head SHA, and creates or updates the canonical comment.
+`eneo_review_deliver` tool renders the stored review body, loads the PR target
+from SQLite, verifies the exact base/head SHA, creates or updates the canonical
+comment, and records the run outcome.
 If the rendered review is too large for one GitHub comment, the publisher splits
 it into deterministic continuation comments instead of truncating or hiding
 verified findings.
@@ -203,6 +204,25 @@ eneo-review-feedback-bridge verify-config
 
 The review container does not need a generic `GH_TOKEN`; comment writes go
 through `ENEO_REVIEW_PUBLISH_GH_TOKEN`.
+
+If GitHub shows the eyes reaction on `/review` but no review comment appears,
+inspect the durable run and publication ledgers in the `hermes-review`
+container:
+
+```bash
+eneo-review-memory runs --repo eneo-ai/eneo --limit 10
+eneo-review-memory publications --repo eneo-ai/eneo --pr 123
+```
+
+`generated` with no `posting` timestamp means an old review skill did not call
+the delivery tool. `publish_failed` means GitHub publication was attempted and
+failed; read `failure=` for the root cause such as `github_401`, `github_403`,
+or `body_too_large`. `stale` means the PR base or head changed before posting.
+If a container crash leaves a run `running`, mark only stale runs failed:
+
+```bash
+eneo-review-memory runs --mark-stalled --older-than-minutes 10 --repo eneo-ai/eneo --pr 123
+```
 
 ## 4. Install the GitHub trigger
 

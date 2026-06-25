@@ -11,7 +11,7 @@ updates one canonical GitHub comment on the PR.
 The reviewer is advisory. CI, CodeQL, dependency review, tests, type checks,
 human ownership, and migration checks remain the merge gates. The model cannot
 execute contributor code, write repository files, browse the web, delegate to
-subagents, or mutate GitHub except through the narrow `eneo_review_publish`
+subagents, or mutate GitHub except through the narrow `eneo_review_deliver`
 tool, which loads the body and PR target from SQLite.
 
 ## 1. Recommended design
@@ -34,8 +34,7 @@ Hermes Agent on Dokploy
         +--> bounded GitHub PR read tools
         +--> Eneo SOUL.md + AGENTS.md + review skill
         +--> SQLite findings and decision registry
-        +--> deterministic comment finalizer
-        +--> deterministic comment publisher
+        +--> deterministic comment delivery
         |
         v
 one structured, constructive PR comment
@@ -43,7 +42,7 @@ one structured, constructive PR comment
 
 Hermes’ current webhook adapter supports HMAC verification, route-specific
 skills, and idempotency. This bundle sets the review route delivery to `log`;
-the deterministic publisher writes the PR comment after verifying the stored
+the deterministic delivery tool writes the PR comment after verifying the stored
 body and exact base/head SHA. If the stored review exceeds the GitHub comment
 budget, the publisher uses deterministic continuation comments rather than
 dropping findings. The official Docker image keeps mutable state under
@@ -535,6 +534,25 @@ python3 scripts/smoke_webhook.py \
 ```
 
 This posts a real comment when the PR, route, and credentials are valid.
+
+If the `/review` comment gets the eyes reaction but no bot comment appears, use
+the durable ledgers in the `hermes-review` container instead of guessing from
+GitHub UI state:
+
+```bash
+eneo-review-memory runs --repo eneo-ai/eneo --limit 10
+eneo-review-memory publications --repo eneo-ai/eneo --pr 123
+```
+
+`generated` with no `posting` timestamp means an old review skill generated a
+publication but did not invoke delivery. `publish_failed` means GitHub posting
+was attempted and `failure=` is the root cause. `stale` means the PR base or
+head changed before the canonical comment could be updated. A crashed run that
+stays `running` can be marked failed without touching completed runs:
+
+```bash
+eneo-review-memory runs --mark-stalled --older-than-minutes 10 --repo eneo-ai/eneo --pr 123
+```
 
 ## 12. Durable findings and false-positive memory
 

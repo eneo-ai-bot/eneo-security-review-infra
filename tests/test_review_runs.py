@@ -251,6 +251,73 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertNotIn("Traceback", completed.stderr)
         self.connection = memory_db.connect(str(self.db_path))
 
+    def test_publications_cli_lists_delivery_state(self):
+        finding = {
+            "rule_id": "tenant.missing-scope",
+            "category": "security",
+            "path": "backend/api.py",
+            "line": 42,
+            "symbol": "handler",
+            "anchor": "POST /api",
+            "title": "Tenant scope omitted",
+            "severity": "High",
+            "publication_score": 9,
+            "confidence": 0.9,
+            "evidence": "Concrete evidence.",
+            "disproof_checks": "Checked the guard.",
+            "impact": "Cross-tenant write.",
+            "smallest_fix": "Bind tenant from context.",
+            "introduced_by_diff": True,
+        }
+        memory_db.record_findings(
+            self.connection,
+            "eneo-ai/eneo",
+            240,
+            "a" * 40,
+            [finding],
+            base_sha="b" * 40,
+            context_hashes={finding["path"]: "d" * 40},
+        )
+        run = memory_db.start_run(
+            self.connection,
+            "eneo-ai/eneo",
+            240,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+        memory_db.finalize_review(
+            self.connection,
+            "eneo-ai/eneo",
+            240,
+            "a" * 40,
+            review_run_id=int(run["id"]),
+        )
+        self.connection.close()
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "eneo_review_memory.py"),
+                "--db",
+                str(self.db_path),
+                "publications",
+                "--repo",
+                "eneo-ai/eneo",
+                "--pr",
+                "240",
+                "--json",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload[0]["delivery_status"], "generated")
+        self.assertEqual(payload[0]["review_run_id"], run["id"])
+        self.connection = memory_db.connect(str(self.db_path))
+
     def test_repo_scopes_runs(self):
         memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40)
         memory_db.start_run(self.connection, "other/repo", 1, head_sha="b" * 40)
