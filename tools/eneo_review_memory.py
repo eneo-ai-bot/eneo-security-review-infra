@@ -154,12 +154,16 @@ def _import_module(name: str) -> ModuleType:
     return importlib.import_module(name)
 
 
-def load_memory_module() -> MemoryDbModule:
-    candidates = [
+def memory_module_candidates() -> tuple[Path, ...]:
+    return (
         Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins" / "eneo_review_tools",
+        Path("/opt/eneo-bootstrap/plugins/eneo_review_tools"),
         Path(__file__).resolve().parents[1] / "bootstrap" / "plugins" / "eneo_review_tools",
-    ]
-    for candidate in candidates:
+    )
+
+
+def load_memory_module() -> MemoryDbModule:
+    for candidate in memory_module_candidates():
         if (candidate / "memory_db.py").exists():
             # Installed Hermes plugins are path-loaded as top-level modules; the
             # Protocol above keeps this dynamic boundary explicit and typed.

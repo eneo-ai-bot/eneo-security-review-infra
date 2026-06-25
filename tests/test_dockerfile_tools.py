@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from fnmatch import fnmatch
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +98,21 @@ class DockerfileToolsTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(0, bridge_completed.returncode, bridge_completed.stderr)
+
+    def test_memory_cli_can_discover_image_bootstrap_plugin(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            import eneo_review_memory
+
+            with mock.patch.dict("os.environ", {}, clear=True):
+                candidates = eneo_review_memory.memory_module_candidates()
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
+
+        self.assertIn(
+            Path("/opt/eneo-bootstrap/plugins/eneo_review_tools"),
+            candidates,
+        )
 
 
 if __name__ == "__main__":
