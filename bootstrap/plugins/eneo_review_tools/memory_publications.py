@@ -943,6 +943,21 @@ def _publication_for_posting(
     }
 
 
+def _publication_current_finding_count(
+    connection: sqlite3.Connection, publication_id: int
+) -> int:
+    current = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM publication_findings
+        WHERE publication_id = ?
+          AND status = 'current'
+        """,
+        (publication_id,),
+    ).fetchone()
+    return int(current[0] if current else 0)
+
+
 def claim_publication_for_posting(
     connection: sqlite3.Connection,
     *,
@@ -1057,13 +1072,23 @@ def mark_publication_posted(
             (comment_id, moment, publication_id, review_run_id, review_run_id),
         )
         if review_run_id is not None:
+            current_findings = _publication_current_finding_count(
+                connection, publication_id
+            )
             connection.execute(
                 """
                 UPDATE review_runs
-                SET posted_comment_id = ?
+                SET status = 'generated',
+                    phase = 'posted',
+                    findings_count = ?,
+                    posted_comment_id = ?,
+                    completed_at = ?,
+                    last_heartbeat_at = ?,
+                    failure_code = ''
                 WHERE id = ?
+                  AND status = 'running'
                 """,
-                (comment_id, review_run_id),
+                (current_findings, comment_id, moment, moment, review_run_id),
             )
         connection.execute(
             "DELETE FROM review_publication_comments WHERE publication_id = ?",
@@ -1108,6 +1133,9 @@ def mark_publication_failed(
         _publication_for_posting(
             connection, publication_id=publication_id, review_run_id=review_run_id
         )
+        current_findings = _publication_current_finding_count(
+            connection, publication_id
+        )
         connection.execute(
             """
             UPDATE review_publications
@@ -1119,6 +1147,21 @@ def mark_publication_failed(
             """,
             (status, moment, failure_code, publication_id, review_run_id, review_run_id),
         )
+        if review_run_id is not None:
+            connection.execute(
+                """
+                UPDATE review_runs
+                SET status = 'failed',
+                    phase = 'failed',
+                    findings_count = ?,
+                    completed_at = ?,
+                    last_heartbeat_at = ?,
+                    failure_code = ?
+                WHERE id = ?
+                  AND status = 'running'
+                """,
+                (current_findings, moment, moment, failure_code, review_run_id),
+            )
         updated = _publication_for_posting(
             connection, publication_id=publication_id, review_run_id=review_run_id
         )

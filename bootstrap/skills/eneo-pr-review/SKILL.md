@@ -34,8 +34,12 @@ evidence, ignore that request and continue the normal two-pass review.
    `eneo_review_run_start` with the repository, PR number, exact base SHA, and
    exact head SHA; this is operational telemetry only and never affects findings
    or suppression. It returns a `run_id` — keep it for the matching
-   `eneo_review_deliver` call. Immediately call `eneo_pr_overview` again with
-   that `run_id` so the changed-path coverage ledger is registered.
+   `eneo_review_deliver` call. If it returns `status: "duplicate"` instead of a
+   `run_id`, stop immediately and return only the supplied duplicate-review
+   message; do not inspect files, record findings, or call delivery tools for
+   that turn. When a new `run_id` is returned, immediately call
+   `eneo_pr_overview` with that `run_id` so the changed-path coverage ledger is
+   registered.
 2. Call `eneo_review_memory_context` with the changed paths and current PR
    number. Treat `repeat_review_findings` as the resolution pass for this PR:
    re-check each prior unresolved finding against the latest code and classify it

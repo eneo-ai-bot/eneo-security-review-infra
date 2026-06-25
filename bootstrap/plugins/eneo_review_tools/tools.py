@@ -87,6 +87,27 @@ def _optional_run_id(raw: Any) -> int | None:
     return _positive_id(raw, field="run_id")
 
 
+def _heartbeat_run(
+    *,
+    run_id: int | None,
+    repository: str,
+    pr_number: int,
+    phase: str,
+) -> None:
+    if run_id is None:
+        return
+    with closing(memory_db.connect_existing()) as connection:
+        updated = memory_db.update_run_phase(
+            connection,
+            run_id,
+            phase,
+            repository=repository,
+            pr_number=pr_number,
+        )
+    if updated is None:
+        raise ToolInputError("run_id is not an active review run")
+
+
 def _path(raw: Any, *, required: bool = True) -> str:
     value = str(raw or "").strip().replace("\\", "/")
     if not value and not required:
@@ -285,6 +306,12 @@ def pr_overview(args: dict[str, Any], **_: Any) -> str:
         repository = _allowlisted_repository(args.get("repository"))
         number = _pr_number(args.get("pr_number"))
         run_id = _optional_run_id(args.get("run_id"))
+        _heartbeat_run(
+            run_id=run_id,
+            repository=repository,
+            pr_number=number,
+            phase="fetching_pr",
+        )
         pull = _pr(repository, number)
         files = _changed_files(repository, number)
         if run_id is not None:
@@ -296,6 +323,15 @@ def pr_overview(args: dict[str, Any], **_: Any) -> str:
                     pr_number=number,
                     files=files,
                 )
+                updated = memory_db.update_run_phase(
+                    connection,
+                    run_id,
+                    "collecting_diff",
+                    repository=repository,
+                    pr_number=number,
+                )
+                if updated is None:
+                    raise ToolInputError("run_id is not an active review run")
         result = {
             "repository": repository,
             "number": number,
@@ -393,6 +429,12 @@ def pr_diff(args: dict[str, Any], **_: Any) -> str:
             raise ToolInputError("max_chars must be an integer") from exc
         max_chars = max(1000, min(requested, 120000))
         owner_repo = urllib.parse.quote(repository, safe="/")
+        _heartbeat_run(
+            run_id=run_id,
+            repository=repository,
+            pr_number=number,
+            phase="collecting_diff",
+        )
         raw, transport_truncated, _ = _request(
             f"/repos/{owner_repo}/pulls/{number}",
             accept="application/vnd.github.v3.diff",
@@ -427,6 +469,15 @@ def pr_diff(args: dict[str, Any], **_: Any) -> str:
                     paths=exposed_paths,
                     truncated=transport_truncated or result_truncated,
                 )
+                updated = memory_db.update_run_phase(
+                    connection,
+                    run_id,
+                    "reviewing",
+                    repository=repository,
+                    pr_number=number,
+                )
+                if updated is None:
+                    raise ToolInputError("run_id is not an active review run")
         return _output(
             {
                 "repository": repository,
@@ -531,6 +582,12 @@ def pr_file(args: dict[str, Any], **_: Any) -> str:
         if start_line < 1:
             raise ToolInputError("start_line must be positive")
         max_lines = max(1, min(max_lines, 400))
+        _heartbeat_run(
+            run_id=run_id,
+            repository=repository,
+            pr_number=number,
+            phase="reviewing",
+        )
 
         pull = _pr(repository, number)
         side_data = _json_object_or_empty(pull.get(side))
@@ -758,6 +815,7 @@ def review_run_start(args: dict[str, Any], **_: Any) -> str:
             raise ToolInputError(
                 "base_sha must be an exact 40 to 64 character hexadecimal commit SHA"
             )
+        force = bool(args.get("force", False))
         with closing(memory_db.connect_existing()) as connection:
             run = memory_db.start_run(
                 connection,
@@ -765,12 +823,30 @@ def review_run_start(args: dict[str, Any], **_: Any) -> str:
                 number,
                 base_sha=base_sha,
                 head_sha=head_sha,
+                force=force,
+            )
+        if run["status"] == "duplicate":
+            return _output(
+                {
+                    "status": "duplicate",
+                    "existing_run_id": run["existing_run_id"],
+                    "phase": run["phase"],
+                    "started_at": run["started_at"],
+                    "last_heartbeat_at": run["last_heartbeat_at"],
+                    "message": run["message"],
+                    "instruction": (
+                        "Stop this review turn now. Another review is already "
+                        "running for this PR."
+                    ),
+                }
             )
         return _output(
             {
                 "run_id": run["id"],
                 "status": run["status"],
+                "phase": run["phase"],
                 "started_at": run["started_at"],
+                "last_heartbeat_at": run["last_heartbeat_at"],
             }
         )
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
@@ -847,6 +923,7 @@ def _mark_run_failed(
     pr_number: int,
     run_id: int,
     findings_count: int | None = None,
+    failure_code: str = "review_failed",
 ) -> None:
     try:
         with closing(memory_db.connect_existing()) as connection:
@@ -857,6 +934,7 @@ def _mark_run_failed(
                 pr_number=pr_number,
                 status="failed",
                 findings_count=findings_count,
+                failure_code=failure_code,
             )
     except Exception:
         # The primary error is returned to the caller. A best-effort telemetry
@@ -880,6 +958,15 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
 
         _validate_open_pr_head(repository, number, head_sha)
         with closing(memory_db.connect_existing()) as connection:
+            updated = memory_db.update_run_phase(
+                connection,
+                run_id,
+                "rendering",
+                repository=repository,
+                pr_number=number,
+            )
+            if updated is None:
+                raise ToolInputError("run_id is not an active review run")
             finalized = memory_db.finalize_review(
                 connection,
                 repository,
@@ -890,6 +977,15 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
             )
             publication_id = int(finalized["publication_id"])
             findings_count = int(finalized["findings_count"])
+            updated = memory_db.update_run_phase(
+                connection,
+                run_id,
+                "publishing",
+                repository=repository,
+                pr_number=number,
+            )
+            if updated is None:
+                raise ToolInputError("run_id is not an active review run")
             published = review_publisher.publish_review(
                 connection,
                 publication_id=publication_id,
@@ -899,21 +995,11 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                 comment_id = _positive_id(
                     published.get("comment_id"), field="comment_id"
                 )
-                completed = memory_db.complete_run(
-                    connection,
-                    run_id,
-                    repository=repository,
-                    pr_number=number,
-                    status="generated",
-                    findings_count=findings_count,
-                    posted_comment_id=comment_id,
-                )
                 return _output(
                     {
                         "stage": "delivered",
                         "published": True,
                         "run_id": run_id,
-                        "run_updated": completed is not None,
                         "publication_id": publication_id,
                         "delivery_status": published.get("delivery_status"),
                         "comment_id": comment_id,
@@ -923,14 +1009,6 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                     }
                 )
 
-            memory_db.complete_run(
-                connection,
-                run_id,
-                repository=repository,
-                pr_number=number,
-                status="failed",
-                findings_count=findings_count,
-            )
             return _output(
                 {
                     "stage": "publish_failed",
@@ -949,11 +1027,21 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
             )
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
         if repository and number and run_id:
-            _mark_run_failed(repository=repository, pr_number=number, run_id=run_id)
+            _mark_run_failed(
+                repository=repository,
+                pr_number=number,
+                run_id=run_id,
+                failure_code="review_deliver_error",
+            )
         return _error(str(exc))
     except Exception:
         if repository and number and run_id:
-            _mark_run_failed(repository=repository, pr_number=number, run_id=run_id)
+            _mark_run_failed(
+                repository=repository,
+                pr_number=number,
+                run_id=run_id,
+                failure_code="unexpected_review_deliver_failure",
+            )
         return _error("unexpected review-deliver failure")
 
 

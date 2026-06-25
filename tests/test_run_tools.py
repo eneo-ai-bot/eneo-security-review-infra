@@ -81,15 +81,21 @@ class RunToolTests(unittest.TestCase):
     def call(self, handler, args):
         return json.loads(handler(args))
 
-    def start(self, pr=498, sha="a" * 40):
+    def start(self, pr=498, sha="a" * 40, *, force=False):
         return self.call(
             tools.review_run_start,
-            {"repository": "eneo-ai/eneo", "pr_number": pr, "head_sha": sha},
+            {
+                "repository": "eneo-ai/eneo",
+                "pr_number": pr,
+                "head_sha": sha,
+                "force": force,
+            },
         )
 
     def test_start_then_complete(self):
         start = self.start()
         self.assertEqual(start["status"], "running")
+        self.assertEqual(start["phase"], "accepted")
         self.assertIn("run_id", start)
         done = self.call(
             tools.review_run_complete,
@@ -101,16 +107,30 @@ class RunToolTests(unittest.TestCase):
         with closing(memory_db.connect()) as connection:
             self.assertEqual(memory_db.list_runs(connection)[0]["findings_count"], 2)
 
-    def test_overlapping_runs_complete_by_id(self):
+    def test_duplicate_start_does_not_create_second_same_pr_run(self):
         a = self.start(pr=7, sha="a" * 40)
         b = self.start(pr=7, sha="b" * 40)
+
+        self.assertEqual(b["status"], "duplicate")
+        self.assertNotIn("run_id", b)
+        self.assertEqual(b["existing_run_id"], a["run_id"])
+        with closing(memory_db.connect()) as connection:
+            runs = memory_db.list_runs(connection)
+        self.assertEqual(len(runs), 1)
+
+    def test_force_start_supersedes_same_pr_run(self):
+        a = self.start(pr=7, sha="a" * 40)
+        b = self.start(pr=7, sha="b" * 40, force=True)
+
+        self.assertEqual(b["status"], "running")
         self.call(
             tools.review_run_complete,
             {"repository": "eneo-ai/eneo", "pr_number": 7, "run_id": a["run_id"], "status": "generated", "findings_count": 1, "posted_comment_id": 123},
         )
         with closing(memory_db.connect()) as connection:
             runs = {r["id"]: r for r in memory_db.list_runs(connection)}
-        self.assertEqual(runs[a["run_id"]]["status"], "generated")
+        self.assertEqual(runs[a["run_id"]]["status"], "failed")
+        self.assertEqual(runs[a["run_id"]]["failure_code"], "superseded_by_force")
         self.assertEqual(runs[b["run_id"]]["status"], "running")
 
     def test_missing_run_id_rejected(self):

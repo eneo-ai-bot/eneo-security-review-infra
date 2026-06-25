@@ -235,6 +235,14 @@ ENEO_REVIEW_RUN_START = {
                     "Used for audit and deterministic publication validation."
                 ),
             },
+            "force": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Normally false. When true, supersedes an active same-PR run "
+                    "before starting this run."
+                ),
+            },
         },
         "required": ["repository", "pr_number", "head_sha"],
         "additionalProperties": False,

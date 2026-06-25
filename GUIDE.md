@@ -576,6 +576,13 @@ stays `running` can be marked failed without touching completed runs. The
 coverage command shows objective changed-path context telemetry for one run:
 registered paths, diff exposure, truncation/unavailable counts, explicit source
 reads, and a stable hash for operator comparison.
+The run ledger also records `phase`, `heartbeat`, and `failure` so a stuck
+review can be located without guessing from GitHub reactions. Normal phases are
+`accepted`, `fetching_pr`, `collecting_diff`, `reviewing`, `rendering`,
+`publishing`, and `posted`; terminal failures use `failed` plus a stable failure
+code when available. Reviews on different PRs may run concurrently. A duplicate
+same-PR `/review` is rejected at the review-run start step unless an explicit
+forced start is passed through the tool contract.
 
 ```bash
 eneo-review-memory runs --mark-stalled --older-than-minutes 10 --repo eneo-ai/eneo --pr 123

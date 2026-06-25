@@ -332,11 +332,15 @@ def print_runs(memory_db: MemoryDbModule, runs: Sequence[JsonObject]) -> None:
     for run in runs:
         findings = run["findings_count"] if run["findings_count"] is not None else "-"
         status = "stalled" if memory_db.run_is_stale(run) else run["status"]
+        phase = run.get("phase") or "-"
+        heartbeat = run.get("last_heartbeat_at") or "-"
+        failure = run.get("failure_code") or "-"
         print(
             f"#{run['id']:<5} {status:8} {run['repository']}#{run['pr_number']}  "
             f"findings={findings}  started={run['started_at']}  "
             f"completed={run['completed_at'] or '-'}"
         )
+        print(f"       phase={phase}  heartbeat={heartbeat}  failure={failure}")
 
 
 def print_mark_stalled_result(result: JsonObject) -> None:

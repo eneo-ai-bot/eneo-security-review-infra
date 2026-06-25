@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -170,6 +170,18 @@ def _decisions_has_legacy_check(connection: sqlite3.Connection) -> bool:
 def _review_runs_has_legacy_status_check(connection: sqlite3.Connection) -> bool:
     sql = _table_sql(connection, "review_runs")
     return bool(sql) and "generated" not in sql
+
+
+def _review_runs_needs_lifecycle_migration(connection: sqlite3.Connection) -> bool:
+    sql = _table_sql(connection, "review_runs")
+    if not sql:
+        return False
+    return (
+        "last_heartbeat_at" not in sql
+        or "failure_code" not in sql
+        or "phase IN" not in sql
+        or "status = 'running' AND phase" not in sql
+    )
 
 
 def _ensure_current_publication_unique_index(connection: sqlite3.Connection) -> None:
@@ -401,6 +413,171 @@ def _migrate_review_runs_status(connection: sqlite3.Connection) -> None:
         raise ReviewMemoryError("review_runs migration left broken foreign keys")
 
 
+def _migrate_review_runs_lifecycle(connection: sqlite3.Connection) -> None:
+    if not _review_runs_needs_lifecycle_migration(connection):
+        return
+
+    existing_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(review_runs)")
+    }
+    rows = [dict(row) for row in connection.execute("SELECT * FROM review_runs")]
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN")
+        connection.execute("DROP TABLE IF EXISTS review_runs_migration")
+        connection.execute(
+            """
+            CREATE TABLE review_runs_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                trigger_comment_id INTEGER,
+                trigger_user TEXT NOT NULL DEFAULT '',
+                base_sha TEXT NOT NULL DEFAULT '',
+                head_sha TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL CHECK (status IN ('running', 'generated', 'failed')),
+                phase TEXT NOT NULL CHECK (
+                    phase IN (
+                        'accepted', 'fetching_pr', 'collecting_diff', 'reviewing',
+                        'rendering', 'publishing', 'posted', 'failed'
+                    )
+                ),
+                findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
+                posted_comment_id INTEGER,
+                failure_code TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                last_heartbeat_at TEXT NOT NULL DEFAULT '',
+                completed_at TEXT,
+                CHECK (
+                    (status = 'running' AND phase IN (
+                        'accepted', 'fetching_pr', 'collecting_diff',
+                        'reviewing', 'rendering', 'publishing'
+                    ))
+                    OR (status = 'generated' AND phase = 'posted')
+                    OR (status = 'failed' AND phase = 'failed')
+                )
+            )
+            """
+        )
+        for row in rows:
+            status = "generated" if row.get("status") == "done" else str(row["status"])
+            if status not in {"running", "generated", "failed"}:
+                status = "failed"
+            phase = str(row.get("phase") or "")
+            if status == "generated":
+                phase = "posted"
+            elif status == "failed":
+                phase = "failed"
+            elif phase not in {
+                "accepted",
+                "fetching_pr",
+                "collecting_diff",
+                "reviewing",
+                "rendering",
+                "publishing",
+            }:
+                phase = "accepted"
+            started_at = str(row["started_at"])
+            completed_at = row.get("completed_at")
+            heartbeat = (
+                str(row.get("last_heartbeat_at") or "")
+                if "last_heartbeat_at" in existing_columns
+                else ""
+            )
+            if not heartbeat:
+                heartbeat = str(completed_at or started_at)
+            connection.execute(
+                """
+                INSERT INTO review_runs_migration (
+                    id, repository, pr_number, trigger_comment_id, trigger_user,
+                    base_sha, head_sha, status, phase, findings_count,
+                    posted_comment_id, failure_code, started_at,
+                    last_heartbeat_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["repository"],
+                    row["pr_number"],
+                    row.get("trigger_comment_id"),
+                    row.get("trigger_user") or "",
+                    row.get("base_sha") or "",
+                    row.get("head_sha") or "",
+                    status,
+                    phase,
+                    row.get("findings_count"),
+                    row.get("posted_comment_id"),
+                    row.get("failure_code") or "",
+                    started_at,
+                    heartbeat,
+                    completed_at,
+                ),
+            )
+        connection.execute("DROP TABLE review_runs")
+        connection.execute("ALTER TABLE review_runs_migration RENAME TO review_runs")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
+                ON review_runs(repository, started_at DESC)
+            """
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    broken = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if broken:
+        raise ReviewMemoryError("review_runs lifecycle migration left broken foreign keys")
+
+
+def _ensure_active_run_unique_index(connection: sqlite3.Connection) -> None:
+    moment = isoformat(utc_now())
+    duplicate_groups = connection.execute(
+        """
+        SELECT repository, pr_number, MAX(id) AS keep_id
+        FROM review_runs
+        WHERE status = 'running'
+        GROUP BY repository, pr_number
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    with connection:
+        for row in duplicate_groups:
+            connection.execute(
+                """
+                UPDATE review_runs
+                SET status = 'failed',
+                    phase = 'failed',
+                    completed_at = ?,
+                    last_heartbeat_at = ?,
+                    failure_code = 'superseded_duplicate_migration'
+                WHERE repository = ?
+                  AND pr_number = ?
+                  AND status = 'running'
+                  AND id != ?
+                """,
+                (
+                    moment,
+                    moment,
+                    row["repository"],
+                    int(row["pr_number"]),
+                    int(row["keep_id"]),
+                ),
+            )
+    connection.execute("DROP INDEX IF EXISTS uq_review_runs_active_pr")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_review_runs_active_pr
+            ON review_runs(repository, pr_number)
+            WHERE status = 'running'
+        """
+    )
+
+
 def _backfill_review_subject_id(
     connection: sqlite3.Connection,
     repository: str,
@@ -572,10 +749,26 @@ def init_schema(connection: sqlite3.Connection) -> None:
             base_sha TEXT NOT NULL DEFAULT '',
             head_sha TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL CHECK (status IN ('running', 'generated', 'failed')),
+            phase TEXT NOT NULL CHECK (
+                phase IN (
+                    'accepted', 'fetching_pr', 'collecting_diff', 'reviewing',
+                    'rendering', 'publishing', 'posted', 'failed'
+                )
+            ) DEFAULT 'accepted',
             findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
             posted_comment_id INTEGER,
+            failure_code TEXT NOT NULL DEFAULT '',
             started_at TEXT NOT NULL,
-            completed_at TEXT
+            last_heartbeat_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT,
+            CHECK (
+                (status = 'running' AND phase IN (
+                    'accepted', 'fetching_pr', 'collecting_diff',
+                    'reviewing', 'rendering', 'publishing'
+                ))
+                OR (status = 'generated' AND phase = 'posted')
+                OR (status = 'failed' AND phase = 'failed')
+            )
         );
 
         CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
@@ -916,6 +1109,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _migrate_findings_severity_check(connection)
     _migrate_decisions_check(connection)
     _migrate_review_runs_status(connection)
+    _migrate_review_runs_lifecycle(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_decisions_observation
@@ -972,6 +1166,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
               AND delivery_status = 'posted'
             """
         )
+    _ensure_active_run_unique_index(connection)
     _ensure_current_publication_unique_index(connection)
     if existing_version < OBSERVATION_BACKFILL_VERSION:
         _backfill_observations(connection)

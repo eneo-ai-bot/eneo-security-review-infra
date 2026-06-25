@@ -248,6 +248,12 @@ run: how many changed paths were registered, how many had diff context exposed
 to the reviewer, whether any diff was truncated or unavailable, and how many
 explicit source ranges were read. It is telemetry, not a model claim that the PR
 was deeply reviewed.
+The runs command includes `phase`, `heartbeat`, and `failure` detail. A fresh
+run normally moves through `accepted`, `fetching_pr`, `collecting_diff`,
+`reviewing`, `rendering`, `publishing`, and then `posted`; failed runs end at
+`failed` with a stable failure code when one is known. Different PRs can run at
+the same time. A second `/review` on the same PR is treated as a duplicate while
+an active run exists, so it does not silently start overlapping same-PR work.
 If a container crash leaves a run `running`, mark only stale runs failed:
 
 ```bash

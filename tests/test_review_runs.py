@@ -40,6 +40,7 @@ class ReviewRunsTests(unittest.TestCase):
         runs = memory_db.list_runs(self.connection, repository="eneo-ai/eneo")
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["status"], "generated")
+        self.assertEqual(runs[0]["phase"], "posted")
         self.assertEqual(runs[0]["findings_count"], 2)
         self.assertEqual(runs[0]["posted_comment_id"], 222)
         self.assertIsNotNone(runs[0]["completed_at"])
@@ -55,16 +56,42 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertIsNone(memory_db.complete_run(self.connection, run["id"], status="failed"))
         self.assertEqual(memory_db.list_runs(self.connection)[0]["status"], "generated")
 
-    def test_overlapping_runs_complete_independently(self):
-        # Regression: completing by (repo, pr) latest-running could complete the wrong run.
+    def test_same_pr_duplicate_start_returns_existing_run(self):
         a = memory_db.start_run(self.connection, "eneo-ai/eneo", 7, head_sha="a" * 40)
         b = memory_db.start_run(self.connection, "eneo-ai/eneo", 7, head_sha="b" * 40)
-        memory_db.complete_run(self.connection, a["id"], status="generated", findings_count=3)
+
+        self.assertEqual(b["status"], "duplicate")
+        self.assertEqual(b["existing_run_id"], a["id"])
+        runs = memory_db.list_runs(self.connection)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "running")
+
+    def test_database_blocks_two_active_runs_for_same_pr(self):
+        memory_db.start_run(self.connection, "eneo-ai/eneo", 7, head_sha="a" * 40)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """
+                INSERT INTO review_runs (
+                    repository, pr_number, head_sha, status, phase,
+                    started_at, last_heartbeat_at
+                ) VALUES (?, ?, ?, 'running', 'accepted', ?, ?)
+                """,
+                ("eneo-ai/eneo", 7, "b" * 40, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+            )
+
+    def test_force_start_supersedes_same_pr_run(self):
+        a = memory_db.start_run(self.connection, "eneo-ai/eneo", 7, head_sha="a" * 40)
+        b = memory_db.start_run(
+            self.connection, "eneo-ai/eneo", 7, head_sha="b" * 40, force=True
+        )
+
+        self.assertEqual(b["status"], "running")
         runs = {r["id"]: r for r in memory_db.list_runs(self.connection)}
-        self.assertEqual(runs[a["id"]]["status"], "generated")
-        self.assertEqual(runs[a["id"]]["findings_count"], 3)
-        self.assertEqual(runs[b["id"]]["status"], "running")  # B is untouched
-        self.assertIsNone(runs[b["id"]]["completed_at"])
+        self.assertEqual(runs[a["id"]]["status"], "failed")
+        self.assertEqual(runs[a["id"]]["phase"], "failed")
+        self.assertEqual(runs[a["id"]]["failure_code"], "superseded_by_force")
+        self.assertEqual(runs[b["id"]]["status"], "running")
 
     def test_repository_pr_guard_blocks_mismatch(self):
         run = memory_db.start_run(self.connection, "eneo-ai/eneo", 5, head_sha="a" * 40)
@@ -78,6 +105,7 @@ class ReviewRunsTests(unittest.TestCase):
         memory_db.complete_run(self.connection, run["id"], status="failed")
         runs = memory_db.list_runs(self.connection)
         self.assertEqual(runs[0]["status"], "failed")
+        self.assertEqual(runs[0]["phase"], "failed")
         self.assertIsNone(runs[0]["findings_count"])
 
     def test_invalid_status_rejected(self):
@@ -120,6 +148,26 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertEqual(stats["stalled_running"], 1)
         self.assertEqual(stats["by_status"]["running"], 2)
 
+    def test_heartbeat_prevents_active_long_run_from_stalling(self):
+        now = memory_db.utc_now()
+        run = memory_db.start_run(
+            self.connection,
+            "eneo-ai/eneo",
+            1,
+            head_sha="a" * 40,
+            now=now - timedelta(minutes=45),
+        )
+        memory_db.update_run_phase(
+            self.connection,
+            int(run["id"]),
+            "reviewing",
+            now=now - timedelta(minutes=5),
+        )
+
+        stale = [r for r in memory_db.list_runs(self.connection) if memory_db.run_is_stale(r, now=now)]
+
+        self.assertEqual(stale, [])
+
     def test_mark_stale_running_runs_failed(self):
         now = memory_db.utc_now()
         old = now - timedelta(minutes=45)
@@ -133,6 +181,8 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertEqual(result["runs"][0]["pr_number"], 1)
         runs = {r["pr_number"]: r for r in memory_db.list_runs(self.connection)}
         self.assertEqual(runs[1]["status"], "failed")
+        self.assertEqual(runs[1]["phase"], "failed")
+        self.assertEqual(runs[1]["failure_code"], "stale_timeout")
         self.assertEqual(runs[2]["status"], "running")
         self.assertIsNotNone(runs[1]["completed_at"])
 

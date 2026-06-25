@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast
 
 try:
     from .memory_validation import (
@@ -26,6 +26,71 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 
+RunPhase = Literal[
+    "accepted",
+    "fetching_pr",
+    "collecting_diff",
+    "reviewing",
+    "rendering",
+    "publishing",
+    "posted",
+    "failed",
+]
+
+RUNNING_PHASES = frozenset(
+    {
+        "accepted",
+        "fetching_pr",
+        "collecting_diff",
+        "reviewing",
+        "rendering",
+        "publishing",
+    }
+)
+TERMINAL_PHASE_BY_STATUS = {"generated": "posted", "failed": "failed"}
+
+
+def _running_phase(value: str) -> RunPhase:
+    if value not in RUNNING_PHASES:
+        raise ReviewMemoryError("phase must be an active review phase")
+    return cast(RunPhase, value)
+
+
+def _active_run(
+    connection: sqlite3.Connection, repository: str, pr_number: int
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT *
+        FROM review_runs
+        WHERE repository = ?
+          AND pr_number = ?
+          AND status = 'running'
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+        """,
+        (repository, int(pr_number)),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _duplicate_response(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "repository": row["repository"],
+        "pr_number": int(row["pr_number"]),
+        "status": "duplicate",
+        "phase": row.get("phase") or "accepted",
+        "started_at": row["started_at"],
+        "last_heartbeat_at": row.get("last_heartbeat_at") or row["started_at"],
+        "existing_run_id": int(row["id"]),
+        "message": (
+            f"A review is already running for {row['repository']}#{row['pr_number']} "
+            f"as run #{row['id']}."
+        ),
+    }
+
+
 def start_run(
     connection: sqlite3.Connection,
     repository: str,
@@ -35,6 +100,7 @@ def start_run(
     trigger_user: str = "",
     base_sha: str = "",
     head_sha: str = "",
+    force: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Record the start of a review run. Operational telemetry only — this is a
@@ -50,13 +116,34 @@ def start_run(
         now=moment,
     )
     started = isoformat(moment)
-    with connection:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if force:
+            connection.execute(
+                """
+                UPDATE review_runs
+                SET status = 'failed',
+                    phase = 'failed',
+                    completed_at = ?,
+                    last_heartbeat_at = ?,
+                    failure_code = 'superseded_by_force'
+                WHERE repository = ?
+                  AND pr_number = ?
+                  AND status = 'running'
+                """,
+                (started, started, repository, int(pr_number)),
+            )
+        else:
+            existing = _active_run(connection, repository, pr_number)
+            if existing is not None:
+                connection.commit()
+                return _duplicate_response(existing)
         cursor = connection.execute(
             """
             INSERT INTO review_runs (
                 repository, pr_number, trigger_comment_id, trigger_user, base_sha, head_sha,
-                status, started_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                status, phase, started_at, last_heartbeat_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'running', 'accepted', ?, ?)
             """,
             (
                 repository,
@@ -68,8 +155,19 @@ def start_run(
                 clean_text(base_sha, field="base_sha", maximum=64, required=False),
                 clean_text(head_sha, field="head_sha", maximum=64, required=False),
                 started,
+                started,
             ),
         )
+        connection.commit()
+    except sqlite3.IntegrityError:
+        connection.rollback()
+        existing = _active_run(connection, repository, pr_number)
+        if existing is not None:
+            return _duplicate_response(existing)
+        raise
+    except Exception:
+        connection.rollback()
+        raise
     if cursor.lastrowid is None:
         raise ReviewMemoryError("failed to start review run")
     run_id = cursor.lastrowid
@@ -80,7 +178,9 @@ def start_run(
         "trigger_comment_id": trigger_comment_id,
         "base_sha": base_sha,
         "status": "running",
+        "phase": "accepted",
         "started_at": started,
+        "last_heartbeat_at": started,
     }
 
 
@@ -104,7 +204,10 @@ def mark_stale_runs_failed(
     cutoff = isoformat(moment - timedelta(minutes=older_than))
     completed = isoformat(moment)
 
-    conditions = ["status = 'running'", "started_at < ?"]
+    conditions = [
+        "status = 'running'",
+        "COALESCE(NULLIF(last_heartbeat_at, ''), started_at) < ?",
+    ]
     params: list[Any] = [cutoff]
     repo = normalize_repository(repository) if repository else None
     if repo is not None:
@@ -122,8 +225,9 @@ def mark_stale_runs_failed(
             dict(row)
             for row in connection.execute(
                 f"""
-                SELECT id, repository, pr_number, status, findings_count,
-                       posted_comment_id, started_at, completed_at
+                SELECT id, repository, pr_number, status, phase, findings_count,
+                       posted_comment_id, failure_code, started_at,
+                       last_heartbeat_at, completed_at
                 FROM review_runs
                 WHERE {where}
                 ORDER BY started_at ASC, id ASC
@@ -135,14 +239,21 @@ def mark_stale_runs_failed(
             connection.execute(
                 f"""
                 UPDATE review_runs
-                SET status = 'failed', completed_at = ?
+                SET status = 'failed',
+                    phase = 'failed',
+                    completed_at = ?,
+                    last_heartbeat_at = ?,
+                    failure_code = 'stale_timeout'
                 WHERE {where}
                 """,
-                [completed, *params],
+                [completed, completed, *params],
             )
 
     for row in rows:
         row["status"] = "failed"
+        row["phase"] = "failed"
+        row["failure_code"] = "stale_timeout"
+        row["last_heartbeat_at"] = completed
         row["completed_at"] = completed
     return {
         "failed_count": len(rows),
@@ -155,6 +266,45 @@ def mark_stale_runs_failed(
     }
 
 
+def update_run_phase(
+    connection: sqlite3.Connection,
+    run_id: int,
+    phase: str,
+    *,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Heartbeat an active review run at a known phase."""
+    phase = _running_phase(phase)
+    if isinstance(run_id, bool) or int(run_id) < 1:
+        raise ReviewMemoryError("run_id must be a positive integer")
+    conditions = ["id = ?", "status = 'running'"]
+    params: list[Any] = [int(run_id)]
+    if repository is not None:
+        conditions.append("repository = ?")
+        params.append(normalize_repository(repository))
+    if pr_number is not None:
+        if isinstance(pr_number, bool) or int(pr_number) < 1:
+            raise ReviewMemoryError("pr_number must be positive")
+        conditions.append("pr_number = ?")
+        params.append(int(pr_number))
+    heartbeat = isoformat(now)
+    with connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE review_runs
+            SET phase = ?,
+                last_heartbeat_at = ?
+            WHERE {" AND ".join(conditions)}
+            """,
+            (phase, heartbeat, *params),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return {"id": int(run_id), "phase": phase, "last_heartbeat_at": heartbeat}
+
+
 def complete_run(
     connection: sqlite3.Connection,
     run_id: int,
@@ -164,6 +314,7 @@ def complete_run(
     status: str = "generated",
     findings_count: int | None = None,
     posted_comment_id: int | None = None,
+    failure_code: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Mark one specific running run (by id) as generated or failed, atomically. Completing
@@ -182,6 +333,12 @@ def complete_run(
     # freshly created databases only.
     if findings_count is not None and int(findings_count) < 0:
         raise ReviewMemoryError("findings_count must be zero or greater")
+    phase = TERMINAL_PHASE_BY_STATUS[status]
+    failure_code = clean_text(
+        failure_code, field="failure_code", maximum=80, required=False
+    )
+    if status == "generated":
+        failure_code = ""
     conditions = ["id = ?", "status = 'running'"]
     params: list[Any] = [run_id]
     if repository is not None:
@@ -195,14 +352,23 @@ def complete_run(
         cursor = connection.execute(
             f"""
             UPDATE review_runs
-            SET status = ?, findings_count = ?, posted_comment_id = ?, completed_at = ?
+            SET status = ?,
+                phase = ?,
+                findings_count = ?,
+                posted_comment_id = ?,
+                completed_at = ?,
+                last_heartbeat_at = ?,
+                failure_code = ?
             WHERE {" AND ".join(conditions)}
             """,
             (
                 status,
+                phase,
                 int(findings_count) if findings_count is not None else None,
                 int(posted_comment_id) if posted_comment_id is not None else None,
                 completed,
+                completed,
+                failure_code,
                 *params,
             ),
         )
@@ -211,7 +377,9 @@ def complete_run(
     return {
         "id": run_id,
         "status": status,
+        "phase": phase,
         "findings_count": findings_count,
+        "failure_code": failure_code,
         "completed_at": completed,
     }
 
@@ -245,11 +413,11 @@ def run_is_stale(
     display and metrics; it never mutates the row."""
     if run.get("status") != "running":
         return False
-    started = parse_time(run.get("started_at"))
-    if started is None:
+    heartbeat = parse_time(run.get("last_heartbeat_at")) or parse_time(run.get("started_at"))
+    if heartbeat is None:
         return False
     moment = now or utc_now()
-    return (moment - started) > timedelta(minutes=max(1, int(stale_after_minutes)))
+    return (moment - heartbeat) > timedelta(minutes=max(1, int(stale_after_minutes)))
 
 
 def run_stats(
@@ -271,7 +439,10 @@ def run_stats(
         where += " AND repository = ?"
         params.append(repo)
     rows = connection.execute(
-        f"SELECT status, started_at, completed_at, findings_count FROM review_runs {where}",
+        f"""
+        SELECT status, phase, started_at, last_heartbeat_at, completed_at, findings_count
+        FROM review_runs {where}
+        """,
         params,
     ).fetchall()
 
