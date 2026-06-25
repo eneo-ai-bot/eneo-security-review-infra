@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -147,21 +148,22 @@ class ReviewPublisherTests(unittest.TestCase):
         connection=None,
     ):
         connection = connection or self.connection
-        memory_db.record_findings(
-            connection,
-            "eneo/platform",
-            17,
-            head_sha,
-            [self.finding],
-            base_sha=base_sha,
-            context_hashes={self.finding["path"]: "d" * 40},
-        )
         run = memory_db.start_run(
             connection,
             "eneo/platform",
             17,
             base_sha=base_sha,
             head_sha=head_sha,
+        )
+        memory_db.record_findings(
+            connection,
+            "eneo/platform",
+            17,
+            head_sha,
+            [self.finding],
+            review_run_id=int(run["id"]),
+            base_sha=base_sha,
+            context_hashes={self.finding["path"]: "d" * 40},
         )
         publication = memory_db.finalize_review(
             connection,
@@ -197,7 +199,53 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(current.publication_id, int(first["publication_id"]))
         self.assertEqual(int(second_run["id"]), int(second["review_run_id"]))
 
-    def test_publish_updates_previous_canonical_comment_after_success(self) -> None:
+    def test_same_snapshot_start_returns_already_reviewed(self) -> None:
+        first_run, first = self.generate()
+        posted = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(first["publication_id"]),
+            review_run_id=int(first_run["id"]),
+            github=FakeGitHub(),
+        )
+
+        duplicate = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+
+        self.assertEqual(duplicate["status"], "already_reviewed")
+        self.assertEqual(duplicate["comment_id"], posted["comment_id"])
+        self.assertEqual(duplicate["review_number"], 1)
+
+    def test_failed_publication_does_not_consume_visible_review_number(self) -> None:
+        first_run, first = self.generate()
+        failed = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(first["publication_id"]),
+            review_run_id=int(first_run["id"]),
+            github=FakeGitHub(),
+            max_comment_bytes=100,
+        )
+        self.assertFalse(failed["published"])
+        self.assertEqual(first["review_number"], 1)
+
+        second_run, second = self.generate(head_sha="c" * 40)
+        github = FakeGitHub(head_sha="c" * 40)
+        posted = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(second["publication_id"]),
+            review_run_id=int(second_run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(posted["published"])
+        self.assertEqual(second["review_number"], 1)
+        self.assertIn("Review #1", github.created[0])
+
+    def test_publish_creates_new_round_and_marks_previous_historical(self) -> None:
         first_run, first = self.generate()
         github = FakeGitHub()
         first_publish = review_publisher.publish_review(
@@ -216,15 +264,109 @@ class ReviewPublisherTests(unittest.TestCase):
             github=github,
         )
 
-        self.assertEqual(first_publish["comment_id"], second_publish["comment_id"])
-        self.assertEqual(len(github.created), 1)
+        self.assertNotEqual(first_publish["comment_id"], second_publish["comment_id"])
+        self.assertEqual(len(github.created), 2)
         self.assertEqual(len(github.updated), 1)
+        self.assertEqual(github.updated[0][0], first_publish["comment_id"])
+        self.assertIn("Review #1 · Superseded", github.updated[0][1])
+        self.assertIn("Superseded by [Review #2]", github.updated[0][1])
+        self.assertNotIn("Give feedback on this review", github.updated[0][1])
         previous = self.connection.execute(
-            "SELECT delivery_status, superseded_at FROM review_publications WHERE id = ?",
+            """
+            SELECT delivery_status, superseded_at, superseded_by_publication_id,
+                   supersession_rendered_at, supersession_failure_code
+            FROM review_publications WHERE id = ?
+            """,
             (int(first["publication_id"]),),
         ).fetchone()
         self.assertEqual(previous["delivery_status"], "posted")
         self.assertIsNotNone(previous["superseded_at"])
+        self.assertEqual(
+            previous["superseded_by_publication_id"], int(second["publication_id"])
+        )
+        self.assertIsNotNone(previous["supersession_rendered_at"])
+        self.assertEqual(previous["supersession_failure_code"], "")
+
+    def test_superseded_comment_truncates_to_existing_comment_footprint(self) -> None:
+        first_run, first = self.generate()
+        github = FakeGitHub()
+        first_publish = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(first["publication_id"]),
+            review_run_id=int(first_run["id"]),
+            github=github,
+        )
+        publication_key = str(first["publication_key"])
+        blocks = [
+            review_renderer.ReviewBlock(
+                kind="header",
+                markdown="## Eneo AI code & security review\n\nStored old review.",
+            )
+        ]
+        for index in range(10):
+            blocks.append(
+                review_renderer.ReviewBlock(
+                    kind="finding",
+                    markdown=(
+                        f"### F{index + 1} · High (P1): Dense old finding {index + 1}\n"
+                        "`backend/a.py:10` · security\n\n"
+                        + ("Dense historical evidence. " * 80)
+                    ),
+                )
+            )
+        blocks.append(
+            review_renderer.ReviewBlock(
+                kind="metadata",
+                markdown=f"<!-- {memory_db.publication_marker(publication_key)} -->",
+            )
+        )
+        old_body = review_renderer.review_markdown_from_blocks(tuple(blocks))
+        self.connection.execute(
+            """
+            UPDATE review_publications
+            SET rendered_markdown = ?,
+                rendered_blocks_json = ?,
+                rendered_hash = ?
+            WHERE id = ?
+            """,
+            (
+                old_body,
+                review_renderer.review_blocks_to_json(tuple(blocks)),
+                hashlib.sha256(old_body.encode("utf-8")).hexdigest(),
+                int(first["publication_id"]),
+            ),
+        )
+        self.connection.commit()
+
+        second_run, second = self.generate(head_sha="c" * 40)
+        github.head_sha = "c" * 40
+        second_publish = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(second["publication_id"]),
+            review_run_id=int(second_run["id"]),
+            github=github,
+            max_comment_bytes=1300,
+        )
+
+        self.assertTrue(second_publish["published"])
+        self.assertTrue(second_publish["supersession_rendered"])
+        updated_old = [
+            body
+            for comment_id, body in github.updated
+            if comment_id == first_publish["comment_id"]
+        ][0]
+        self.assertLessEqual(len(updated_old.encode("utf-8")), 1300)
+        self.assertIn("Historical details were shortened", updated_old)
+        self.assertIn("part=1/1", updated_old)
+        previous = self.connection.execute(
+            """
+            SELECT supersession_rendered_at, supersession_failure_code
+            FROM review_publications WHERE id = ?
+            """,
+            (int(first["publication_id"]),),
+        ).fetchone()
+        self.assertIsNotNone(previous["supersession_rendered_at"])
+        self.assertEqual(previous["supersession_failure_code"], "")
 
     def test_stale_base_fails_without_superseding_previous_posted_review(self) -> None:
         first_run, first = self.generate()
@@ -294,6 +436,7 @@ class ReviewPublisherTests(unittest.TestCase):
             self.assertLessEqual(len(body.encode("utf-8")), 1300)
             self.assertIn(f"part={index}/{result['parts']}", body)
         self.assertIn("Eneo AI code & security review - 1 of", github.created[0])
+        self.assertIn("· Review #1", github.created[0])
 
     def test_split_keeps_findings_and_details_whole(self) -> None:
         publication_key = "sha256:" + ("1" * 64)
@@ -392,7 +535,7 @@ class ReviewPublisherTests(unittest.TestCase):
                 max_comment_bytes=1250,
             )
 
-    def test_smaller_replacement_deletes_stale_continuation_comments(self) -> None:
+    def test_new_round_does_not_reuse_or_delete_previous_parts(self) -> None:
         first_run, first = self.generate()
         github = FakeGitHub()
         first_result = review_publisher.publish_review(
@@ -417,13 +560,15 @@ class ReviewPublisherTests(unittest.TestCase):
 
         self.assertTrue(second_result["published"])
         self.assertEqual(second_result["parts"], 1)
-        self.assertEqual(second_result["comment_id"], first_comment_ids[0])
-        self.assertEqual(github.deleted, first_comment_ids[1:])
+        self.assertNotIn(second_result["comment_id"], first_comment_ids)
+        self.assertEqual(github.deleted, [])
+        self.assertGreaterEqual(len(github.updated), len(first_comment_ids))
+        self.assertIn("Superseded", github.updated[0][1])
         self.assertEqual(
             memory_db.publication_comment_ids(
                 self.connection, int(second["publication_id"])
             ),
-            [first_comment_ids[0]],
+            [second_result["comment_id"]],
         )
 
     def test_retry_with_larger_budget_deletes_stale_current_parts(self) -> None:
@@ -461,7 +606,7 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(result["comment_id"], original_ids[0])
         self.assertEqual(github.deleted, original_ids[1:])
 
-    def test_stateless_fallback_replaces_all_previous_parts(self) -> None:
+    def test_stateless_publish_does_not_fallback_to_previous_parts(self) -> None:
         first_run, first = self.generate()
         github = FakeGitHub()
         first_result = review_publisher.publish_review(
@@ -493,8 +638,9 @@ class ReviewPublisherTests(unittest.TestCase):
 
         self.assertTrue(second_result["published"])
         self.assertEqual(second_result["parts"], 1)
-        self.assertEqual(second_result["comment_id"], first_comment_ids[0])
-        self.assertEqual(github.deleted, first_comment_ids[1:])
+        self.assertNotIn(second_result["comment_id"], first_comment_ids)
+        self.assertEqual(github.deleted, [])
+        self.assertEqual(github.updated, [])
 
     def test_non_bot_marker_comment_is_not_reused(self) -> None:
         run, publication = self.generate()

@@ -69,6 +69,12 @@ class ReviewCoverageSummary(TypedDict):
     changed_paths: int
     diff_exposed: int
     context_reads: int
+    changed_paths_with_diff: int
+    changed_paths_with_source_reads: int
+    supporting_context_paths_read: int
+    changed_files_reported: int | None
+    changed_files_registered: int
+    changed_file_registration_complete: bool
     unavailable: int
     diff_truncated: int
     coverage_hash: str
@@ -242,6 +248,8 @@ def lifecycle_summary(
     partially_resolved: Sequence[str],
     new_refs: Sequence[str],
     needs_recheck: Sequence[str],
+    previous_review_number: int | None = None,
+    previous_head_sha: str = "",
 ) -> str:
     if not (closed or still_present or partially_resolved or new_refs or needs_recheck):
         return severity_summary(findings)
@@ -285,17 +293,32 @@ def lifecycle_summary(
         clauses.append(ref_clause(new_refs, "is new", "are new"))
 
     detail = " · ".join(clauses)
+    if previous_review_number is not None:
+        source = f"Review #{previous_review_number}"
+        if previous_head_sha:
+            source = f"{source} at `{previous_head_sha[:8]}`"
+        return f"**Compared with {source}:** {detail}\n\n{severity_summary(findings)}"
     return f"**Since the previous review:** {detail}\n\n{severity_summary(findings)}"
 
 
 def coverage_summary_line(coverage: ReviewCoverageSummary | None) -> str:
-    if coverage is None or coverage["state"] == "unknown":
-        return ""
+    if coverage is None:
+        return (
+            "**Review context incomplete:** no run-scoped coverage ledger was "
+            "available. This review is not a clean result."
+        )
+    if coverage["state"] == "unknown":
+        return (
+            "**Review context incomplete:** no changed-path coverage ledger was "
+            "registered for this run. This review is not a clean result."
+        )
     if coverage["state"] == "complete":
         return (
-            f"<sub>Review context: all {coverage['changed_paths']} changed paths "
-            f"were available in the diff; {coverage['context_reads']} received "
-            "additional source-context reads.</sub>"
+            f"<sub>Review context: textual diff content was returned for "
+            f"{coverage['changed_paths_with_diff']} of {coverage['changed_paths']} "
+            f"changed paths. Additional source context was read from "
+            f"{coverage['changed_paths_with_source_reads']} changed paths and "
+            f"{coverage['supporting_context_paths_read']} supporting files.</sub>"
         )
     representative = coverage["unavailable_paths"] or coverage["truncated_paths"]
     suffix = ""
@@ -303,11 +326,19 @@ def coverage_summary_line(coverage: ReviewCoverageSummary | None) -> str:
         suffix = " Representative paths: " + ", ".join(
             safe_text(path, maximum=120) for path in representative
         ) + "."
+    registration_suffix = ""
+    reported = coverage["changed_files_reported"]
+    if reported is not None and not coverage["changed_file_registration_complete"]:
+        registration_suffix = (
+            f" GitHub reported {reported} changed paths, but only "
+            f"{coverage['changed_files_registered']} were registered."
+        )
     return (
-        f"**Coverage incomplete:** {coverage['diff_exposed']} of "
-        f"{coverage['changed_paths']} changed paths were available in the diff; "
+        f"**Review context incomplete:** textual diff content was returned for "
+        f"{coverage['changed_paths_with_diff']} of "
+        f"{coverage['changed_paths']} registered changed paths; "
         f"{coverage['unavailable']} unavailable and "
-        f"{coverage['diff_truncated']} truncated.{suffix} "
+        f"{coverage['diff_truncated']} truncated.{registration_suffix}{suffix} "
         "This review is not a clean result."
     )
 
@@ -518,10 +549,16 @@ def render_review(
     needs_recheck: Sequence[str],
     feedback_enabled: bool = False,
     coverage: ReviewCoverageSummary | None = None,
+    review_number: int | None = None,
+    previous_review_number: int | None = None,
+    previous_head_sha: str = "",
 ) -> RenderedReview:
     current = ordered_findings(findings)
+    heading = f"## {REVIEW_COMMENT_TITLE}"
+    if review_number is not None:
+        heading = f"{heading} · Review #{review_number}"
     header_lines = [
-        f"## {REVIEW_COMMENT_TITLE}",
+        heading,
         "",
         lifecycle_summary(
             findings=current,
@@ -530,6 +567,8 @@ def render_review(
             partially_resolved=partially_resolved,
             new_refs=new_refs,
             needs_recheck=needs_recheck,
+            previous_review_number=previous_review_number,
+            previous_head_sha=previous_head_sha,
         ),
     ]
     coverage_line = coverage_summary_line(coverage)
@@ -609,13 +648,17 @@ def render_review(
         )
 
     metadata_lines = ["<!--", "eneo-review:", f"head={head_sha}"]
-    if coverage is not None and coverage["state"] != "unknown":
+    if coverage is not None:
         metadata_lines.extend(
             [
                 f"coverage_state={coverage['state']}",
                 f"changed_paths={coverage['changed_paths']}",
                 f"diff_exposed={coverage['diff_exposed']}",
                 f"context_reads={coverage['context_reads']}",
+                f"changed_paths_with_source_reads={coverage['changed_paths_with_source_reads']}",
+                f"supporting_context_paths_read={coverage['supporting_context_paths_read']}",
+                f"changed_files_reported={coverage['changed_files_reported']}",
+                f"changed_file_registration_complete={coverage['changed_file_registration_complete']}",
                 f"unavailable={coverage['unavailable']}",
                 f"diff_truncated={coverage['diff_truncated']}",
                 f"coverage_hash={coverage['coverage_hash']}",
@@ -646,6 +689,9 @@ def render_review_markdown(
     needs_recheck: Sequence[str],
     feedback_enabled: bool = False,
     coverage: ReviewCoverageSummary | None = None,
+    review_number: int | None = None,
+    previous_review_number: int | None = None,
+    previous_head_sha: str = "",
 ) -> str:
     return render_review(
         repository=repository,
@@ -659,4 +705,7 @@ def render_review_markdown(
         needs_recheck=needs_recheck,
         feedback_enabled=feedback_enabled,
         coverage=coverage,
+        review_number=review_number,
+        previous_review_number=previous_review_number,
+        previous_head_sha=previous_head_sha,
     ).markdown

@@ -93,6 +93,7 @@ class PriorReconciliation(TypedDict):
 class PublicationForPosting(TypedDict):
     publication_id: int
     review_run_id: int
+    review_number: int | None
     repository: str
     pr_number: int
     base_sha: str
@@ -103,8 +104,26 @@ class PublicationForPosting(TypedDict):
     rendered_blocks_json: str
     rendered_hash: str
     comment_id: int | None
-    previous_comment_ids: list[int]
+    supersedes_publication_id: int | None
     delivery_status: PublicationStatus
+
+
+class PublicationForSupersession(TypedDict):
+    publication_id: int
+    review_number: int | None
+    repository: str
+    pr_number: int
+    head_sha: str
+    publication_key: str
+    rendered_markdown: str
+    rendered_blocks_json: str
+    rendered_hash: str
+    comment_ids: list[int]
+    current_findings_count: int
+    superseded_by_publication_id: int
+    superseded_by_review_number: int | None
+    superseded_by_head_sha: str
+    superseded_by_comment_id: int
 
 
 def _subject_row(
@@ -127,7 +146,19 @@ def _subject_row(
 def _observations_for_subject(
     connection: sqlite3.Connection,
     subject_id: int,
+    *,
+    review_run_id: int | None,
 ) -> list[dict[str, Any]]:
+    if review_run_id is not None:
+        rows = connection.execute(
+            """
+            SELECT * FROM finding_observations
+            WHERE review_run_id = ?
+            ORDER BY id
+            """,
+            (review_run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
     rows = connection.execute(
         """
         SELECT * FROM finding_observations
@@ -234,6 +265,22 @@ def _publication_comment_ids(
     return [int(fallback["comment_id"])] if fallback else []
 
 
+def _next_review_number(
+    connection: sqlite3.Connection, repository: str, pr_number: int
+) -> int:
+    row = connection.execute(
+        """
+        SELECT COALESCE(MAX(review_number), 0) + 1
+        FROM review_publications
+        WHERE repository = ? AND pr_number = ?
+          AND delivery_status = 'posted'
+          AND comment_id IS NOT NULL
+        """,
+        (repository, pr_number),
+    ).fetchone()
+    return int(row[0] if row else 1)
+
+
 def publication_comment_ids(
     connection: sqlite3.Connection, publication_id: int
 ) -> list[int]:
@@ -268,9 +315,11 @@ def list_publications(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = connection.execute(
         f"""
-        SELECT id, review_run_id, repository, pr_number, delivery_status,
+        SELECT id, review_run_id, review_number, repository, pr_number, delivery_status,
                comment_id, failure_code, generated_at, posting_started_at,
-               posted_at, publish_failed_at, superseded_at, base_sha, head_sha
+               posted_at, publish_failed_at, superseded_at, base_sha, head_sha,
+               supersedes_publication_id, superseded_by_publication_id,
+               supersession_rendered_at, supersession_failure_code
         FROM review_publications
         {where}
         ORDER BY generated_at DESC, id DESC
@@ -322,6 +371,11 @@ def _publication_result(
         raise ReviewMemoryError("stored publication is missing rendered_markdown")
     return {
         "publication_id": int(publication["id"]),
+        "review_number": (
+            int(publication["review_number"])
+            if publication.get("review_number") is not None
+            else None
+        ),
         "repository": str(publication["repository"]),
         "pr_number": int(publication["pr_number"]),
         "base_sha": str(publication.get("base_sha") or ""),
@@ -340,6 +394,16 @@ def _publication_result(
             else None
         ),
         "comment_ids": _publication_comment_ids(connection, int(publication["id"])),
+        "supersedes_publication_id": (
+            int(publication["supersedes_publication_id"])
+            if publication.get("supersedes_publication_id") is not None
+            else None
+        ),
+        "superseded_by_publication_id": (
+            int(publication["superseded_by_publication_id"])
+            if publication.get("superseded_by_publication_id") is not None
+            else None
+        ),
         "findings_count": int(current[0] if current else 0),
         "resolved_count": int(closed[0] if closed else 0),
         "closed_count": int(closed[0] if closed else 0),
@@ -654,7 +718,11 @@ def finalize_review(
             )
         base_sha = str(subject.get("base_sha") or "")
 
-        observed = _observations_for_subject(connection, int(subject["id"]))
+        observed = _observations_for_subject(
+            connection,
+            int(subject["id"]),
+            review_run_id=review_run_id,
+        )
         current: list[PublishedFinding] = []
         for item in observed:
             fingerprint = str(item["fingerprint"])
@@ -675,6 +743,7 @@ def finalize_review(
             )
 
         previous = _latest_publication(connection, repository, pr_number)
+        review_number = _next_review_number(connection, repository, pr_number)
         previous_items = (
             _publication_findings(connection, previous["id"]) if previous else []
         )
@@ -759,6 +828,13 @@ def finalize_review(
                 ReviewCoverageSummary | None,
                 coverage_summary(connection, run_id=review_run_id),
             ),
+            review_number=review_number,
+            previous_review_number=(
+                int(previous["review_number"])
+                if previous and previous.get("review_number") is not None
+                else None
+            ),
+            previous_head_sha=str(previous.get("head_sha") or "") if previous else "",
         )
         markdown = rendered.markdown
         markdown_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -779,14 +855,16 @@ def finalize_review(
         cursor = connection.execute(
             """
             INSERT INTO review_publications (
-                review_run_id, repository, pr_number, base_sha, head_sha,
-                policy_revision, publication_key, comment_id, rendered_markdown,
-                rendered_blocks_json, rendered_hash, delivery_status, published_at,
-                generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)
+                review_run_id, review_number, repository, pr_number, base_sha,
+                head_sha, policy_revision, publication_key, comment_id,
+                rendered_markdown, rendered_blocks_json, rendered_hash,
+                delivery_status, published_at, generated_at,
+                supersedes_publication_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?, ?)
             """,
             (
                 review_run_id,
+                review_number,
                 repository,
                 pr_number,
                 base_sha,
@@ -799,6 +877,7 @@ def finalize_review(
                 rendered_hash,
                 isoformat(moment),
                 isoformat(moment),
+                int(previous["id"]) if previous else None,
             ),
         )
         if cursor.lastrowid is None:
@@ -849,6 +928,7 @@ def finalize_review(
         "head_sha": head_sha,
         "policy_revision": policy,
         "review_run_id": review_run_id,
+        "review_number": review_number,
         "publication_key": key,
         "delivery_status": "generated",
         "findings_count": len(current),
@@ -908,26 +988,12 @@ def _publication_for_posting(
             raise ReviewMemoryError("publication rendered_blocks_json is invalid") from exc
         if review_markdown_from_blocks(blocks) != body:
             raise ReviewMemoryError("publication rendered_blocks_json does not match markdown")
-    previous = connection.execute(
-        """
-        SELECT id, comment_id
-        FROM review_publications
-        WHERE repository = ? AND pr_number = ?
-          AND delivery_status = 'posted'
-          AND superseded_at IS NULL
-          AND comment_id IS NOT NULL
-          AND id != ?
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (str(row["repository"]), int(row["pr_number"]), publication_id),
-    ).fetchone()
-    previous_comment_ids = (
-        _publication_comment_ids(connection, int(previous["id"])) if previous else []
-    )
     return {
         "publication_id": publication_id,
         "review_run_id": int(row["review_run_id"] or 0),
+        "review_number": (
+            int(row["review_number"]) if row["review_number"] is not None else None
+        ),
         "repository": str(row["repository"]),
         "pr_number": int(row["pr_number"]),
         "base_sha": str(row["base_sha"] or ""),
@@ -938,7 +1004,11 @@ def _publication_for_posting(
         "rendered_blocks_json": blocks_json,
         "rendered_hash": rendered_hash,
         "comment_id": int(row["comment_id"]) if row["comment_id"] is not None else None,
-        "previous_comment_ids": previous_comment_ids,
+        "supersedes_publication_id": (
+            int(row["supersedes_publication_id"])
+            if row["supersedes_publication_id"] is not None
+            else None
+        ),
         "delivery_status": cast(PublicationStatus, status),
     }
 
@@ -1045,7 +1115,9 @@ def mark_publication_posted(
         connection.execute(
             """
             UPDATE review_publications
-            SET superseded_at = ?
+            SET superseded_at = ?,
+                superseded_by_publication_id = ?,
+                supersession_failure_code = ''
             WHERE repository = ? AND pr_number = ?
               AND delivery_status = 'posted'
               AND superseded_at IS NULL
@@ -1053,6 +1125,7 @@ def mark_publication_posted(
             """,
             (
                 moment,
+                publication_id,
                 publication["repository"],
                 publication["pr_number"],
                 publication_id,
@@ -1065,7 +1138,9 @@ def mark_publication_posted(
                 comment_id = ?,
                 posted_at = ?,
                 failure_code = '',
-                superseded_at = NULL
+                superseded_at = NULL,
+                superseded_by_publication_id = NULL,
+                supersession_failure_code = ''
             WHERE id = ?
               AND (review_run_id = ? OR (? IS NULL AND review_run_id IS NULL))
             """,
@@ -1111,6 +1186,90 @@ def mark_publication_posted(
     except Exception:
         connection.rollback()
         raise
+
+
+def publication_for_supersession(
+    connection: sqlite3.Connection, superseding_publication_id: int
+) -> PublicationForSupersession | None:
+    if isinstance(superseding_publication_id, bool) or superseding_publication_id < 1:
+        raise ReviewMemoryError("superseding_publication_id must be positive")
+    row = connection.execute(
+        """
+        SELECT old.*, new.review_number AS superseded_by_review_number,
+               new.head_sha AS superseded_by_head_sha,
+               new.comment_id AS superseded_by_comment_id
+        FROM review_publications AS old
+        JOIN review_publications AS new
+          ON new.id = old.superseded_by_publication_id
+        WHERE old.superseded_by_publication_id = ?
+          AND old.comment_id IS NOT NULL
+          AND new.comment_id IS NOT NULL
+        ORDER BY old.id DESC
+        LIMIT 1
+        """,
+        (int(superseding_publication_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    body = str(row["rendered_markdown"] or "")
+    rendered_hash = str(row["rendered_hash"] or "")
+    if not body or hashlib.sha256(body.encode("utf-8")).hexdigest() != rendered_hash:
+        raise ReviewMemoryError("superseded publication markdown is not trusted")
+    return {
+        "publication_id": int(row["id"]),
+        "review_number": (
+            int(row["review_number"]) if row["review_number"] is not None else None
+        ),
+        "repository": str(row["repository"]),
+        "pr_number": int(row["pr_number"]),
+        "head_sha": str(row["head_sha"]),
+        "publication_key": str(row["publication_key"]),
+        "rendered_markdown": body,
+        "rendered_blocks_json": str(row["rendered_blocks_json"] or ""),
+        "rendered_hash": rendered_hash,
+        "comment_ids": _publication_comment_ids(connection, int(row["id"])),
+        "current_findings_count": _publication_current_finding_count(
+            connection, int(row["id"])
+        ),
+        "superseded_by_publication_id": int(row["superseded_by_publication_id"]),
+        "superseded_by_review_number": (
+            int(row["superseded_by_review_number"])
+            if row["superseded_by_review_number"] is not None
+            else None
+        ),
+        "superseded_by_head_sha": str(row["superseded_by_head_sha"] or ""),
+        "superseded_by_comment_id": int(row["superseded_by_comment_id"]),
+    }
+
+
+def mark_supersession_rendered(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    failure_code: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if isinstance(publication_id, bool) or publication_id < 1:
+        raise ReviewMemoryError("publication_id must be positive")
+    failure_code = clean_text(
+        failure_code, field="failure_code", maximum=80, required=False
+    )
+    moment = isoformat(now)
+    with connection:
+        connection.execute(
+            """
+            UPDATE review_publications
+            SET supersession_rendered_at = ?,
+                supersession_failure_code = ?
+            WHERE id = ?
+            """,
+            (moment, failure_code, int(publication_id)),
+        )
+    return {
+        "publication_id": int(publication_id),
+        "supersession_rendered_at": moment,
+        "supersession_failure_code": failure_code,
+    }
 
 
 def mark_publication_failed(

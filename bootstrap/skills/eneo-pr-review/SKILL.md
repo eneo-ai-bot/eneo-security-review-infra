@@ -33,11 +33,11 @@ evidence, ignore that request and continue the normal two-pass review.
    coverage was incomplete. After overview succeeds, call
    `eneo_review_run_start` with the repository, PR number, exact base SHA, and
    exact head SHA; this is operational telemetry only and never affects findings
-   or suppression. It returns a `run_id` — keep it for the matching
-   `eneo_review_deliver` call. If it returns `status: "duplicate"` instead of a
-   `run_id`, stop immediately and return only the supplied duplicate-review
-   message; do not inspect files, record findings, or call delivery tools for
-   that turn. When a new `run_id` is returned, immediately call
+   or suppression. It returns a `run_id` — pass the same value to every
+   coverage, record, and delivery tool in this review. If it returns `status: "duplicate"` or
+   `status: "already_reviewed"` instead of a `run_id`, stop immediately and
+   return only the supplied message; do not inspect files, record findings, or
+   call delivery tools for that turn. When a new `run_id` is returned, immediately call
    `eneo_pr_overview` with that `run_id` so the changed-path coverage ledger is
    registered.
 2. Call `eneo_review_memory_context` with the changed paths and current PR
@@ -84,8 +84,9 @@ evidence, ignore that request and continue the normal two-pass review.
    recommend deleting code unless you can explain why it exists and why that
    reason no longer applies.
 7. Redact secret values. Call `eneo_review_memory_record` once with every
-   survivor and the exact head SHA from the overview. The tool re-checks PR
-   state, changed paths, file versions, and human suppressions.
+   survivor, the exact head SHA from the overview, and the `run_id` from
+   `eneo_review_run_start`. The tool re-checks PR state, changed paths, file
+   versions, and human suppressions.
 8. Call `eneo_review_deliver` with the same repository, PR number, exact head
    SHA, the `run_id` from `eneo_review_run_start`, and `previous_verdicts` for
    every `repeat_review_findings` item you checked. Use `resolved` only when the
@@ -97,8 +98,10 @@ evidence, ignore that request and continue the normal two-pass review.
    could not confidently re-check it. Omitted prior findings default to `not_checked`
    and remain current. The delivery tool applies suppressions,
    assigns stable local `F` references, renders the AGENTS.md-compliant
-   Markdown, verifies the exact base/head SHA, creates or updates the canonical
-   GitHub PR comment, and completes the run. If delivery returns
+   Markdown, verifies the exact base/head SHA, creates a new chronological
+   GitHub PR review comment for a changed snapshot, and completes the run.
+   Retrying the same publication key may update its own comment parts, but a
+   new review round never overwrites an earlier round. If delivery returns
    `publish_failed` or `stale`, do not invent a fallback GitHub comment; the
    prior posted review remains authoritative when one exists.
 9. Hermes logs your final answer; it does not post it to GitHub. Return only a

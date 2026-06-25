@@ -319,21 +319,22 @@ class ReviewRunsTests(unittest.TestCase):
             "smallest_fix": "Bind tenant from context.",
             "introduced_by_diff": True,
         }
-        memory_db.record_findings(
-            self.connection,
-            "eneo-ai/eneo",
-            240,
-            "a" * 40,
-            [finding],
-            base_sha="b" * 40,
-            context_hashes={finding["path"]: "d" * 40},
-        )
         run = memory_db.start_run(
             self.connection,
             "eneo-ai/eneo",
             240,
             base_sha="b" * 40,
             head_sha="a" * 40,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo-ai/eneo",
+            240,
+            "a" * 40,
+            [finding],
+            review_run_id=int(run["id"]),
+            base_sha="b" * 40,
+            context_hashes={finding["path"]: "d" * 40},
         )
         memory_db.finalize_review(
             self.connection,

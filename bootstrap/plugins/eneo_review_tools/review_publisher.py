@@ -40,6 +40,10 @@ _MAX_ATTEMPTS = 3
 _RETRYABLE_STATUS = frozenset({502, 503, 504})
 _READ_TOKEN_FALLBACK_STATUS = frozenset({401, 403, 404})
 DEFAULT_MAX_COMMENT_BYTES = 60_000
+_HISTORICAL_TRUNCATION_NOTICE = (
+    "_Historical details were shortened to fit GitHub comment limits; "
+    "the full review text remains in review memory._\n\n"
+)
 GitHubAuthPurpose = Literal["read", "write"]
 
 
@@ -386,14 +390,6 @@ def _extract_publication_key(body: str) -> str | None:
     return key if key.startswith("sha256:") else None
 
 
-def _latest_publication_key(comments: list[IssueComment]) -> str | None:
-    for comment in reversed(comments):
-        key = _extract_publication_key(comment.body)
-        if key:
-            return key
-    return None
-
-
 def _comments_by_author(
     comments: list[IssueComment], author_login: str
 ) -> list[IssueComment]:
@@ -536,13 +532,6 @@ def _publication_comments(
     return found
 
 
-def _ordered_publication_comments(
-    comments: list[IssueComment], publication_key: str
-) -> list[IssueComment]:
-    parts = _publication_comments(comments, publication_key)
-    return [parts[number] for number in sorted(parts)]
-
-
 def _comments_by_id(
     comments: list[IssueComment], comment_ids: list[int]
 ) -> list[IssueComment]:
@@ -555,20 +544,8 @@ def _comments_by_id(
     ]
 
 
-def _fallback_targets(
-    comments: list[IssueComment], previous_comment_ids: list[int]
-) -> list[IssueComment]:
-    previous_targets = _comments_by_id(comments, previous_comment_ids)
-    previous_key = next(
-        (
-            key
-            for key in (_extract_publication_key(comment.body) for comment in previous_targets)
-            if key
-        ),
-        None,
-    )
-    key = previous_key or _latest_publication_key(comments)
-    return _ordered_publication_comments(comments, key) if key else []
+def _comment_url(repository: str, pr_number: int, comment_id: int) -> str:
+    return f"https://github.com/{repository}/pull/{pr_number}#issuecomment-{comment_id}"
 
 
 def _publish_parts(
@@ -578,13 +555,10 @@ def _publish_parts(
     pr_number: int,
     parts: list[PublicationPart],
     existing_parts: dict[int, IssueComment],
-    fallback_targets: list[IssueComment],
 ) -> list[int]:
     posted_ids: list[int] = []
     for part in parts:
         target = existing_parts.get(part.part_number)
-        if target is None and part.part_number <= len(fallback_targets):
-            target = fallback_targets[part.part_number - 1]
         if target is not None:
             comment = (
                 target
@@ -599,10 +573,6 @@ def _publish_parts(
         comment
         for part_number, comment in existing_parts.items()
         if part_number > len(parts) and comment.comment_id not in posted_ids
-    ] + [
-        comment
-        for index, comment in enumerate(fallback_targets, start=1)
-        if index > len(parts) and comment.comment_id not in posted_ids
     ]
     deleted_ids: set[int] = set()
     for comment in stale_candidates:
@@ -611,6 +581,236 @@ def _publish_parts(
         github.delete_issue_comment(repository, comment.comment_id)
         deleted_ids.add(comment.comment_id)
     return posted_ids
+
+
+def _historical_content_blocks(
+    publication: memory_publications.PublicationForSupersession,
+) -> list[str]:
+    marker = _canonical_html_marker(publication["publication_key"])
+    blocks_json = publication["rendered_blocks_json"]
+    if blocks_json:
+        blocks = review_blocks_from_json(
+            blocks_json, fallback_markdown=publication["rendered_markdown"]
+        )
+        content = [
+            block.markdown.replace(marker, "").strip()
+            for block in blocks
+            if block.kind not in {"feedback_help", "metadata"}
+        ]
+    else:
+        content = [publication["rendered_markdown"].replace(marker, "").strip()]
+    return [f"{block}\n\n" for block in content if block]
+
+
+def _historical_label(review_number: int | None) -> str:
+    return f"Review #{review_number}" if review_number is not None else "Previous review"
+
+
+def _truncate_block_to_budget(block: str, max_bytes: int) -> tuple[str, bool]:
+    if _body_size(block) <= max_bytes:
+        return block, False
+    suffix = "\n\n[truncated]\n\n"
+    available = max_bytes - _body_size(suffix)
+    if available < 100:
+        return "", True
+    encoded = block.encode("utf-8")[:available]
+    return encoded.decode("utf-8", errors="ignore").rstrip() + suffix, True
+
+
+def _fit_historical_chunks(
+    content_blocks: list[str], *, content_budget: int, max_parts: int
+) -> list[str]:
+    if max_parts < 1:
+        raise GitHubPublicationError("superseded_comment_missing")
+    if _body_size(_HISTORICAL_TRUNCATION_NOTICE) > content_budget:
+        raise GitHubPublicationError("superseded_body_too_large")
+
+    retained = list(content_blocks)
+    truncated = False
+    while retained:
+        candidate: list[str] = []
+        block_truncated = False
+        for block in retained:
+            clipped, was_truncated = _truncate_block_to_budget(block, content_budget)
+            if clipped:
+                candidate.append(clipped)
+            block_truncated = block_truncated or was_truncated
+        if truncated or block_truncated:
+            candidate.append(_HISTORICAL_TRUNCATION_NOTICE)
+        try:
+            chunks = _pack_blocks(candidate, content_budget)
+        except GitHubPublicationError:
+            chunks = []
+        if chunks and len(chunks) <= max_parts:
+            return chunks
+        retained.pop()
+        truncated = True
+
+    return [_HISTORICAL_TRUNCATION_NOTICE]
+
+
+def _historical_bodies(
+    publication: memory_publications.PublicationForSupersession,
+    *,
+    max_comment_bytes: int,
+    target_parts: int,
+) -> list[PublicationPart]:
+    old_label = _historical_label(publication["review_number"])
+    new_label = _historical_label(publication["superseded_by_review_number"])
+    new_url = _comment_url(
+        publication["repository"],
+        publication["pr_number"],
+        publication["superseded_by_comment_id"],
+    )
+    summary = (
+        f"{old_label} at `{publication['head_sha'][:8]}` · "
+        f"{publication['current_findings_count']} findings"
+    )
+    content_blocks = _historical_content_blocks(publication)
+    if not content_blocks:
+        raise GitHubPublicationError("superseded_body_empty")
+
+    reserved_template = (
+        f"## {REVIEW_COMMENT_TITLE} · {old_label} · Superseded - 999 of 999\n\n"
+        f"> [!NOTE]\n"
+        f"> **Superseded by [{new_label}]({new_url}).**\n"
+        f"> This review describes commit `{publication['head_sha'][:8]}` and is "
+        "retained as historical context.\n\n"
+        "<details>\n"
+        f"<summary>{summary}</summary>\n\n"
+        "</details>\n\n"
+        f"<!-- {_part_marker(publication['publication_key'], 999, 999)} -->\n"
+    )
+    content_budget = max_comment_bytes - _body_size(reserved_template)
+    if content_budget < 200:
+        raise GitHubPublicationError("superseded_body_too_large")
+    chunks = _fit_historical_chunks(
+        content_blocks, content_budget=content_budget, max_parts=target_parts
+    )
+    parts: list[PublicationPart] = []
+    for part_number, chunk in enumerate(chunks, start=1):
+        heading = f"## {REVIEW_COMMENT_TITLE} · {old_label} · Superseded"
+        if target_parts > 1:
+            heading = f"{heading} - {part_number} of {target_parts}"
+        body = (
+            f"{heading}\n\n"
+            f"> [!NOTE]\n"
+            f"> **Superseded by [{new_label}]({new_url}).**\n"
+            f"> This review describes commit `{publication['head_sha'][:8]}` and is "
+            "retained as historical context.\n\n"
+            "<details>\n"
+            f"<summary>{summary}</summary>\n\n"
+            f"{chunk.rstrip()}\n\n"
+            "</details>\n\n"
+            f"<!-- {_part_marker(publication['publication_key'], part_number, target_parts)} -->\n"
+        )
+        if _body_size(body) > max_comment_bytes:
+            raise GitHubPublicationError("superseded_body_too_large")
+        parts.append(PublicationPart(part_number=part_number, body=body))
+    return parts
+
+
+def _extra_superseded_body(
+    publication: memory_publications.PublicationForSupersession,
+    *,
+    part_number: int,
+    total_parts: int,
+) -> str:
+    old_label = _historical_label(publication["review_number"])
+    new_label = _historical_label(publication["superseded_by_review_number"])
+    new_url = _comment_url(
+        publication["repository"],
+        publication["pr_number"],
+        publication["superseded_by_comment_id"],
+    )
+    return (
+        f"## {REVIEW_COMMENT_TITLE} · {old_label} · Superseded\n\n"
+        f"> [!NOTE]\n"
+        f"> **Superseded by [{new_label}]({new_url}).**\n"
+        "> This continuation comment is retained only to preserve the historical "
+        "PR timeline.\n\n"
+        f"<!-- {_part_marker(publication['publication_key'], part_number, total_parts)} -->\n"
+    )
+
+
+def _mark_supersession_failure(
+    connection: sqlite3.Connection,
+    publication_id: int,
+    code: str,
+) -> None:
+    try:
+        memory_publications.mark_supersession_rendered(
+            connection, publication_id=publication_id, failure_code=code
+        )
+    except ReviewMemoryError:
+        pass
+
+
+def _render_superseded_publication(
+    connection: sqlite3.Connection,
+    *,
+    github: GitHubPublicationGateway,
+    comments: list[IssueComment],
+    superseding_publication_id: int,
+    max_comment_bytes: int,
+) -> dict[str, object] | None:
+    try:
+        publication = memory_publications.publication_for_supersession(
+            connection, superseding_publication_id
+        )
+    except ReviewMemoryError:
+        return {
+            "supersession_rendered": False,
+            "supersession_failure_code": "supersession_lookup_failed",
+        }
+    if publication is None:
+        return None
+    targets = _comments_by_id(comments, publication["comment_ids"])
+    if len(targets) != len(publication["comment_ids"]):
+        _mark_supersession_failure(
+            connection, publication["publication_id"], "superseded_comment_missing"
+        )
+        return {
+            "superseded_publication_id": publication["publication_id"],
+            "supersession_rendered": False,
+            "supersession_failure_code": "superseded_comment_missing",
+        }
+    try:
+        parts = _historical_bodies(
+            publication,
+            max_comment_bytes=max_comment_bytes,
+            target_parts=len(targets),
+        )
+        if len(parts) > len(targets):
+            raise GitHubPublicationError("superseded_body_needs_more_parts")
+        for index, target in enumerate(targets):
+            if index < len(parts):
+                body = parts[index].body
+            else:
+                body = _extra_superseded_body(
+                    publication,
+                    part_number=index + 1,
+                    total_parts=len(targets),
+                )
+            if target.body != body:
+                github.update_issue_comment(
+                    publication["repository"], target.comment_id, body
+                )
+    except (GitHubPublicationError, ValueError) as exc:
+        code = exc.code if isinstance(exc, GitHubPublicationError) else "supersession_failed"
+        _mark_supersession_failure(connection, publication["publication_id"], code)
+        return {
+            "superseded_publication_id": publication["publication_id"],
+            "supersession_rendered": False,
+            "supersession_failure_code": code,
+        }
+    memory_publications.mark_supersession_rendered(
+        connection, publication_id=publication["publication_id"]
+    )
+    return {
+        "superseded_publication_id": publication["publication_id"],
+        "supersession_rendered": True,
+    }
 
 
 def publish_review(
@@ -687,14 +887,12 @@ def publish_review(
         )
         current_parts = _publication_comments(comments, publication["publication_key"])
         if current_parts:
-            current_targets = [current_parts[number] for number in sorted(current_parts)]
             comment_ids = _publish_parts(
                 github=github,
                 repository=publication["repository"],
                 pr_number=publication["pr_number"],
                 parts=parts,
                 existing_parts=current_parts,
-                fallback_targets=current_targets,
             )
             posted = memory_publications.mark_publication_posted(
                 connection,
@@ -713,15 +911,12 @@ def publish_review(
                 "recovered": True,
             }
 
-        fallback_targets = _fallback_targets(comments, publication["previous_comment_ids"])
-
         comment_ids = _publish_parts(
             github=github,
             repository=publication["repository"],
             pr_number=publication["pr_number"],
             parts=parts,
             existing_parts={},
-            fallback_targets=fallback_targets,
         )
 
         posted = memory_publications.mark_publication_posted(
@@ -731,7 +926,14 @@ def publish_review(
             comment_id=comment_ids[0],
             comment_ids=comment_ids,
         )
-        return {
+        supersession = _render_superseded_publication(
+            connection,
+            github=github,
+            comments=comments,
+            superseding_publication_id=publication_id,
+            max_comment_bytes=budget,
+        )
+        result: dict[str, object] = {
             "published": True,
             "publication_id": publication_id,
             "comment_id": comment_ids[0],
@@ -740,6 +942,9 @@ def publish_review(
             "delivery_status": posted["delivery_status"],
             "recovered": False,
         }
+        if supersession is not None:
+            result.update(supersession)
+        return result
     except GitHubPublicationError as exc:
         memory_publications.mark_publication_failed(
             connection,

@@ -130,6 +130,43 @@ def _review_subject_id(
     return int(row["id"])
 
 
+def _review_run_for_observation(
+    connection: sqlite3.Connection,
+    *,
+    review_run_id: int | None,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+) -> tuple[int | None, str]:
+    if review_run_id is None:
+        return None, base_sha
+    if isinstance(review_run_id, bool) or int(review_run_id) < 1:
+        raise ReviewMemoryError("review_run_id must be a positive integer")
+    row = connection.execute(
+        """
+        SELECT repository, pr_number, base_sha, head_sha, status
+        FROM review_runs
+        WHERE id = ?
+        """,
+        (int(review_run_id),),
+    ).fetchone()
+    if row is None:
+        raise ReviewMemoryError("review_run_id does not match a recorded review run")
+    if (
+        str(row["repository"]) != repository
+        or int(row["pr_number"]) != pr_number
+        or str(row["head_sha"]).lower() != head_sha
+    ):
+        raise ReviewMemoryError("review_run_id does not match this review subject")
+    if str(row["status"]) != "running":
+        raise ReviewMemoryError("review_run_id is not an active review run")
+    run_base_sha = str(row["base_sha"] or "").lower()
+    if base_sha and run_base_sha and base_sha != run_base_sha:
+        raise ReviewMemoryError("base_sha does not match the recorded review run")
+    return int(review_run_id), base_sha or run_base_sha
+
+
 def _latest_publication_current_fingerprints(
     connection: sqlite3.Connection,
     repository: str,
@@ -331,6 +368,7 @@ def record_findings(
     head_sha: str,
     findings: object,
     *,
+    review_run_id: int | None = None,
     base_sha: str = "",
     context_hashes: dict[str, str] | None = None,
     policy_revision: str | None = None,
@@ -364,6 +402,14 @@ def record_findings(
         for path, value in (context_hashes or {}).items()
     }
     policy = current_policy_revision(policy_revision)
+    review_run_id, base_sha = _review_run_for_observation(
+        connection,
+        review_run_id=review_run_id,
+        repository=repository,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        base_sha=base_sha,
+    )
     validated = [_validated_finding(repository, raw) for raw in finding_items]
     now = isoformat()
     results: list[dict[str, Any]] = []
@@ -423,43 +469,68 @@ def record_findings(
                         now,
                     ),
                 )
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO finding_observations (
-                    review_subject_id, repository, pr_number, head_sha, policy_revision,
-                    fingerprint, rule_id, path, line, symbol, anchor, title, severity, category,
-                    publication_score, confidence, context_hash, evidence, disproof_checks,
-                    impact, smallest_fix, introduced_by_diff, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    subject_id,
-                    item["repository"],
-                    pr_number,
-                    head_sha,
-                    policy,
-                    item["fingerprint"],
-                    item["rule_id"],
-                    item["path"],
-                    item["line"],
-                    item["symbol"],
-                    item["anchor"],
-                    item["title"],
-                    item["severity"],
-                    item["category"],
-                    item["publication_score"],
-                    item["confidence"],
-                    context_hash,
-                    item["evidence"],
-                    item["disproof_checks"],
-                    item["impact"],
-                    item["smallest_fix"],
-                    item["introduced_by_diff"],
-                    now,
-                ),
-            )
-            inserted_observation = cursor.rowcount == 1
-            if not inserted_observation:
+            if review_run_id is None:
+                observation = connection.execute(
+                    """
+                    SELECT id FROM finding_observations
+                    WHERE review_run_id IS NULL
+                      AND review_subject_id = ?
+                      AND fingerprint = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (subject_id, item["fingerprint"]),
+                ).fetchone()
+            else:
+                observation = connection.execute(
+                    """
+                    SELECT id FROM finding_observations
+                    WHERE review_run_id = ? AND fingerprint = ?
+                    """,
+                    (review_run_id, item["fingerprint"]),
+                ).fetchone()
+            inserted_observation = observation is None
+            if inserted_observation:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO finding_observations (
+                        review_subject_id, review_run_id, repository, pr_number,
+                        head_sha, policy_revision, fingerprint, rule_id, path, line,
+                        symbol, anchor, title, severity, category, publication_score,
+                        confidence, context_hash, evidence, disproof_checks, impact,
+                        smallest_fix, introduced_by_diff, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        subject_id,
+                        review_run_id,
+                        item["repository"],
+                        pr_number,
+                        head_sha,
+                        policy,
+                        item["fingerprint"],
+                        item["rule_id"],
+                        item["path"],
+                        item["line"],
+                        item["symbol"],
+                        item["anchor"],
+                        item["title"],
+                        item["severity"],
+                        item["category"],
+                        item["publication_score"],
+                        item["confidence"],
+                        context_hash,
+                        item["evidence"],
+                        item["disproof_checks"],
+                        item["impact"],
+                        item["smallest_fix"],
+                        item["introduced_by_diff"],
+                        now,
+                    ),
+                )
+                observation_id = int(cursor.lastrowid or 0)
+            else:
+                observation_id = int(observation["id"])
                 connection.execute(
                     """
                     UPDATE finding_observations
@@ -467,7 +538,7 @@ def record_findings(
                         publication_score = ?, confidence = ?, context_hash = ?,
                         evidence = ?, disproof_checks = ?, impact = ?, smallest_fix = ?,
                         introduced_by_diff = ?, observed_at = ?
-                    WHERE review_subject_id = ? AND fingerprint = ?
+                    WHERE id = ?
                     """,
                     (
                         item["line"],
@@ -483,8 +554,7 @@ def record_findings(
                         item["smallest_fix"],
                         item["introduced_by_diff"],
                         now,
-                        subject_id,
-                        item["fingerprint"],
+                        observation_id,
                     ),
                 )
 
@@ -526,13 +596,6 @@ def record_findings(
                 item["fingerprint"],
                 now=parse_time(now),
             )
-            observation = connection.execute(
-                """
-                SELECT id FROM finding_observations
-                WHERE review_subject_id = ? AND fingerprint = ?
-                """,
-                (subject_id, item["fingerprint"]),
-            ).fetchone()
             suppression = active_suppression(
                 connection, item["fingerprint"], context_hash=context_hash
             )
@@ -542,7 +605,8 @@ def record_findings(
                     "fingerprint_short": item["fingerprint"][:12],
                     "local_reference": local_reference,
                     "review_subject_id": subject_id,
-                    "observation_id": int(observation["id"]) if observation else None,
+                    "review_run_id": review_run_id,
+                    "observation_id": observation_id,
                     "policy_revision": policy,
                     "base_sha": base_sha,
                     "path": item["path"],

@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 13
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -181,6 +181,18 @@ def _review_runs_needs_lifecycle_migration(connection: sqlite3.Connection) -> bo
         or "failure_code" not in sql
         or "phase IN" not in sql
         or "status = 'running' AND phase" not in sql
+    )
+
+
+def _finding_observations_needs_run_scope_migration(
+    connection: sqlite3.Connection,
+) -> bool:
+    sql = _table_sql(connection, "finding_observations")
+    if not sql:
+        return False
+    return (
+        "review_run_id" not in sql
+        or "UNIQUE(review_subject_id, fingerprint)" in sql
     )
 
 
@@ -444,6 +456,15 @@ def _migrate_review_runs_lifecycle(connection: sqlite3.Connection) -> None:
                     )
                 ),
                 findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
+                changed_files_reported INTEGER CHECK (
+                    changed_files_reported IS NULL OR changed_files_reported >= 0
+                ),
+                changed_files_registered INTEGER CHECK (
+                    changed_files_registered IS NULL OR changed_files_registered >= 0
+                ),
+                changed_file_registration_complete INTEGER NOT NULL DEFAULT 0 CHECK (
+                    changed_file_registration_complete IN (0, 1)
+                ),
                 posted_comment_id INTEGER,
                 failure_code TEXT NOT NULL DEFAULT '',
                 started_at TEXT NOT NULL,
@@ -492,9 +513,11 @@ def _migrate_review_runs_lifecycle(connection: sqlite3.Connection) -> None:
                 INSERT INTO review_runs_migration (
                     id, repository, pr_number, trigger_comment_id, trigger_user,
                     base_sha, head_sha, status, phase, findings_count,
-                    posted_comment_id, failure_code, started_at,
+                    changed_files_reported, changed_files_registered,
+                    changed_file_registration_complete, posted_comment_id,
+                    failure_code, started_at,
                     last_heartbeat_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["id"],
@@ -507,6 +530,15 @@ def _migrate_review_runs_lifecycle(connection: sqlite3.Connection) -> None:
                     status,
                     phase,
                     row.get("findings_count"),
+                    row.get("changed_files_reported")
+                    if "changed_files_reported" in existing_columns
+                    else None,
+                    row.get("changed_files_registered")
+                    if "changed_files_registered" in existing_columns
+                    else None,
+                    int(row.get("changed_file_registration_complete") or 0)
+                    if "changed_file_registration_complete" in existing_columns
+                    else 0,
                     row.get("posted_comment_id"),
                     row.get("failure_code") or "",
                     started_at,
@@ -532,6 +564,111 @@ def _migrate_review_runs_lifecycle(connection: sqlite3.Connection) -> None:
     broken = connection.execute("PRAGMA foreign_key_check").fetchall()
     if broken:
         raise ReviewMemoryError("review_runs lifecycle migration left broken foreign keys")
+
+
+def _migrate_finding_observations_run_scope(connection: sqlite3.Connection) -> None:
+    if not _finding_observations_needs_run_scope_migration(connection):
+        return
+
+    rows = [dict(row) for row in connection.execute("SELECT * FROM finding_observations")]
+    existing_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(finding_observations)")
+    }
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN")
+        connection.execute("DROP TABLE IF EXISTS finding_observations_migration")
+        connection.execute(
+            """
+            CREATE TABLE finding_observations_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                review_subject_id INTEGER NOT NULL,
+                review_run_id INTEGER,
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL,
+                policy_revision TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                symbol TEXT NOT NULL DEFAULT '',
+                anchor TEXT NOT NULL,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                publication_score INTEGER NOT NULL,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                context_hash TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL,
+                disproof_checks TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                smallest_fix TEXT NOT NULL,
+                introduced_by_diff INTEGER NOT NULL CHECK (introduced_by_diff IN (0, 1)),
+                observed_at TEXT NOT NULL,
+                FOREIGN KEY (review_subject_id) REFERENCES review_subjects(id),
+                FOREIGN KEY (review_run_id) REFERENCES review_runs(id),
+                FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+            )
+            """
+        )
+        for row in rows:
+            connection.execute(
+                """
+                INSERT INTO finding_observations_migration (
+                    id, review_subject_id, review_run_id, repository, pr_number,
+                    head_sha, policy_revision, fingerprint, rule_id, path, line,
+                    symbol, anchor, title, severity, category, publication_score,
+                    confidence, context_hash, evidence, disproof_checks, impact,
+                    smallest_fix, introduced_by_diff, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["review_subject_id"],
+                    row.get("review_run_id") if "review_run_id" in existing_columns else None,
+                    row["repository"],
+                    row["pr_number"],
+                    row["head_sha"],
+                    row["policy_revision"],
+                    row["fingerprint"],
+                    row["rule_id"],
+                    row["path"],
+                    row["line"],
+                    row["symbol"],
+                    row["anchor"],
+                    row["title"],
+                    row["severity"],
+                    row["category"],
+                    row["publication_score"],
+                    row["confidence"],
+                    row["context_hash"],
+                    row["evidence"],
+                    row["disproof_checks"],
+                    row["impact"],
+                    row["smallest_fix"],
+                    row["introduced_by_diff"],
+                    row["observed_at"],
+                ),
+            )
+        connection.execute("DROP TABLE finding_observations")
+        connection.execute(
+            "ALTER TABLE finding_observations_migration RENAME TO finding_observations"
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    broken = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if broken:
+        raise ReviewMemoryError(
+            "finding_observations run-scope migration left broken foreign keys"
+        )
 
 
 def _ensure_active_run_unique_index(connection: sqlite3.Connection) -> None:
@@ -649,11 +786,12 @@ def _backfill_observations(connection: sqlite3.Connection) -> None:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO finding_observations (
-                    review_subject_id, repository, pr_number, head_sha, policy_revision,
-                    fingerprint, rule_id, path, line, symbol, anchor, title, severity, category,
-                    publication_score, confidence, context_hash, evidence, disproof_checks,
-                    impact, smallest_fix, introduced_by_diff, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_subject_id, review_run_id, repository, pr_number,
+                    head_sha, policy_revision, fingerprint, rule_id, path, line,
+                    symbol, anchor, title, severity, category, publication_score,
+                    confidence, context_hash, evidence, disproof_checks, impact,
+                    smallest_fix, introduced_by_diff, observed_at
+                ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     subject_id,
@@ -779,12 +917,16 @@ def init_schema(connection: sqlite3.Connection) -> None:
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             path TEXT NOT NULL,
-            change_status TEXT NOT NULL DEFAULT '',
-            domain TEXT NOT NULL DEFAULT '',
-            review_mode TEXT NOT NULL DEFAULT 'normal',
-            diff_requested INTEGER NOT NULL DEFAULT 0 CHECK (diff_requested IN (0, 1)),
-            diff_returned INTEGER NOT NULL DEFAULT 0 CHECK (diff_returned IN (0, 1)),
-            diff_truncated INTEGER NOT NULL DEFAULT 0 CHECK (diff_truncated IN (0, 1)),
+                change_status TEXT NOT NULL DEFAULT '',
+                is_changed_path INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1)),
+                domain TEXT NOT NULL DEFAULT '',
+                review_mode TEXT NOT NULL DEFAULT 'normal',
+                diff_requested INTEGER NOT NULL DEFAULT 0 CHECK (diff_requested IN (0, 1)),
+                diff_returned INTEGER NOT NULL DEFAULT 0 CHECK (diff_returned IN (0, 1)),
+                diff_truncated INTEGER NOT NULL DEFAULT 0 CHECK (diff_truncated IN (0, 1)),
+                diff_state TEXT NOT NULL DEFAULT 'unseen' CHECK (
+                    diff_state IN ('unseen', 'complete', 'truncated', 'unavailable')
+                ),
             head_ranges_read_json TEXT NOT NULL DEFAULT '[]',
             base_ranges_read_json TEXT NOT NULL DEFAULT '[]',
             unavailable_reason TEXT NOT NULL DEFAULT '',
@@ -852,6 +994,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS finding_observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             review_subject_id INTEGER NOT NULL,
+            review_run_id INTEGER,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             head_sha TEXT NOT NULL,
@@ -874,10 +1017,18 @@ def init_schema(connection: sqlite3.Connection) -> None:
             smallest_fix TEXT NOT NULL,
             introduced_by_diff INTEGER NOT NULL CHECK (introduced_by_diff IN (0, 1)),
             observed_at TEXT NOT NULL,
-            UNIQUE(review_subject_id, fingerprint),
             FOREIGN KEY (review_subject_id) REFERENCES review_subjects(id),
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id),
             FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
         );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_observations_run_fingerprint
+            ON finding_observations(review_run_id, fingerprint)
+            WHERE review_run_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_observations_run
+            ON finding_observations(review_run_id, id DESC)
+            WHERE review_run_id IS NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_observations_repo_pr_path_seen
             ON finding_observations(repository, pr_number, path, observed_at DESC);
@@ -923,6 +1074,13 @@ def init_schema(connection: sqlite3.Connection) -> None:
             publish_failed_at TEXT,
             failure_code TEXT NOT NULL DEFAULT '',
             superseded_at TEXT,
+            review_number INTEGER,
+            supersedes_publication_id INTEGER,
+            superseded_by_publication_id INTEGER,
+            supersession_rendered_at TEXT,
+            supersession_failure_code TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (supersedes_publication_id) REFERENCES review_publications(id),
+            FOREIGN KEY (superseded_by_publication_id) REFERENCES review_publications(id),
             FOREIGN KEY (review_run_id) REFERENCES review_runs(id)
         );
 
@@ -1003,6 +1161,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    existing_version = _user_version(connection)
     # Non-destructive migration from the first starter bundle.
     _ensure_column(
         connection, "findings", "category", "TEXT NOT NULL DEFAULT 'correctness'"
@@ -1086,6 +1245,54 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(
         connection, "review_publications", "failure_code", "TEXT NOT NULL DEFAULT ''"
     )
+    _ensure_column(connection, "review_publications", "review_number", "INTEGER")
+    _ensure_column(
+        connection,
+        "review_publications",
+        "supersedes_publication_id",
+        "INTEGER REFERENCES review_publications(id)",
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
+        "superseded_by_publication_id",
+        "INTEGER REFERENCES review_publications(id)",
+    )
+    _ensure_column(connection, "review_publications", "supersession_rendered_at", "TEXT")
+    _ensure_column(
+        connection,
+        "review_publications",
+        "supersession_failure_code",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    if existing_version < 12:
+        counters: dict[tuple[str, int], int] = {}
+        rows = connection.execute(
+            """
+            SELECT id, repository, pr_number
+            FROM review_publications
+            WHERE review_number IS NULL
+              AND delivery_status = 'posted'
+              AND comment_id IS NOT NULL
+            ORDER BY repository, pr_number, posted_at, generated_at, id
+            """
+        ).fetchall()
+        for row in rows:
+            key = (str(row["repository"]), int(row["pr_number"]))
+            counters[key] = counters.get(key, 0) + 1
+            connection.execute(
+                "UPDATE review_publications SET review_number = ? WHERE id = ?",
+                (counters[key], int(row["id"])),
+            )
+    if existing_version < 13:
+        connection.execute(
+            """
+            UPDATE review_publications
+            SET review_number = NULL
+            WHERE delivery_status != 'posted'
+               OR comment_id IS NULL
+            """
+        )
     connection.execute(
         """
         UPDATE review_publications
@@ -1105,11 +1312,84 @@ def init_schema(connection: sqlite3.Connection) -> None:
         """
     )
     connection.commit()
-    existing_version = _user_version(connection)
     _migrate_findings_severity_check(connection)
     _migrate_decisions_check(connection)
     _migrate_review_runs_status(connection)
     _migrate_review_runs_lifecycle(connection)
+    _ensure_column(
+        connection,
+        "review_runs",
+        "changed_files_reported",
+        "INTEGER CHECK (changed_files_reported IS NULL OR changed_files_reported >= 0)",
+    )
+    _ensure_column(
+        connection,
+        "review_runs",
+        "changed_files_registered",
+        "INTEGER CHECK (changed_files_registered IS NULL OR changed_files_registered >= 0)",
+    )
+    _ensure_column(
+        connection,
+        "review_runs",
+        "changed_file_registration_complete",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (changed_file_registration_complete IN (0, 1))",
+    )
+    _ensure_column(
+        connection,
+        "review_run_files",
+        "is_changed_path",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1))",
+    )
+    _ensure_column(
+        connection,
+        "review_run_files",
+        "diff_state",
+        "TEXT NOT NULL DEFAULT 'unseen' CHECK (diff_state IN ('unseen', 'complete', 'truncated', 'unavailable'))",
+    )
+    connection.execute(
+        """
+        UPDATE review_run_files
+        SET is_changed_path = 1
+        WHERE change_status != ''
+        """
+    )
+    connection.execute(
+        """
+        UPDATE review_run_files
+        SET diff_state = CASE
+            WHEN unavailable_reason != '' THEN 'unavailable'
+            WHEN diff_truncated = 1 THEN 'truncated'
+            WHEN diff_returned = 1 THEN 'complete'
+            ELSE 'unseen'
+        END
+        WHERE diff_state = 'unseen'
+        """
+    )
+    connection.execute(
+        """
+        UPDATE review_runs
+        SET changed_files_registered = (
+                SELECT COUNT(*)
+                FROM review_run_files
+                WHERE review_run_files.run_id = review_runs.id
+                  AND review_run_files.is_changed_path = 1
+            )
+        WHERE changed_files_registered IS NULL
+        """
+    )
+    connection.execute(
+        """
+        UPDATE review_runs
+        SET changed_files_reported = changed_files_registered,
+            changed_file_registration_complete = CASE
+                WHEN changed_files_registered IS NOT NULL
+                     AND changed_files_registered > 0 THEN 1
+                ELSE changed_file_registration_complete
+            END
+        WHERE changed_files_reported IS NULL
+        """
+    )
+    _migrate_finding_observations_run_scope(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_decisions_observation
@@ -1137,8 +1417,36 @@ def init_schema(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_observations_run_fingerprint
+            ON finding_observations(review_run_id, fingerprint)
+            WHERE review_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_observations_run
+            ON finding_observations(review_run_id, id DESC)
+            WHERE review_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_review_publications_delivery
             ON review_publications(repository, pr_number, delivery_status, id DESC)
+        """
+    )
+    connection.execute(
+        """
+        DROP INDEX IF EXISTS uq_review_publication_number
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_review_publication_number
+            ON review_publications(repository, pr_number, review_number)
+            WHERE review_number IS NOT NULL
+              AND delivery_status = 'posted'
+              AND comment_id IS NOT NULL
         """
     )
     connection.execute(

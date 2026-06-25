@@ -76,6 +76,20 @@ class ToolValidationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def start_run(self, *, head_sha: str = "a" * 40, base_sha: str = "b" * 40) -> int:
+        connection = memory_db.connect_existing(self.db)
+        try:
+            run = memory_db.start_run(
+                connection,
+                "eneo/platform",
+                1,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
+            return int(run["id"])
+        finally:
+            connection.close()
+
     def test_empty_allowlist_denies_by_default(self):
         with patch.dict(os.environ, {"ENEO_ALLOWED_REPOSITORIES": ""}, clear=False):
             result = json.loads(tools.pr_overview({"repository": "eneo/platform", "pr_number": 1}))
@@ -158,12 +172,14 @@ class ToolValidationTests(unittest.TestCase):
             patch.dict(os.environ, self.env, clear=False),
             patch.object(tools, "_pr", return_value=pull),
         ):
+            run_id = self.start_run(head_sha="b" * 40)
             result = json.loads(
                 tools.review_memory_record(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "b" * 40,
+                        "run_id": run_id,
                         "findings": [],
                     }
                 )
@@ -194,12 +210,14 @@ class ToolValidationTests(unittest.TestCase):
                 ],
             ),
         ):
+            run_id = self.start_run()
             result = json.loads(
                 tools.review_memory_record(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
+                        "run_id": run_id,
                         "findings": [finding],
                     }
                 )
@@ -229,12 +247,14 @@ class ToolValidationTests(unittest.TestCase):
                 ],
             ),
         ):
+            run_id = self.start_run()
             result = json.loads(
                 tools.review_memory_record(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
+                        "run_id": run_id,
                         "findings": [self.finding],
                     }
                 )
@@ -265,12 +285,14 @@ class ToolValidationTests(unittest.TestCase):
                 ],
             ),
         ):
+            run_id = self.start_run()
             result = json.loads(
                 tools.review_memory_record(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
+                        "run_id": run_id,
                         "findings": [self.finding],
                     }
                 )
@@ -323,16 +345,6 @@ class ToolValidationTests(unittest.TestCase):
                 ],
             ),
         ):
-            record_result = json.loads(
-                tools.review_memory_record(
-                    {
-                        "repository": "eneo/platform",
-                        "pr_number": 1,
-                        "head_sha": "a" * 40,
-                        "findings": [self.finding],
-                    }
-                )
-            )
             start_result = json.loads(
                 tools.review_run_start(
                     {
@@ -340,6 +352,17 @@ class ToolValidationTests(unittest.TestCase):
                         "pr_number": 1,
                         "base_sha": "b" * 40,
                         "head_sha": "a" * 40,
+                    }
+                )
+            )
+            record_result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "run_id": start_result["run_id"],
+                        "findings": [self.finding],
                     }
                 )
             )

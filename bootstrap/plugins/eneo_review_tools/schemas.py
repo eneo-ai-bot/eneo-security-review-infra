@@ -139,6 +139,11 @@ ENEO_REVIEW_MEMORY_RECORD = {
                 "pattern": "^[0-9a-f]{40,64}$",
                 "description": "Exact pull-request head commit SHA returned by eneo_pr_overview.",
             },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_run_start for this review.",
+            },
             "findings": {
                 "type": "array",
                 "maxItems": memory_contract.MAX_FINDINGS_PER_REVIEW,
@@ -205,7 +210,7 @@ ENEO_REVIEW_MEMORY_RECORD = {
                 },
             },
         },
-        "required": ["repository", "pr_number", "head_sha", "findings"],
+        "required": ["repository", "pr_number", "head_sha", "run_id", "findings"],
         "additionalProperties": False,
     },
 }
@@ -235,16 +240,8 @@ ENEO_REVIEW_RUN_START = {
                     "Used for audit and deterministic publication validation."
                 ),
             },
-            "force": {
-                "type": "boolean",
-                "default": False,
-                "description": (
-                    "Normally false. When true, supersedes an active same-PR run "
-                    "before starting this run."
-                ),
-            },
         },
-        "required": ["repository", "pr_number", "head_sha"],
+        "required": ["repository", "pr_number", "base_sha", "head_sha"],
         "additionalProperties": False,
     },
 }

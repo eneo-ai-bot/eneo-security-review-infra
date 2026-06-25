@@ -118,20 +118,15 @@ class RunToolTests(unittest.TestCase):
             runs = memory_db.list_runs(connection)
         self.assertEqual(len(runs), 1)
 
-    def test_force_start_supersedes_same_pr_run(self):
+    def test_model_supplied_force_does_not_override_duplicate_guard(self):
         a = self.start(pr=7, sha="a" * 40)
         b = self.start(pr=7, sha="b" * 40, force=True)
 
-        self.assertEqual(b["status"], "running")
-        self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 7, "run_id": a["run_id"], "status": "generated", "findings_count": 1, "posted_comment_id": 123},
-        )
+        self.assertEqual(b["status"], "duplicate")
         with closing(memory_db.connect()) as connection:
             runs = {r["id"]: r for r in memory_db.list_runs(connection)}
-        self.assertEqual(runs[a["run_id"]]["status"], "failed")
-        self.assertEqual(runs[a["run_id"]]["failure_code"], "superseded_by_force")
-        self.assertEqual(runs[b["run_id"]]["status"], "running")
+        self.assertEqual(runs[a["run_id"]]["status"], "running")
+        self.assertEqual(len(runs), 1)
 
     def test_missing_run_id_rejected(self):
         result = self.call(
@@ -365,7 +360,10 @@ class RunToolTests(unittest.TestCase):
             b"diff --git a/backend/api.py b/backend/api.py\n"
             b"@@ -1,2 +1,3 @@\n-old\n+new\n"
         )
-        with patch.object(tools, "_request", return_value=(diff, False, {})):
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_request", return_value=(diff, False, {})),
+        ):
             result = self.call(
                 tools.pr_diff,
                 {

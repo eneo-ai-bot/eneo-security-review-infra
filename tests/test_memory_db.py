@@ -474,6 +474,184 @@ class ReviewMemoryTests(unittest.TestCase):
         state = memory_db.export_state(self.connection)
         self.assertEqual(len(state["review_run_files"]), 2)
 
+    def test_context_only_read_does_not_make_changed_coverage_incomplete(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            head_sha="a" * 40,
+        )
+        run_id = int(run["id"])
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            files=[{"path": "backend/api/documents.py", "status": "modified"}],
+        )
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            paths=["backend/api/documents.py"],
+            truncated=False,
+        )
+        memory_db.record_file_range(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            path="backend/auth.py",
+            side="head",
+            start_line=1,
+            end_line=20,
+        )
+
+        summary = memory_db.coverage_summary(self.connection, run_id=run_id)
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "complete")
+        self.assertEqual(summary["changed_paths"], 1)
+        self.assertEqual(summary["supporting_context_paths_read"], 1)
+
+    def test_complete_diff_read_clears_prior_truncated_state(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            head_sha="a" * 40,
+        )
+        run_id = int(run["id"])
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            files=[{"path": "backend/api/documents.py", "status": "modified"}],
+        )
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            paths=["backend/api/documents.py"],
+            truncated=True,
+        )
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            paths=["backend/api/documents.py"],
+            truncated=False,
+        )
+
+        summary = memory_db.coverage_summary(self.connection, run_id=run_id)
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "complete")
+        self.assertEqual(summary["diff_truncated"], 0)
+
+    def test_partial_changed_file_registration_keeps_coverage_incomplete(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            head_sha="a" * 40,
+        )
+        run_id = int(run["id"])
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            files=[{"path": "backend/api/documents.py", "status": "modified"}],
+            changed_files_reported=2,
+            registration_complete=False,
+        )
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            paths=["backend/api/documents.py"],
+            truncated=False,
+        )
+
+        summary = memory_db.coverage_summary(self.connection, run_id=run_id)
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "incomplete")
+        self.assertEqual(summary["changed_files_reported"], 2)
+        self.assertFalse(summary["changed_file_registration_complete"])
+
+    def test_run_scoped_finalize_excludes_observations_from_failed_run(self):
+        first_run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [self.finding],
+            review_run_id=int(first_run["id"]),
+            base_sha="b" * 40,
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+        memory_db.complete_run(
+            self.connection,
+            int(first_run["id"]),
+            repository="eneo/platform",
+            pr_number=17,
+            status="failed",
+            failure_code="test_failure",
+        )
+        second_run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+        other = dict(
+            self.finding,
+            rule_id="contracts.response-shape",
+            category="contracts",
+            path="backend/api/response.py",
+            line=9,
+            anchor="ResponseModel",
+            title="Response contract drops required field",
+            severity="High",
+            publication_score=8,
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [other],
+            review_run_id=int(second_run["id"]),
+            base_sha="b" * 40,
+            context_hashes={other["path"]: "e" * 40},
+        )
+
+        result = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            review_run_id=int(second_run["id"]),
+        )
+
+        self.assertIn("Response contract drops required field", result["markdown"])
+        self.assertNotIn("Document creation omits tenant scope", result["markdown"])
+
     def test_finalize_review_omits_feedback_help_when_disabled(self):
         self.record()
 
@@ -520,7 +698,7 @@ class ReviewMemoryTests(unittest.TestCase):
 
         self.assertEqual(result["findings_count"], 2)
         self.assertEqual(result["resolved_count"], 0)
-        self.assertIn("**Since the previous review:**", result["markdown"])
+        self.assertIn("**Compared with Review #1 at", result["markdown"])
         self.assertIn("F1 needs recheck", result["markdown"])
         self.assertIn("F2 still present", result["markdown"])
         self.assertIn(

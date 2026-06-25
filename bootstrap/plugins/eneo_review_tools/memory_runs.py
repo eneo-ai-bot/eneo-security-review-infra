@@ -10,6 +10,7 @@ try:
     from .memory_validation import (
         ReviewMemoryError,
         clean_text,
+        current_policy_revision,
         isoformat,
         normalize_repository,
         parse_time,
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_validation import (
         ReviewMemoryError,
         clean_text,
+        current_policy_revision,
         isoformat,
         normalize_repository,
         parse_time,
@@ -91,6 +93,56 @@ def _duplicate_response(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _already_reviewed_response(row: dict[str, Any]) -> dict[str, Any]:
+    review_number = row.get("review_number")
+    review_label = f"Review #{review_number}" if review_number else "the current review"
+    return {
+        "id": None,
+        "repository": row["repository"],
+        "pr_number": int(row["pr_number"]),
+        "status": "already_reviewed",
+        "phase": "posted",
+        "publication_id": int(row["id"]),
+        "comment_id": int(row["comment_id"]),
+        "review_number": int(review_number) if review_number is not None else None,
+        "head_sha": row["head_sha"],
+        "base_sha": row["base_sha"],
+        "message": (
+            f"This exact base/head snapshot was already reviewed in {review_label}."
+        ),
+    }
+
+
+def _current_publication_for_snapshot(
+    connection: sqlite3.Connection,
+    repository: str,
+    pr_number: int,
+    *,
+    base_sha: str,
+    head_sha: str,
+    policy_revision: str,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT id, repository, pr_number, base_sha, head_sha, policy_revision,
+               comment_id, review_number, posted_at
+        FROM review_publications
+        WHERE repository = ?
+          AND pr_number = ?
+          AND base_sha = ?
+          AND head_sha = ?
+          AND policy_revision = ?
+          AND delivery_status = 'posted'
+          AND superseded_at IS NULL
+          AND comment_id IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (repository, int(pr_number), base_sha, head_sha, policy_revision),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def start_run(
     connection: sqlite3.Connection,
     repository: str,
@@ -108,6 +160,8 @@ def start_run(
     repository = normalize_repository(repository)
     if pr_number < 1:
         raise ReviewMemoryError("pr_number must be positive")
+    base_sha = clean_text(base_sha, field="base_sha", maximum=64, required=False).lower()
+    head_sha = clean_text(head_sha, field="head_sha", maximum=64, required=False).lower()
     moment = now or utc_now()
     mark_stale_runs_failed(
         connection,
@@ -138,6 +192,17 @@ def start_run(
             if existing is not None:
                 connection.commit()
                 return _duplicate_response(existing)
+            reviewed = _current_publication_for_snapshot(
+                connection,
+                repository,
+                pr_number,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                policy_revision=current_policy_revision(),
+            )
+            if reviewed is not None:
+                connection.commit()
+                return _already_reviewed_response(reviewed)
         cursor = connection.execute(
             """
             INSERT INTO review_runs (
@@ -152,8 +217,8 @@ def start_run(
                 clean_text(
                     trigger_user, field="trigger_user", maximum=200, required=False
                 ),
-                clean_text(base_sha, field="base_sha", maximum=64, required=False),
-                clean_text(head_sha, field="head_sha", maximum=64, required=False),
+                base_sha,
+                head_sha,
                 started,
                 started,
             ),
@@ -303,6 +368,49 @@ def update_run_phase(
     if cursor.rowcount == 0:
         return None
     return {"id": int(run_id), "phase": phase, "last_heartbeat_at": heartbeat}
+
+
+def validate_run_snapshot(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    repository: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> dict[str, Any]:
+    """Validate that a tool call still belongs to the active review snapshot."""
+    if isinstance(run_id, bool) or int(run_id) < 1:
+        raise ReviewMemoryError("run_id must be a positive integer")
+    if isinstance(pr_number, bool) or int(pr_number) < 1:
+        raise ReviewMemoryError("pr_number must be positive")
+    repository = normalize_repository(repository)
+    base_sha = clean_text(base_sha, field="base_sha", maximum=64, required=False).lower()
+    head_sha = clean_text(head_sha, field="head_sha", maximum=64).lower()
+    row = connection.execute(
+        """
+        SELECT id, repository, pr_number, base_sha, head_sha, status, phase
+        FROM review_runs
+        WHERE id = ?
+        """,
+        (int(run_id),),
+    ).fetchone()
+    if row is None:
+        raise ReviewMemoryError("run_id does not match a recorded review run")
+    if (
+        str(row["repository"]) != repository
+        or int(row["pr_number"]) != int(pr_number)
+    ):
+        raise ReviewMemoryError("run_id does not match this pull request")
+    if str(row["status"]) != "running":
+        raise ReviewMemoryError("run_id is not an active review run")
+    recorded_base = str(row["base_sha"] or "").lower()
+    recorded_head = str(row["head_sha"] or "").lower()
+    if recorded_base and base_sha and recorded_base != base_sha:
+        raise ReviewMemoryError("pull request base SHA changed during review")
+    if recorded_head and recorded_head != head_sha:
+        raise ReviewMemoryError("pull request head SHA changed during review")
+    return dict(row)
 
 
 def complete_run(

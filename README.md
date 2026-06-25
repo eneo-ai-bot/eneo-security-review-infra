@@ -62,14 +62,16 @@ deterministic comment finalizer
 deterministic delivery verifies base/head + stored body
         |
         v
-one structured GitHub PR comment
+one current review round on the GitHub PR timeline
 ```
 
 The model does not receive a general shell, repository write tool, or arbitrary
 GitHub mutation tool. The final Hermes response is logged only; the
 `eneo_review_deliver` tool renders the stored review body, loads the PR target
-from SQLite, verifies the exact base/head SHA, creates or updates the canonical
-comment, and records the run outcome.
+from SQLite, verifies the exact base/head SHA, creates a new review-round
+comment for a changed snapshot, and records the run outcome. Retrying the same
+publication key may update its own comments; a new review round never falls back
+to overwriting a previous round.
 If the rendered review is too large for one GitHub comment, the publisher splits
 it into deterministic continuation comments instead of truncating or hiding
 verified findings.
@@ -339,14 +341,18 @@ Codex or Claude Code.
 
 After fixing findings, push the fix commit and comment `/review` again. The
 rerun re-checks previous unresolved findings, reviews the new fix delta, and
-performs a compact safety sweep of the current PR. Prior current findings stay
-active when the latest run does not explicitly classify them; the review marks
-those references as needing recheck instead of treating absence as resolution.
-When the reviewer can verify a prior finding, it classifies the stable `F`
-reference as resolved, invalidated, suppressed by human decision, still present,
-partially resolved, or not checked. The deterministic publisher updates the
-current canonical bot review comment per PR after GitHub accepts the replacement;
-if publication fails, the previous posted review remains authoritative.
+performs a compact safety sweep of the current PR. A changed base/head snapshot
+creates a new chronological review round such as `Review #2`; the previous round
+is edited only after the new one posts successfully, marked superseded, and
+collapsed as historical context. If the base/head snapshot and reviewer policy
+are already current, the run is not started again.
+
+Prior current findings stay active when the latest run does not explicitly
+classify them; the review marks those references as needing recheck instead of
+treating absence as resolution. When the reviewer can verify a prior finding, it
+classifies the stable `F` reference as resolved, invalidated, suppressed by human
+decision, still present, partially resolved, or not checked. If publication
+fails, the previous posted review remains authoritative.
 
 The reviewer covers:
 
