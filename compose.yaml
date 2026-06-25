@@ -9,7 +9,7 @@ services:
     command:
       - >
         mkdir -p /review-memory
-        && eneo-review-memory init --db /review-memory/review_memory.sqlite3
+        && eneo-review-memory --db /review-memory/review_memory.sqlite3 init
         && chown -R 10000:10000 /review-memory
         && chmod 0750 /review-memory
         && chmod 0640 /review-memory/review_memory.sqlite3*

@@ -288,7 +288,7 @@ class DocsContractTests(unittest.TestCase):
         self.assertNotIn("nousresearch/hermes-agent:latest", compose)
         self.assertNotIn("nousresearch/hermes-agent:latest", env_example)
         self.assertNotIn("ENEO_REVIEW_DB=", env_example)
-        self.assertIn("eneo-review-memory init --db /review-memory/review_memory.sqlite3", compose)
+        self.assertIn("eneo-review-memory --db /review-memory/review_memory.sqlite3 init", compose)
         self.assertIn("eneo-review-memory migrate-volume", readme)
         self.assertIn("SQLite's backup API", readme)
         self.assertIn("`ENEO_REVIEW_DB` is not a public `.env` setting", guide)
