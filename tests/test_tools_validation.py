@@ -111,6 +111,7 @@ class ToolValidationTests(unittest.TestCase):
                 "eneo_review_memory_record",
                 "eneo_review_run_start",
                 "eneo_review_finalize",
+                "eneo_review_publish",
                 "eneo_review_run_complete",
             },
         )
@@ -142,6 +143,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         with (
@@ -165,6 +167,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         finding = dict(self.finding, path="backend/unchanged.py")
@@ -200,6 +203,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         with (
@@ -235,6 +239,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         with (
@@ -269,6 +274,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         with (
@@ -291,6 +297,7 @@ class ToolValidationTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
             "changed_files": 1,
         }
         with (
@@ -318,12 +325,23 @@ class ToolValidationTests(unittest.TestCase):
                     }
                 )
             )
+            start_result = json.loads(
+                tools.review_run_start(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "base_sha": "b" * 40,
+                        "head_sha": "a" * 40,
+                    }
+                )
+            )
             finalize_result = json.loads(
                 tools.review_finalize(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
+                        "run_id": start_result["run_id"],
                     }
                 )
             )

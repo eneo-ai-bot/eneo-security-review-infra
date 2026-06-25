@@ -93,7 +93,8 @@ class FeedbackRequestHandler(BaseHTTPRequestHandler):
             try:
                 self._write(200, _json_body(bridge.ready_check(config)))
             except Exception as exc:
-                self._write(503, bridge.response_body("not_ready", str(exc)))
+                print(f"feedback bridge readiness failed: {exc}", file=sys.stderr)
+                self._write(503, b'{"status":"not_ready"}')
             return
         self._write(404, bridge.response_body("not_found"))
 

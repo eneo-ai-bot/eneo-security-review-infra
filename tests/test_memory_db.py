@@ -65,6 +65,15 @@ class ReviewMemoryTests(unittest.TestCase):
             context_hashes={finding["path"]: context_hash},
         )[0]
 
+    def publish(self, result, *, comment_id: int | None = None):
+        publication_id = int(result["publication_id"])
+        memory_db.mark_publication_posted(
+            self.connection,
+            publication_id=publication_id,
+            comment_id=comment_id or (500 + publication_id),
+        )
+        return result
+
     def test_fingerprint_is_stable_across_line_moves(self):
         first = self.record(42)
         second = self.record(97)
@@ -440,7 +449,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [first, second],
             context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
 
         memory_db.record_findings(
             self.connection,
@@ -485,7 +494,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [first, second],
             context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
 
         memory_db.record_findings(
             self.connection,
@@ -524,6 +533,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("F2 - Medium (P2) - tests", visible_brief)
         self.assertNotIn("/review false-positive F1", result["markdown"])
         self.assertIn("/review false-positive F2", result["markdown"])
+        self.publish(result)
         context = memory_db.memory_context(
             self.connection,
             "eneo/platform",
@@ -544,7 +554,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [self.finding],
             context_hashes={self.finding["path"]: "d" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.record_findings(
             self.connection,
             "eneo/platform",
@@ -581,7 +591,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [self.finding],
             context_hashes={self.finding["path"]: "d" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.record_findings(
             self.connection,
             "eneo/platform",
@@ -624,7 +634,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [self.finding],
             context_hashes={self.finding["path"]: "d" * 40},
         )[0]
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.add_decision(
             self.connection,
             recorded["fingerprint"],
@@ -659,7 +669,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [self.finding],
             context_hashes={self.finding["path"]: "d" * 40},
         )[0]
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.add_decision(
             self.connection,
             recorded["fingerprint"],
@@ -701,7 +711,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [self.finding],
             context_hashes={self.finding["path"]: "d" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.record_findings(
             self.connection,
             "eneo/platform",
@@ -743,7 +753,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [first, second],
             context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         context = memory_db.memory_context(
             self.connection,
             "eneo/platform",
@@ -807,7 +817,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [first, second],
             context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40))
         memory_db.record_findings(
             self.connection,
             "eneo/platform",
@@ -816,7 +826,7 @@ class ReviewMemoryTests(unittest.TestCase):
             [second],
             context_hashes={second["path"]: "e" * 40},
         )
-        memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40)
+        self.publish(memory_db.finalize_review(self.connection, "eneo/platform", 17, "b" * 40))
         memory_db.record_findings(
             self.connection,
             "eneo/platform",

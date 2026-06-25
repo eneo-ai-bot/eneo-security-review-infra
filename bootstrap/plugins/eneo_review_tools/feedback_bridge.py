@@ -189,12 +189,8 @@ def load_config() -> BridgeConfig:
 
 
 def ready_check(config: BridgeConfig) -> dict[str, object]:
-    result = verify_database_ready(config.database_path)
-    return {
-        "status": "ready",
-        "database": result,
-        "allowed_actor_count": len(config.allowed_actor_ids),
-    }
+    verify_database_ready(config.database_path)
+    return {"status": "ready"}
 
 
 def event_lookup(payload: object) -> tuple[str, int, int]:

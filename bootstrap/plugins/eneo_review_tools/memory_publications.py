@@ -50,6 +50,15 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
 
 
 ClosedFindingVerdict = Literal["resolved", "invalidated", "suppressed"]
+PublicationStatus = Literal[
+    "legacy_unverified",
+    "generated",
+    "posting",
+    "posted",
+    "publish_failed",
+    "stale",
+]
+READY_TO_POST: frozenset[str] = frozenset({"generated", "publish_failed"})
 
 
 class PriorFindingVerdict(TypedDict):
@@ -63,6 +72,22 @@ class PriorReconciliation(TypedDict):
     carry_forward: list[str]
     still_present: list[str]
     partially_resolved: list[str]
+
+
+class PublicationForPosting(TypedDict):
+    publication_id: int
+    review_run_id: int
+    repository: str
+    pr_number: int
+    base_sha: str
+    head_sha: str
+    policy_revision: str
+    publication_key: str
+    rendered_markdown: str
+    rendered_hash: str
+    comment_id: int | None
+    previous_comment_id: int | None
+    delivery_status: PublicationStatus
 
 
 def _subject_row(
@@ -102,13 +127,64 @@ def _latest_publication(
     row = connection.execute(
         """
         SELECT * FROM review_publications
-        WHERE repository = ? AND pr_number = ? AND superseded_at IS NULL
+        WHERE repository = ? AND pr_number = ?
+          AND delivery_status = 'posted'
+          AND superseded_at IS NULL
+          AND comment_id IS NOT NULL
         ORDER BY id DESC
         LIMIT 1
         """,
         (repository, pr_number),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _publication_for_run(
+    connection: sqlite3.Connection, review_run_id: int | None
+) -> dict[str, Any] | None:
+    if review_run_id is None:
+        return None
+    row = connection.execute(
+        """
+        SELECT * FROM review_publications
+        WHERE review_run_id = ?
+        """,
+        (review_run_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _publication_key(
+    *,
+    repository: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+    policy_revision: str,
+    review_run_id: int | None,
+    markdown_hash: str,
+) -> str:
+    material = "\n".join(
+        [
+            repository,
+            str(pr_number),
+            base_sha,
+            head_sha,
+            policy_revision,
+            str(review_run_id or ""),
+            markdown_hash,
+        ]
+    )
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _with_publication_marker(markdown: str, publication_key: str) -> str:
+    marker = f"<!-- eneo-review:canonical publication={publication_key} -->"
+    return markdown if marker in markdown else f"{markdown.rstrip()}\n\n{marker}\n"
+
+
+def publication_marker(publication_key: str) -> str:
+    return f"eneo-review:canonical publication={publication_key}"
 
 
 def _publication_findings(
@@ -123,6 +199,53 @@ def _publication_findings(
         (publication_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _publication_result(
+    connection: sqlite3.Connection, publication: Mapping[str, Any]
+) -> dict[str, Any]:
+    current = connection.execute(
+        """
+        SELECT COUNT(*) FROM publication_findings
+        WHERE publication_id = ? AND status = 'current'
+        """,
+        (int(publication["id"]),),
+    ).fetchone()
+    closed = connection.execute(
+        """
+        SELECT COUNT(*) FROM publication_findings
+        WHERE publication_id = ? AND status = 'resolved'
+        """,
+        (int(publication["id"]),),
+    ).fetchone()
+    markdown = str(publication.get("rendered_markdown") or "")
+    if not markdown:
+        raise ReviewMemoryError("stored publication is missing rendered_markdown")
+    return {
+        "publication_id": int(publication["id"]),
+        "repository": str(publication["repository"]),
+        "pr_number": int(publication["pr_number"]),
+        "base_sha": str(publication.get("base_sha") or ""),
+        "head_sha": str(publication["head_sha"]),
+        "policy_revision": str(publication["policy_revision"]),
+        "review_run_id": (
+            int(publication["review_run_id"])
+            if publication.get("review_run_id") is not None
+            else None
+        ),
+        "publication_key": str(publication.get("publication_key") or ""),
+        "delivery_status": str(publication.get("delivery_status") or ""),
+        "comment_id": (
+            int(publication["comment_id"])
+            if publication.get("comment_id") is not None
+            else None
+        ),
+        "findings_count": int(current[0] if current else 0),
+        "resolved_count": int(closed[0] if closed else 0),
+        "closed_count": int(closed[0] if closed else 0),
+        "rendered_hash": str(publication["rendered_hash"]),
+        "markdown": markdown,
+    }
 
 
 def _finding_payload(
@@ -378,6 +501,7 @@ def finalize_review(
     pr_number: int,
     head_sha: str,
     *,
+    review_run_id: int | None = None,
     previous_verdicts: object = None,
     policy_revision: str | None = None,
     comment_id: int | None = None,
@@ -392,15 +516,42 @@ def finalize_review(
         raise ReviewMemoryError(
             "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
         )
+    if isinstance(review_run_id, bool):
+        raise ReviewMemoryError("review_run_id must be a positive integer")
+    review_run_id = int(review_run_id) if review_run_id is not None else None
+    if review_run_id is not None and review_run_id < 1:
+        raise ReviewMemoryError("review_run_id must be a positive integer")
     policy = current_policy_revision(policy_revision)
     moment = now or utc_now()
     connection.execute("BEGIN IMMEDIATE")
     try:
+        existing_publication = _publication_for_run(connection, review_run_id)
+        if existing_publication:
+            connection.commit()
+            return _publication_result(connection, existing_publication)
+        if review_run_id is not None:
+            run = connection.execute(
+                """
+                SELECT repository, pr_number, head_sha
+                FROM review_runs
+                WHERE id = ?
+                """,
+                (review_run_id,),
+            ).fetchone()
+            if not run:
+                raise ReviewMemoryError("review_run_id does not match a recorded review run")
+            if (
+                str(run["repository"]) != repository
+                or int(run["pr_number"]) != pr_number
+                or str(run["head_sha"]).lower() != head_sha
+            ):
+                raise ReviewMemoryError("review_run_id does not match this review subject")
         subject = _subject_row(connection, repository, pr_number, head_sha, policy)
         if not subject:
             raise ReviewMemoryError(
                 "no review subject was recorded for this head and policy"
             )
+        base_sha = str(subject.get("base_sha") or "")
 
         observed = _observations_for_subject(connection, int(subject["id"]))
         current: list[PublishedFinding] = []
@@ -504,27 +655,39 @@ def finalize_review(
             needs_recheck=needs_recheck,
             feedback_enabled=_feedback_enabled(),
         )
+        markdown_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        key = _publication_key(
+            repository=repository,
+            pr_number=pr_number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            policy_revision=policy,
+            review_run_id=review_run_id,
+            markdown_hash=markdown_hash,
+        )
+        markdown = _with_publication_marker(markdown, key)
         rendered_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
-        if previous:
-            connection.execute(
-                "UPDATE review_publications SET superseded_at = ? WHERE id = ?",
-                (isoformat(moment), previous["id"]),
-            )
         cursor = connection.execute(
             """
             INSERT INTO review_publications (
-                repository, pr_number, head_sha, policy_revision, comment_id,
-                rendered_hash, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                review_run_id, repository, pr_number, base_sha, head_sha,
+                policy_revision, publication_key, comment_id, rendered_markdown,
+                rendered_hash, delivery_status, published_at, generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)
             """,
             (
+                review_run_id,
                 repository,
                 pr_number,
+                base_sha,
                 head_sha,
                 policy,
+                key,
                 int(comment_id) if comment_id is not None else None,
+                markdown,
                 rendered_hash,
+                isoformat(moment),
                 isoformat(moment),
             ),
         )
@@ -572,11 +735,248 @@ def finalize_review(
         "publication_id": publication_id,
         "repository": repository,
         "pr_number": pr_number,
+        "base_sha": base_sha,
         "head_sha": head_sha,
         "policy_revision": policy,
+        "review_run_id": review_run_id,
+        "publication_key": key,
+        "delivery_status": "generated",
         "findings_count": len(current),
         "resolved_count": sum(1 for item in closed if item["verdict"] == "resolved"),
         "closed_count": len(closed),
         "rendered_hash": rendered_hash,
         "markdown": markdown,
     }
+
+
+def _publication_for_posting(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    review_run_id: int | None,
+) -> PublicationForPosting:
+    if review_run_id is None:
+        row = connection.execute(
+            """
+            SELECT * FROM review_publications
+            WHERE id = ? AND review_run_id IS NULL
+            """,
+            (publication_id,),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT * FROM review_publications
+            WHERE id = ? AND review_run_id = ?
+            """,
+            (publication_id, review_run_id),
+        ).fetchone()
+    if not row:
+        raise ReviewMemoryError("publication_id and review_run_id do not match")
+    status = str(row["delivery_status"])
+    if status not in {
+        "legacy_unverified",
+        "generated",
+        "posting",
+        "posted",
+        "publish_failed",
+        "stale",
+    }:
+        raise ReviewMemoryError("publication has an unknown delivery_status")
+    body = str(row["rendered_markdown"] or "")
+    rendered_hash = str(row["rendered_hash"] or "")
+    if not body:
+        raise ReviewMemoryError("publication is missing rendered_markdown")
+    if hashlib.sha256(body.encode("utf-8")).hexdigest() != rendered_hash:
+        raise ReviewMemoryError("publication rendered_markdown hash mismatch")
+    previous = connection.execute(
+        """
+        SELECT comment_id
+        FROM review_publications
+        WHERE repository = ? AND pr_number = ?
+          AND delivery_status = 'posted'
+          AND superseded_at IS NULL
+          AND comment_id IS NOT NULL
+          AND id != ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(row["repository"]), int(row["pr_number"]), publication_id),
+    ).fetchone()
+    return {
+        "publication_id": publication_id,
+        "review_run_id": int(row["review_run_id"] or 0),
+        "repository": str(row["repository"]),
+        "pr_number": int(row["pr_number"]),
+        "base_sha": str(row["base_sha"] or ""),
+        "head_sha": str(row["head_sha"]),
+        "policy_revision": str(row["policy_revision"]),
+        "publication_key": str(row["publication_key"]),
+        "rendered_markdown": body,
+        "rendered_hash": rendered_hash,
+        "comment_id": int(row["comment_id"]) if row["comment_id"] is not None else None,
+        "previous_comment_id": (
+            int(previous["comment_id"])
+            if previous and previous["comment_id"] is not None
+            else None
+        ),
+        "delivery_status": cast(PublicationStatus, status),
+    }
+
+
+def claim_publication_for_posting(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    review_run_id: int,
+    now: datetime | None = None,
+) -> PublicationForPosting:
+    publication_id = int(publication_id)
+    review_run_id = int(review_run_id)
+    if publication_id < 1 or review_run_id < 1:
+        raise ReviewMemoryError("publication_id and review_run_id must be positive")
+    moment = isoformat(now)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        publication = _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        status = publication["delivery_status"]
+        if status == "posted":
+            connection.commit()
+            return publication
+        if status not in READY_TO_POST:
+            raise ReviewMemoryError(f"publication is not ready to publish: {status}")
+        cursor = connection.execute(
+            """
+            UPDATE review_publications
+            SET delivery_status = 'posting',
+                posting_started_at = ?,
+                publish_failed_at = NULL,
+                failure_code = ''
+            WHERE id = ? AND review_run_id = ?
+              AND delivery_status IN ('generated', 'publish_failed')
+            """,
+            (moment, publication_id, review_run_id),
+        )
+        if cursor.rowcount != 1:
+            raise ReviewMemoryError("publication was claimed by another publisher")
+        claimed = _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        connection.commit()
+        return claimed
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def mark_publication_posted(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    review_run_id: int | None = None,
+    comment_id: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if publication_id < 1 or comment_id < 1:
+        raise ReviewMemoryError("publication_id and comment_id must be positive")
+    if review_run_id is not None and review_run_id < 1:
+        raise ReviewMemoryError("review_run_id must be positive")
+    moment = isoformat(now)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        publication = _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        if publication["delivery_status"] not in {"generated", "posting", "posted"}:
+            raise ReviewMemoryError(
+                "publication must be generated or posting before it can be marked posted"
+            )
+        connection.execute(
+            """
+            UPDATE review_publications
+            SET superseded_at = ?
+            WHERE repository = ? AND pr_number = ?
+              AND delivery_status = 'posted'
+              AND superseded_at IS NULL
+              AND id != ?
+            """,
+            (
+                moment,
+                publication["repository"],
+                publication["pr_number"],
+                publication_id,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE review_publications
+            SET delivery_status = 'posted',
+                comment_id = ?,
+                posted_at = ?,
+                failure_code = '',
+                superseded_at = NULL
+            WHERE id = ?
+              AND (review_run_id = ? OR (? IS NULL AND review_run_id IS NULL))
+            """,
+            (comment_id, moment, publication_id, review_run_id, review_run_id),
+        )
+        if review_run_id is not None:
+            connection.execute(
+                """
+                UPDATE review_runs
+                SET posted_comment_id = ?
+                WHERE id = ?
+                """,
+                (comment_id, review_run_id),
+            )
+        updated = _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        connection.commit()
+        return dict(updated)
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def mark_publication_failed(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    review_run_id: int | None,
+    failure_code: str,
+    status: PublicationStatus = "publish_failed",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if status not in {"publish_failed", "stale"}:
+        raise ReviewMemoryError("failed publication status must be publish_failed or stale")
+    failure_code = clean_text(
+        failure_code, field="failure_code", maximum=80, required=False
+    ) or status
+    moment = isoformat(now)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        connection.execute(
+            """
+            UPDATE review_publications
+            SET delivery_status = ?,
+                publish_failed_at = ?,
+                failure_code = ?
+            WHERE id = ?
+              AND (review_run_id = ? OR (? IS NULL AND review_run_id IS NULL))
+            """,
+            (status, moment, failure_code, publication_id, review_run_id, review_run_id),
+        )
+        updated = _publication_for_posting(
+            connection, publication_id=publication_id, review_run_id=review_run_id
+        )
+        connection.commit()
+        return dict(updated)
+    except Exception:
+        connection.rollback()
+        raise

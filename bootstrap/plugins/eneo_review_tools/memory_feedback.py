@@ -193,7 +193,10 @@ def resolve_current_review_state(
         """
         SELECT id, repository, pr_number, head_sha
         FROM review_publications
-        WHERE repository = ? AND pr_number = ? AND superseded_at IS NULL
+        WHERE repository = ? AND pr_number = ?
+          AND delivery_status = 'posted'
+          AND superseded_at IS NULL
+          AND comment_id IS NOT NULL
         ORDER BY id DESC
         LIMIT 2
         """,

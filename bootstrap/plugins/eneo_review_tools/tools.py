@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, cast
 
-from . import memory_db
+from . import memory_db, review_publisher
 
 _API_ROOT = "https://api.github.com"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -69,6 +69,18 @@ def _pr_number(raw: Any) -> int:
     return value
 
 
+def _positive_id(raw: Any, *, field: str) -> int:
+    if isinstance(raw, bool):
+        raise ToolInputError(f"{field} must be a positive integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ToolInputError(f"{field} must be a positive integer") from exc
+    if value < 1:
+        raise ToolInputError(f"{field} must be a positive integer")
+    return value
+
+
 def _path(raw: Any, *, required: bool = True) -> str:
     value = str(raw or "").strip().replace("\\", "/")
     if not value and not required:
@@ -98,10 +110,7 @@ def _request(
         "User-Agent": "Eneo-Hermes-Review/2.0",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = (
-        os.environ.get("GITHUB_READ_TOKEN", "").strip()
-        or os.environ.get("GH_TOKEN", "").strip()
-    )
+    token = os.environ.get("GITHUB_READ_TOKEN", "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
@@ -198,6 +207,15 @@ def _validate_open_pr_head(
     if actual_head != head_sha:
         raise ToolInputError("head_sha does not match the pull request's current head")
     return pull
+
+
+def _pull_base_sha(pull: dict[str, Any]) -> str:
+    base_sha = (
+        str(_json_object_or_empty(pull.get("base")).get("sha", "")).strip().lower()
+    )
+    if not _SHA_RE.fullmatch(base_sha):
+        raise ToolInputError("GitHub did not provide a valid base SHA")
+    return base_sha
 
 
 def _changed_files(
@@ -570,6 +588,7 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
         # Re-fetch authoritative PR state immediately before persistence. This stops
         # stale or fabricated model output from entering the durable memory database.
         pull = _validate_open_pr_head(repository, number, head_sha)
+        base_sha = _pull_base_sha(pull)
 
         files = _changed_files(repository, number)
         reported = _int_value(pull.get("changed_files"))
@@ -608,6 +627,7 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
                 number,
                 head_sha,
                 finding_objects,
+                base_sha=base_sha,
                 context_hashes=context_hashes,
             )
         return _output(
@@ -637,12 +657,14 @@ def review_finalize(args: dict[str, Any], **_: Any) -> str:
             )
 
         _validate_open_pr_head(repository, number, head_sha)
+        run_id = _positive_id(args.get("run_id"), field="run_id")
         with closing(memory_db.connect_existing()) as connection:
             result = memory_db.finalize_review(
                 connection,
                 repository,
                 number,
                 head_sha,
+                review_run_id=run_id,
                 previous_verdicts=args.get("previous_verdicts"),
             )
         return _output(result)
@@ -661,8 +683,19 @@ def review_run_start(args: dict[str, Any], **_: Any) -> str:
             raise ToolInputError(
                 "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
             )
+        base_sha = str(args.get("base_sha", "")).strip().lower()
+        if base_sha and not _SHA_RE.fullmatch(base_sha):
+            raise ToolInputError(
+                "base_sha must be an exact 40 to 64 character hexadecimal commit SHA"
+            )
         with closing(memory_db.connect_existing()) as connection:
-            run = memory_db.start_run(connection, repository, number, head_sha=head_sha)
+            run = memory_db.start_run(
+                connection,
+                repository,
+                number,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
         return _output(
             {
                 "run_id": run["id"],
@@ -697,6 +730,11 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
                 raise ToolInputError("findings_count must be an integer")
             if findings_count < 0:
                 raise ToolInputError("findings_count must be zero or greater")
+        posted_comment_id = args.get("posted_comment_id")
+        if posted_comment_id is not None:
+            posted_comment_id = _positive_id(
+                posted_comment_id, field="posted_comment_id"
+            )
         with closing(memory_db.connect_existing()) as connection:
             result = memory_db.complete_run(
                 connection,
@@ -705,6 +743,7 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
                 pr_number=number,
                 status=status,
                 findings_count=findings_count,
+                posted_comment_id=posted_comment_id,
             )
         if result is None:
             return _output(
@@ -724,3 +763,20 @@ def review_run_complete(args: dict[str, Any], **_: Any) -> str:
         return _error(str(exc))
     except Exception:
         return _error("unexpected run-complete failure")
+
+
+def review_publish(args: dict[str, Any], **_: Any) -> str:
+    try:
+        publication_id = _positive_id(args.get("publication_id"), field="publication_id")
+        run_id = _positive_id(args.get("run_id"), field="run_id")
+        with closing(memory_db.connect_existing()) as connection:
+            result = review_publisher.publish_review(
+                connection,
+                publication_id=publication_id,
+                review_run_id=run_id,
+            )
+        return _output(result)
+    except (ToolInputError, memory_db.ReviewMemoryError) as exc:
+        return _error(str(exc))
+    except Exception:
+        return _error("unexpected review-publish failure")

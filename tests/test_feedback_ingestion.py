@@ -63,13 +63,20 @@ class FeedbackIngestionTests(unittest.TestCase):
         head_sha: str = "a" * 40,
         previous_verdicts: object = None,
     ) -> dict[str, object]:
-        return memory_db.finalize_review(
+        result = memory_db.finalize_review(
             self.connection,
             "eneo/platform",
             pr_number,
             head_sha,
             previous_verdicts=previous_verdicts,
         )
+        memory_db.mark_publication_posted(
+            self.connection,
+            publication_id=int(result["publication_id"]),
+            comment_id=500 + int(result["publication_id"]),
+        )
+        result["delivery_status"] = "posted"
+        return result
 
     def feedback(
         self,
@@ -109,6 +116,34 @@ class FeedbackIngestionTests(unittest.TestCase):
         self.assertEqual(row["observation_id"], recorded["observation_id"])
         self.assertEqual(row["context_hash"], "d" * 40)
 
+    def test_feedback_ignores_generated_and_failed_publications(self) -> None:
+        self.record()
+        generated = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+        )
+
+        first = self.feedback(
+            "/review false-positive F1 because the repository scopes tenant_id."
+        )
+        self.assertEqual(first.status, "no_mapping")
+
+        memory_db.mark_publication_failed(
+            self.connection,
+            publication_id=int(generated["publication_id"]),
+            review_run_id=None,
+            failure_code="body_too_large",
+        )
+        second = self.feedback(
+            "/review false-positive F1 because the repository scopes tenant_id.",
+            event_id="github:issue-comment:501",
+            source_comment_id=501,
+        )
+        self.assertEqual(second.status, "no_mapping")
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
+
     def test_carried_forward_publication_keeps_prior_observation_id(self) -> None:
         recorded = self.record()[0]
         self.finalize()
@@ -137,15 +172,18 @@ class FeedbackIngestionTests(unittest.TestCase):
             self.connection.execute(
                 """
                 INSERT INTO review_publications (
-                    repository, pr_number, head_sha, policy_revision, rendered_hash, published_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    repository, pr_number, head_sha, policy_revision, comment_id,
+                    rendered_hash, delivery_status, published_at, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'posted', ?, ?)
                 """,
                 (
                     first["repository"],
                     first["pr_number"],
                     "b" * 40,
                     first["policy_revision"],
+                    999,
                     "duplicate",
+                    "2026-06-24T00:00:00Z",
                     "2026-06-24T00:00:00Z",
                 ),
             )

@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -175,7 +175,9 @@ def _ensure_current_publication_unique_index(connection: sqlite3.Connection) -> 
         """
         SELECT repository, pr_number, COUNT(*) AS count
         FROM review_publications
-        WHERE superseded_at IS NULL
+        WHERE delivery_status = 'posted'
+          AND superseded_at IS NULL
+          AND comment_id IS NOT NULL
         GROUP BY repository, pr_number
         HAVING COUNT(*) > 1
         LIMIT 1
@@ -188,10 +190,15 @@ def _ensure_current_publication_unique_index(connection: sqlite3.Connection) -> 
             "resolve the duplicate rows before migrating"
         )
     connection.execute(
+        "DROP INDEX IF EXISTS uq_current_review_publication"
+    )
+    connection.execute(
         """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_current_review_publication
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_current_posted_publication
             ON review_publications(repository, pr_number)
-            WHERE superseded_at IS NULL
+            WHERE delivery_status = 'posted'
+              AND superseded_at IS NULL
+              AND comment_id IS NOT NULL
         """
     )
 
@@ -349,6 +356,7 @@ def _migrate_review_runs_status(connection: sqlite3.Connection) -> None:
                 pr_number INTEGER NOT NULL,
                 trigger_comment_id INTEGER,
                 trigger_user TEXT NOT NULL DEFAULT '',
+                base_sha TEXT NOT NULL DEFAULT '',
                 head_sha TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL CHECK (status IN ('running', 'generated', 'failed')),
                 findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
@@ -361,10 +369,11 @@ def _migrate_review_runs_status(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             INSERT INTO review_runs_migration (
-                id, repository, pr_number, trigger_comment_id, trigger_user, head_sha,
+                id, repository, pr_number, trigger_comment_id, trigger_user, base_sha, head_sha,
                 status, findings_count, posted_comment_id, started_at, completed_at
             )
-            SELECT id, repository, pr_number, trigger_comment_id, trigger_user, head_sha,
+            SELECT id, repository, pr_number, trigger_comment_id, trigger_user,
+                   COALESCE(base_sha, ''), head_sha,
                    CASE WHEN status = 'done' THEN 'generated' ELSE status END,
                    findings_count, posted_comment_id, started_at, completed_at
             FROM review_runs
@@ -558,6 +567,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             pr_number INTEGER NOT NULL,
             trigger_comment_id INTEGER,
             trigger_user TEXT NOT NULL DEFAULT '',
+            base_sha TEXT NOT NULL DEFAULT '',
             head_sha TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL CHECK (status IN ('running', 'generated', 'failed')),
             findings_count INTEGER CHECK (findings_count IS NULL OR findings_count >= 0),
@@ -611,10 +621,11 @@ def init_schema(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
+            base_sha TEXT NOT NULL DEFAULT '',
             head_sha TEXT NOT NULL,
             policy_revision TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE(repository, pr_number, head_sha, policy_revision)
+            UNIQUE(repository, pr_number, base_sha, head_sha, policy_revision)
         );
 
         CREATE INDEX IF NOT EXISTS idx_review_subjects_repo_pr
@@ -670,14 +681,30 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS review_publications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_run_id INTEGER UNIQUE,
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
+            base_sha TEXT NOT NULL DEFAULT '',
             head_sha TEXT NOT NULL,
             policy_revision TEXT NOT NULL,
+            publication_key TEXT NOT NULL DEFAULT '',
             comment_id INTEGER,
+            rendered_markdown TEXT,
             rendered_hash TEXT NOT NULL DEFAULT '',
+            delivery_status TEXT NOT NULL DEFAULT 'generated' CHECK (
+                delivery_status IN (
+                    'legacy_unverified', 'generated', 'posting', 'posted',
+                    'publish_failed', 'stale'
+                )
+            ),
             published_at TEXT NOT NULL,
-            superseded_at TEXT
+            generated_at TEXT NOT NULL DEFAULT '',
+            posting_started_at TEXT,
+            posted_at TEXT,
+            publish_failed_at TEXT,
+            failure_code TEXT NOT NULL DEFAULT '',
+            superseded_at TEXT,
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_review_publications_current
@@ -755,6 +782,9 @@ def init_schema(connection: sqlite3.Connection) -> None:
         connection, "findings", "publication_score", "INTEGER NOT NULL DEFAULT 8"
     )
     _ensure_column(connection, "findings", "context_hash", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        connection, "review_runs", "base_sha", "TEXT NOT NULL DEFAULT ''"
+    )
     _ensure_column(connection, "decisions", "context_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(connection, "decisions", "adr_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(
@@ -790,6 +820,55 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "head_sha",
         "TEXT NOT NULL DEFAULT ''",
     )
+    _ensure_column(
+        connection, "review_subjects", "base_sha", "TEXT NOT NULL DEFAULT ''"
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
+        "review_run_id",
+        "INTEGER REFERENCES review_runs(id)",
+    )
+    _ensure_column(
+        connection, "review_publications", "base_sha", "TEXT NOT NULL DEFAULT ''"
+    )
+    _ensure_column(
+        connection, "review_publications", "publication_key", "TEXT NOT NULL DEFAULT ''"
+    )
+    _ensure_column(connection, "review_publications", "rendered_markdown", "TEXT")
+    _ensure_column(
+        connection,
+        "review_publications",
+        "delivery_status",
+        "TEXT NOT NULL DEFAULT 'legacy_unverified'",
+    )
+    _ensure_column(
+        connection, "review_publications", "generated_at", "TEXT NOT NULL DEFAULT ''"
+    )
+    _ensure_column(connection, "review_publications", "posting_started_at", "TEXT")
+    _ensure_column(connection, "review_publications", "posted_at", "TEXT")
+    _ensure_column(connection, "review_publications", "publish_failed_at", "TEXT")
+    _ensure_column(
+        connection, "review_publications", "failure_code", "TEXT NOT NULL DEFAULT ''"
+    )
+    connection.execute(
+        """
+        UPDATE review_publications
+        SET generated_at = published_at
+        WHERE generated_at = ''
+        """
+    )
+    connection.execute(
+        """
+        UPDATE review_publications
+        SET delivery_status = 'legacy_unverified'
+        WHERE delivery_status = ''
+           OR delivery_status NOT IN (
+                'legacy_unverified', 'generated', 'posting', 'posted',
+                'publish_failed', 'stale'
+           )
+        """
+    )
     connection.commit()
     existing_version = _user_version(connection)
     _migrate_findings_severity_check(connection)
@@ -805,6 +884,19 @@ def init_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_publication_findings_observation
             ON publication_findings(observation_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_review_publications_run
+            ON review_publications(review_run_id)
+            WHERE review_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_publications_delivery
+            ON review_publications(repository, pr_number, delivery_status, id DESC)
         """
     )
     _ensure_current_publication_unique_index(connection)

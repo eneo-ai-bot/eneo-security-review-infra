@@ -103,7 +103,14 @@ class FeedbackBridgeTests(unittest.TestCase):
                 [self.finding],
                 context_hashes={self.finding["path"]: "d" * 40},
             )
-            memory_db.finalize_review(connection, "eneo/platform", 17, "a" * 40)
+            publication = memory_db.finalize_review(
+                connection, "eneo/platform", 17, "a" * 40
+            )
+            memory_db.mark_publication_posted(
+                connection,
+                publication_id=int(publication["publication_id"]),
+                comment_id=500,
+            )
         self.config = feedback_bridge.BridgeConfig(
             secret="secret",
             token="token",

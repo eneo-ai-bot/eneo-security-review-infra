@@ -209,6 +209,14 @@ ENEO_REVIEW_RUN_START = {
                 "pattern": "^[0-9a-f]{40,64}$",
                 "description": "Exact pull-request head commit SHA from eneo_pr_overview.",
             },
+            "base_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40,64}$",
+                "description": (
+                    "Exact pull-request base commit SHA from eneo_pr_overview. "
+                    "Used for audit and deterministic publication validation."
+                ),
+            },
         },
         "required": ["repository", "pr_number", "head_sha"],
         "additionalProperties": False,
@@ -233,6 +241,11 @@ ENEO_REVIEW_FINALIZE = {
                 "type": "string",
                 "pattern": "^[0-9a-f]{40,64}$",
                 "description": "Exact pull-request head commit SHA from eneo_pr_overview.",
+            },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_run_start for this review.",
             },
             "previous_verdicts": {
                 "type": "array",
@@ -268,7 +281,34 @@ ENEO_REVIEW_FINALIZE = {
                 },
             },
         },
-        "required": ["repository", "pr_number", "head_sha"],
+        "required": ["repository", "pr_number", "head_sha", "run_id"],
+        "additionalProperties": False,
+    },
+}
+
+ENEO_REVIEW_PUBLISH = {
+    "name": "eneo_review_publish",
+    "description": (
+        "Deterministically publish the stored review publication to GitHub. "
+        "Accepts only publication_id and run_id; the tool loads repository, PR, "
+        "base/head SHA, comment body, and comment target from SQLite and verifies "
+        "them before creating or updating the canonical PR comment."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "publication_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The publication_id returned by eneo_review_finalize.",
+            },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_run_start for this review.",
+            },
+        },
+        "required": ["publication_id", "run_id"],
         "additionalProperties": False,
     },
 }
@@ -298,6 +338,7 @@ ENEO_REVIEW_RUN_COMPLETE = {
                 "default": "generated",
             },
             "findings_count": {"type": "integer", "minimum": 0},
+            "posted_comment_id": {"type": "integer", "minimum": 1},
         },
         "required": ["repository", "pr_number", "run_id", "status"],
         "additionalProperties": False,

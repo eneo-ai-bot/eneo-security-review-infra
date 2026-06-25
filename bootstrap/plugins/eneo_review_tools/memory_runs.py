@@ -33,6 +33,7 @@ def start_run(
     *,
     trigger_comment_id: int | None = None,
     trigger_user: str = "",
+    base_sha: str = "",
     head_sha: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -46,9 +47,9 @@ def start_run(
         cursor = connection.execute(
             """
             INSERT INTO review_runs (
-                repository, pr_number, trigger_comment_id, trigger_user, head_sha,
+                repository, pr_number, trigger_comment_id, trigger_user, base_sha, head_sha,
                 status, started_at
-            ) VALUES (?, ?, ?, ?, ?, 'running', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
             """,
             (
                 repository,
@@ -57,6 +58,7 @@ def start_run(
                 clean_text(
                     trigger_user, field="trigger_user", maximum=200, required=False
                 ),
+                clean_text(base_sha, field="base_sha", maximum=64, required=False),
                 clean_text(head_sha, field="head_sha", maximum=64, required=False),
                 started,
             ),
@@ -69,6 +71,7 @@ def start_run(
         "repository": repository,
         "pr_number": pr_number,
         "trigger_comment_id": trigger_comment_id,
+        "base_sha": base_sha,
         "status": "running",
         "started_at": started,
     }

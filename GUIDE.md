@@ -5,13 +5,14 @@ maintainer-triggered Hermes Agent review for Eneo pull requests. An allowlisted
 maintainer comments exactly `/review`; GitHub Actions verifies the requester;
 Hermes runs Codex with only the `eneo_review` toolset; the plugin reads bounded
 PR context, records every surviving finding in SQLite, renders the final review
-comment, and Hermes posts one structured GitHub comment back to the PR.
+comment, stores the exact rendered Markdown, and deterministically creates or
+updates one canonical GitHub comment on the PR.
 
 The reviewer is advisory. CI, CodeQL, dependency review, tests, type checks,
 human ownership, and migration checks remain the merge gates. The model cannot
 execute contributor code, write repository files, browse the web, delegate to
-subagents, or mutate GitHub except through Hermes' final configured
-`github_comment` delivery.
+subagents, or mutate GitHub except through the narrow `eneo_review_publish`
+tool, which loads the body and PR target from SQLite.
 
 ## 1. Recommended design
 
@@ -34,15 +35,18 @@ Hermes Agent on Dokploy
         +--> Eneo SOUL.md + AGENTS.md + review skill
         +--> SQLite findings and decision registry
         +--> deterministic comment finalizer
-        |
-        v
-Hermes native github_comment delivery
+        +--> deterministic comment publisher
         |
         v
 one structured, constructive PR comment
 ```
 
-Hermes’ current webhook adapter supports HMAC verification, route-specific skills, idempotency, and `github_comment` delivery through the GitHub CLI. The official Docker image keeps mutable state under `/opt/data`, which is the right place for Codex OAuth state, configuration, plugins, sessions, and the SQLite review database.
+Hermes’ current webhook adapter supports HMAC verification, route-specific
+skills, and idempotency. This bundle sets the review route delivery to `log`;
+the deterministic publisher writes the PR comment after verifying the stored
+body and exact base/head SHA. The official Docker image keeps mutable state
+under `/opt/data`, which is the right place for Codex OAuth state,
+configuration, plugins, sessions, and the SQLite review database.
 
 ### What this is
 
@@ -59,7 +63,11 @@ It is a contextual **AI code and security review** that concentrates on:
 
 It is not GitHub CodeQL or SARIF code scanning in the Security tab. Keep deterministic CI, CodeQL, dependency review, tests, Pyright, migration checks, and human ownership as the merge gates. This reviewer adds contextual engineering judgment and posts an advisory PR comment.
 
-It also does not execute contributor code on the VPS. Posting directly to GitHub and withholding a general shell are independent choices: Hermes posts through its configured delivery adapter after the model finishes. This keeps fork pull requests from turning the reviewer host into a remote-code-execution service.
+It also does not execute contributor code on the VPS. Posting directly to
+GitHub and withholding a general shell are independent choices: the reviewer
+has only the narrow publisher tool, not a general GitHub write surface. This
+keeps fork pull requests from turning the reviewer host into a
+remote-code-execution service.
 
 ## 2. Why one Codex run with two passes
 
@@ -287,16 +295,28 @@ Use SSH rather than a provider browser console when pasting secrets or Docker co
 
 Create a dedicated GitHub machine user or bot and grant it access only to the Eneo repository.
 
-Create a fine-grained personal access token restricted to `eneo-ai/eneo` with:
+Create a read-only fine-grained personal access token restricted to `eneo-ai/eneo`
+with:
 
 ```text
 Contents: read
-Pull requests: read and write
+Pull requests: read
+Metadata: read
+```
+
+Store it as `GITHUB_READ_TOKEN`.
+
+Create a second fine-grained token for `ENEO_REVIEW_PUBLISH_GH_TOKEN` with:
+
+```text
+Pull requests: read
 Issues: read and write
 Metadata: read
 ```
 
-Store it only as `GH_TOKEN` in Dokploy. Hermes’ `github_comment` delivery uses the `gh` CLI. The model itself does not receive an arbitrary GitHub write tool.
+The deterministic publisher uses this token only to create or update the
+canonical PR review comment. The model itself does not receive an arbitrary
+GitHub write tool.
 
 Create a second fine-grained token for `ENEO_FEEDBACK_GH_TOKEN` with only:
 
@@ -325,7 +345,9 @@ WEBHOOK_PORT=8644
 WEBHOOK_SECRET=<output from: openssl rand -hex 32>
 ENEO_FEEDBACK_WEBHOOK_SECRET=<different output from: openssl rand -hex 32>
 
-GH_TOKEN=<fine-grained GitHub bot token>
+GITHUB_READ_TOKEN=<fine-grained read token>
+ENEO_REVIEW_PUBLISH_GH_TOKEN=<fine-grained publisher token>
+ENEO_REVIEW_PUBLISH_MAX_BYTES=60000
 ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
 GH_PROMPT_DISABLED=1
 
@@ -486,16 +508,15 @@ The rerun should feel like a reviewer following the PR through revisions:
 2. Review the new fix delta for regressions introduced by the fix.
 3. Perform a compact safety sweep of the current full PR.
 
-The current phase may post another review comment on each manual rerun. The
-finalizer keeps stable `F1`/`F2` references and shows resolved, invalidated,
-suppressed, still-present, partially-resolved, needs-recheck, and new finding
-references when a previous review exists. A prior current finding that is absent
-from the latest observation set is not treated as resolved; it remains active
-unless the reviewer explicitly classifies it as resolved or invalidated, or a
-current human suppression applies. Updating one current bot review comment in
-place remains a future delivery slice because Hermes owns the final
-`github_comment` post. Re-running the same Actions job reuses the original
-delivery ID and should not duplicate it inside Hermes' idempotency window.
+The publisher updates one canonical bot review comment on each successful
+manual rerun. The finalizer keeps stable `F1`/`F2` references and shows
+resolved, invalidated, suppressed, still-present, partially-resolved,
+needs-recheck, and new finding references when a previous posted review exists.
+A prior current finding that is absent from the latest observation set is not
+treated as resolved; it remains active unless the reviewer explicitly
+classifies it as resolved or invalidated, or a current human suppression
+applies. If GitHub publication fails, the previous posted review remains the
+feedback authority and the generated replacement is marked failed or stale.
 
 A direct smoke test is included:
 

@@ -9,7 +9,8 @@ Actions validates the requester and sends a signed webhook to Hermes. Hermes use
 Codex through ChatGPT OAuth, reads only bounded PR context through the bundled
 plugin, runs a two-pass evidence review, records every surviving finding in
 SQLite, renders the final comment through the plugin finalizer, removes matching
-human-approved suppressions, and posts one structured PR comment.
+human-approved suppressions, stores the exact rendered Markdown, and publishes
+one canonical structured PR comment through the deterministic publisher tool.
 
 The comment includes a short severity-count summary, every active finding as an
 expanded section with a local reference such as `F1`, hidden fingerprint metadata
@@ -23,7 +24,7 @@ browser, delegation, or code execution.
 - Codex subscription login through `hermes model`; no OpenAI API key is required.
 - A maintainer-only `/review` GitHub Actions trigger, with `@review` kept as a
   compatibility alias.
-- Native Hermes `github_comment` delivery through the GitHub CLI.
+- Deterministic GitHub comment publication through `eneo_review_publish`.
 - Eneo-specific `SOUL.md`, `AGENTS.md`, and a two-pass review skill.
 - Ponytail v4.7.0 to prefer the smallest correct remediation without weakening
   validation, security, reliability, data protection, or accessibility.
@@ -58,28 +59,37 @@ SQLite finding/suppression check
 deterministic comment finalizer
         |
         v
+deterministic publisher verifies base/head + stored body
+        |
+        v
 one structured GitHub PR comment
 ```
 
 The model does not receive a general shell, repository write tool, or arbitrary
-GitHub mutation tool. Direct posting still works because Hermes performs the
-single configured `github_comment` delivery after the model has finished. This
-keeps the desired output while avoiding a broad write surface.
+GitHub mutation tool. The final Hermes response is logged only; the
+`eneo_review_publish` tool loads the stored body and PR target from SQLite,
+verifies the exact base/head SHA, and creates or updates the canonical comment.
 
 ## 1. Create the GitHub reviewer identity
 
 Create a dedicated GitHub machine user or bot account and grant it access only to
-`eneo-ai/eneo`. Create a fine-grained personal access token restricted to that
-repository with:
+`eneo-ai/eneo`. Create a read-only fine-grained personal access token restricted
+to that repository with:
 
 - **Contents: read**
-- **Pull requests: read and write**
+- **Pull requests: read**
+- **Metadata: read**
+
+Store that token as `GITHUB_READ_TOKEN`.
+
+Create a second fine-grained token for deterministic review publication:
+
+- **Pull requests: read**
 - **Issues: read and write**
 - **Metadata: read**
 
-Issues write is needed because Hermes posts the final PR comment through the
-GitHub CLI. Store this token only as `GH_TOKEN` on the VPS. Do not put it in the
-public repository or in the trigger workflow.
+Store that token as `ENEO_REVIEW_PUBLISH_GH_TOKEN`. It is used only by the
+publisher tool to create or update the canonical PR review comment.
 
 Create a second fine-grained token for the deterministic feedback sidecar:
 
@@ -100,7 +110,8 @@ Copy `.env.example` to `.env` and set at least:
 ```dotenv
 WEBHOOK_SECRET=<output of: openssl rand -hex 32>
 ENEO_FEEDBACK_WEBHOOK_SECRET=<different output of: openssl rand -hex 32>
-GH_TOKEN=<fine-grained GitHub bot token>
+GITHUB_READ_TOKEN=<fine-grained read token>
+ENEO_REVIEW_PUBLISH_GH_TOKEN=<fine-grained publisher token>
 ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
 ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
 ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
@@ -113,6 +124,7 @@ Keep these defaults:
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
 GH_PROMPT_DISABLED=1
+ENEO_REVIEW_PUBLISH_MAX_BYTES=60000
 HERMES_DASHBOARD=0
 API_SERVER_ENABLED=false
 ```
@@ -171,7 +183,6 @@ then verify:
 
 ```bash
 curl -fsS http://127.0.0.1:8644/health
-gh auth status
 hermes doctor
 hermes plugins list
 ```
@@ -183,8 +194,8 @@ curl -fsS http://127.0.0.1:8645/ready
 eneo-review-feedback-bridge verify-config
 ```
 
-`GH_TOKEN` is consumed directly by the GitHub CLI, so an interactive `gh auth
-login` is not required when the environment variable is present.
+The review container does not need a generic `GH_TOKEN`; comment writes go
+through `ENEO_REVIEW_PUBLISH_GH_TOKEN`.
 
 ## 4. Install the GitHub trigger
 
@@ -270,8 +281,9 @@ active when the latest run does not explicitly classify them; the review marks
 those references as needing recheck instead of treating absence as resolution.
 When the reviewer can verify a prior finding, it classifies the stable `F`
 reference as resolved, invalidated, suppressed by human decision, still present,
-partially resolved, or not checked. A later publisher slice should update one
-current bot review comment per PR while preserving those stable references.
+partially resolved, or not checked. The deterministic publisher updates the
+current canonical bot review comment per PR after GitHub accepts the replacement;
+if publication fails, the previous posted review remains authoritative.
 
 The reviewer covers:
 

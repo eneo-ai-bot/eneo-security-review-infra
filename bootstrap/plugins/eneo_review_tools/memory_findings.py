@@ -72,6 +72,7 @@ def _review_subject_id(
     pr_number: int,
     head_sha: str,
     *,
+    base_sha: str = "",
     policy_revision: str | None = None,
     now: datetime | None = None,
 ) -> int:
@@ -83,22 +84,47 @@ def _review_subject_id(
         raise ReviewMemoryError(
             "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
         )
+    base_sha = clean_text(base_sha, field="base_sha", maximum=64, required=False).lower()
+    if base_sha and not HASH_RE.fullmatch(base_sha):
+        raise ReviewMemoryError(
+            "base_sha must be an exact 40 to 64 character hexadecimal commit SHA"
+        )
     policy = current_policy_revision(policy_revision)
     connection.execute(
         """
         INSERT OR IGNORE INTO review_subjects (
-            repository, pr_number, head_sha, policy_revision, created_at
-        ) VALUES (?, ?, ?, ?, ?)
+            repository, pr_number, base_sha, head_sha, policy_revision, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (repository, int(pr_number), head_sha, policy, isoformat(now)),
+        (repository, int(pr_number), base_sha, head_sha, policy, isoformat(now)),
     )
     row = connection.execute(
         """
-        SELECT id FROM review_subjects
-        WHERE repository = ? AND pr_number = ? AND head_sha = ? AND policy_revision = ?
+        SELECT id, base_sha FROM review_subjects
+        WHERE repository = ? AND pr_number = ? AND base_sha = ?
+          AND head_sha = ? AND policy_revision = ?
         """,
-        (repository, int(pr_number), head_sha, policy),
+        (repository, int(pr_number), base_sha, head_sha, policy),
     ).fetchone()
+    if not row:
+        row = connection.execute(
+            """
+            SELECT id, base_sha FROM review_subjects
+            WHERE repository = ? AND pr_number = ? AND head_sha = ? AND policy_revision = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (repository, int(pr_number), head_sha, policy),
+        ).fetchone()
+        if row and not str(row["base_sha"]):
+            connection.execute(
+                "UPDATE review_subjects SET base_sha = ? WHERE id = ?",
+                (base_sha, int(row["id"])),
+            )
+        elif row and base_sha and str(row["base_sha"]) != base_sha:
+            raise ReviewMemoryError(
+                "review subject already exists for this head with a different base_sha"
+            )
     if not row:
         raise ReviewMemoryError("failed to create review subject")
     return int(row["id"])
@@ -113,6 +139,8 @@ def _latest_publication_current_fingerprints(
         """
         SELECT id FROM review_publications
         WHERE repository = ? AND pr_number = ? AND superseded_at IS NULL
+          AND delivery_status = 'posted'
+          AND comment_id IS NOT NULL
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -303,6 +331,7 @@ def record_findings(
     head_sha: str,
     findings: object,
     *,
+    base_sha: str = "",
     context_hashes: dict[str, str] | None = None,
     policy_revision: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -313,6 +342,11 @@ def record_findings(
     if not HASH_RE.fullmatch(head_sha):
         raise ReviewMemoryError(
             "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
+        )
+    base_sha = clean_text(base_sha, field="base_sha", maximum=64, required=False).lower()
+    if base_sha and not HASH_RE.fullmatch(base_sha):
+        raise ReviewMemoryError(
+            "base_sha must be an exact 40 to 64 character hexadecimal commit SHA"
         )
     if not isinstance(findings, Sequence) or isinstance(findings, (str, bytes)):
         raise ReviewMemoryError("findings must be an array")
@@ -339,6 +373,7 @@ def record_findings(
             repository,
             pr_number,
             head_sha,
+            base_sha=base_sha,
             policy_revision=policy,
             now=parse_time(now),
         )
@@ -509,6 +544,7 @@ def record_findings(
                     "review_subject_id": subject_id,
                     "observation_id": int(observation["id"]) if observation else None,
                     "policy_revision": policy,
+                    "base_sha": base_sha,
                     "path": item["path"],
                     "rule_id": item["rule_id"],
                     "context_hash": context_hash,

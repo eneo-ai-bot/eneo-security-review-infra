@@ -188,6 +188,9 @@ class DocsContractTests(unittest.TestCase):
         self.assertNotIn("env_file:", reviewer_section)
         self.assertNotIn("ENEO_FEEDBACK_GH_TOKEN", reviewer_section)
         self.assertNotIn("ENEO_FEEDBACK_WEBHOOK_SECRET", reviewer_section)
+        self.assertIn("GITHUB_READ_TOKEN", reviewer_section)
+        self.assertIn("ENEO_REVIEW_PUBLISH_GH_TOKEN", reviewer_section)
+        self.assertNotIn("\n      GH_TOKEN:", reviewer_section)
         self.assertIn("review_memory_data:/review-memory", feedback_section)
         self.assertNotIn("hermes_review_data:/opt/data", feedback_section)
         self.assertNotIn("env_file:", feedback_section)
@@ -201,6 +204,20 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8645/ready", feedback_section)
         self.assertIn("  review-memory-init:", compose)
         self.assertIn("condition: service_completed_successfully", compose)
+
+    def test_review_delivery_uses_deterministic_publisher_not_github_comment(self):
+        config = read("bootstrap/config.yaml")
+        readme = read("README.md")
+        guide = read("GUIDE.md")
+
+        self.assertIn("deliver: log", config)
+        self.assertNotIn("deliver: github_comment", config)
+        self.assertIn("ENEO_REVIEW_PUBLISH_GH_TOKEN", readme)
+        self.assertIn("ENEO_REVIEW_PUBLISH_GH_TOKEN", guide)
+        self.assertIn("deterministic publisher", readme)
+        self.assertIn("deterministic publisher", guide)
+        self.assertNotIn("Native Hermes `github_comment`", readme)
+        self.assertNotIn("github_comment delivery", guide)
 
     def test_prompt_injection_invariants_are_pinned(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
