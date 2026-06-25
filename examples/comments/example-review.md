@@ -37,7 +37,7 @@ does not exercise the cross-tenant case.
 
 ```text
 Task:
-Review and address all current findings from the Eneo PR review.
+Review and address all current findings from this PR review.
 
 Review basis:
 eneo-ai/eneo PR #123 at commit a1b2c3d.

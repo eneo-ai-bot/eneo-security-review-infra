@@ -1,4 +1,4 @@
-"""Pure Markdown rendering for published Eneo PR reviews."""
+"""Pure Markdown rendering for published PR reviews."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ try:
         compact_text,
         local_reference_number,
     )
+    from .review_identity import (
+        FIX_BRIEF_PROJECT_CONSTRAINT,
+        FIX_BRIEF_TASK,
+        REVIEW_COMMENT_TITLE,
+    )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from feedback_contract import feedback_templates
     from memory_validation import (
@@ -20,6 +25,11 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         SEVERITY_PRIORITY,
         compact_text,
         local_reference_number,
+    )
+    from review_identity import (  # type: ignore[no-redef]
+        FIX_BRIEF_PROJECT_CONSTRAINT,
+        FIX_BRIEF_TASK,
+        REVIEW_COMMENT_TITLE,
     )
 
 
@@ -229,7 +239,7 @@ def render_fix_brief(
         "",
         "```text",
         "Task:",
-        "Review and address all current findings from the Eneo PR review.",
+        FIX_BRIEF_TASK,
         "",
         "Review basis:",
         f"{repository} PR #{pr_number} at commit {head_sha[:7]}.",
@@ -265,7 +275,7 @@ def render_fix_brief(
     lines.extend(
         [
             "Constraints:",
-            "- Reuse existing Eneo abstractions where they fit.",
+            FIX_BRIEF_PROJECT_CONSTRAINT,
             "- Avoid unrelated refactoring.",
             "- Do not weaken validation, authorization, tenant isolation, or error handling.",
             "",
@@ -347,7 +357,7 @@ def render_review_markdown(
     feedback_enabled: bool = False,
 ) -> str:
     current = ordered_findings(findings)
-    lines = ["## Eneo AI code & security review", ""]
+    lines = [f"## {REVIEW_COMMENT_TITLE}", ""]
     lines.extend(
         [
             lifecycle_summary(

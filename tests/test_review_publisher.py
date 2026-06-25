@@ -280,7 +280,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(publication["publication_id"]),
             review_run_id=int(run["id"]),
             github=github,
-            max_comment_bytes=1000,
+            max_comment_bytes=1300,
         )
 
         self.assertTrue(result["published"])
@@ -291,9 +291,76 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(comment_ids, result["comment_ids"])
         self.assertEqual(comment_ids[0], result["comment_id"])
         for index, body in enumerate(github.created, start=1):
-            self.assertLessEqual(len(body.encode("utf-8")), 1000)
+            self.assertLessEqual(len(body.encode("utf-8")), 1300)
             self.assertIn(f"part={index}/{result['parts']}", body)
         self.assertIn("Eneo AI code & security review - 1 of", github.created[0])
+
+    def test_split_keeps_findings_and_details_whole(self) -> None:
+        publication_key = "sha256:" + ("1" * 64)
+        body = (
+            "## Eneo AI code & security review\n\n"
+            "There are 2 current findings: 2 High (P1).\n\n"
+            "### F1 · High (P1): First root cause\n"
+            "`backend/a.py:10` · security\n\n"
+            + ("First finding evidence. " * 20)
+            + "\nF1 body end.\n\n"
+            "### F2 · High (P1): Second root cause\n"
+            "`backend/b.py:20` · correctness\n\n"
+            + ("Second finding evidence. " * 20)
+            + "\nF2 body end.\n\n"
+            "<details>\n"
+            "<summary>Copyable fix brief for a coding agent</summary>\n\n"
+            "```text\n"
+            + ("Fix brief line. " * 20)
+            + "\n```\n\n"
+            "</details>\n\n"
+            "<!--\n"
+            "eneo-review:\n"
+            "head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            "F1=first\n"
+            "F2=second\n"
+            "-->\n\n"
+            f"<!-- eneo-review:canonical publication={publication_key} -->\n"
+        )
+
+        parts = review_publisher.split_publication_body(
+            body,
+            publication_key=publication_key,
+            max_comment_bytes=1250,
+        )
+
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(
+            any("### F1" in part.body and "F1 body end." in part.body for part in parts)
+        )
+        self.assertTrue(
+            any("### F2" in part.body and "F2 body end." in part.body for part in parts)
+        )
+        details_parts = [part.body for part in parts if "<details>" in part.body]
+        self.assertEqual(len(details_parts), 1)
+        self.assertIn("</details>", details_parts[0])
+        self.assertIn("```text", details_parts[0])
+        self.assertIn("\n```\n", details_parts[0])
+
+    def test_split_fails_instead_of_cutting_oversized_finding(self) -> None:
+        publication_key = "sha256:" + ("2" * 64)
+        body = (
+            "## Eneo AI code & security review\n\n"
+            "There is 1 current finding: 1 High (P1).\n\n"
+            "### F1 · High (P1): Oversized root cause\n"
+            "`backend/a.py:10` · security\n\n"
+            + ("A" * 2000)
+            + f"\n\n<!-- eneo-review:canonical publication={publication_key} -->\n"
+        )
+
+        with self.assertRaisesRegex(
+            review_publisher.GitHubPublicationError, "body_too_large"
+        ):
+            review_publisher.split_publication_body(
+                body,
+                publication_key=publication_key,
+                max_comment_bytes=1250,
+            )
 
     def test_smaller_replacement_deletes_stale_continuation_comments(self) -> None:
         first_run, first = self.generate()
@@ -303,7 +370,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(first["publication_id"]),
             review_run_id=int(first_run["id"]),
             github=github,
-            max_comment_bytes=1000,
+            max_comment_bytes=1300,
         )
         self.assertGreater(first_result["parts"], 1)
         first_comment_ids = list(first_result["comment_ids"])
@@ -334,7 +401,7 @@ class ReviewPublisherTests(unittest.TestCase):
         split_parts = review_publisher.split_publication_body(
             str(publication["markdown"]),
             publication_key=str(publication["publication_key"]),
-            max_comment_bytes=1000,
+            max_comment_bytes=1300,
         )
         self.assertGreater(len(split_parts), 1)
         original_ids = [900 + part.part_number for part in split_parts]
@@ -371,7 +438,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(first["publication_id"]),
             review_run_id=int(first_run["id"]),
             github=github,
-            max_comment_bytes=1000,
+            max_comment_bytes=1300,
         )
         first_comment_ids = list(first_result["comment_ids"])
         self.assertGreater(len(first_comment_ids), 1)

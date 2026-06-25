@@ -1,4 +1,4 @@
-"""Deterministic GitHub publication for generated Eneo reviews."""
+"""Deterministic GitHub publication for generated PR reviews."""
 
 from __future__ import annotations
 
@@ -16,9 +16,14 @@ from typing import Any, Literal, Protocol, cast
 try:
     from . import memory_publications
     from .memory_validation import ReviewMemoryError
+    from .review_identity import CONTINUATION_LEAD, REVIEW_COMMENT_TITLE
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     import memory_publications  # type: ignore[no-redef]
     from memory_validation import ReviewMemoryError
+    from review_identity import (  # type: ignore[no-redef]
+        CONTINUATION_LEAD,
+        REVIEW_COMMENT_TITLE,
+    )
 
 _API_ROOT = "https://api.github.com"
 _MAX_ATTEMPTS = 3
@@ -405,38 +410,57 @@ def _body_size(body: str) -> int:
     return len(body.encode("utf-8"))
 
 
-def _split_line(line: str, max_bytes: int) -> list[str]:
-    parts: list[str] = []
-    current = ""
-    for character in line:
-        candidate = current + character
-        if current and _body_size(candidate) > max_bytes:
-            parts.append(current)
-            current = character
-        else:
-            current = candidate
-    if current:
-        parts.append(current)
-    return parts
+def _semantic_blocks(body: str) -> list[str]:
+    lines = body.splitlines(keepends=True)
+    blocks: list[str] = []
+    current: list[str] = []
+    in_details = False
+    in_hidden_marker = False
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            blocks.append("".join(current))
+            current = []
+
+    for line in lines:
+        starts_block = (
+            line.startswith("### F")
+            or line.startswith("<details>")
+            or line.startswith("<!--")
+        )
+        if starts_block and current and not in_details and not in_hidden_marker:
+            flush()
+
+        current.append(line)
+
+        if line.startswith("<details>"):
+            in_details = True
+        elif line.startswith("<!--"):
+            in_hidden_marker = True
+        elif in_details and line.strip() == "</details>":
+            in_details = False
+            flush()
+        elif in_hidden_marker and line.strip() == "-->":
+            in_hidden_marker = False
+            flush()
+
+    flush()
+    return blocks
 
 
-def _split_lines(lines: list[str], max_bytes: int) -> list[str]:
+def _split_semantic_blocks(blocks: list[str], max_bytes: int) -> list[str]:
     chunks: list[str] = []
     current = ""
-    for line in lines:
-        candidate = current + line
+    for block in blocks:
+        if _body_size(block) > max_bytes:
+            raise GitHubPublicationError("body_too_large")
+        candidate = current + block
         if current and _body_size(candidate) > max_bytes:
             chunks.append(current)
-            current = ""
-        if _body_size(line) > max_bytes:
-            split_parts = _split_line(line, max_bytes)
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.extend(split_parts[:-1])
-            current = split_parts[-1] if split_parts else ""
+            current = block
         else:
-            current += line
+            current = candidate
     if current:
         chunks.append(current)
     return chunks
@@ -446,16 +470,16 @@ def _continuation_prefix(part_number: int, total_parts: int) -> str:
     if part_number == 1:
         return ""
     return (
-        f"## Eneo AI code & security review - {part_number} of {total_parts}\n\n"
-        "Continued from the previous Eneo review comment.\n\n"
+        f"## {REVIEW_COMMENT_TITLE} - {part_number} of {total_parts}\n\n"
+        f"{CONTINUATION_LEAD}\n\n"
     )
 
 
 def _with_part_heading(body: str, part_number: int, total_parts: int) -> str:
     if part_number != 1:
         return _continuation_prefix(part_number, total_parts) + body
-    heading = "## Eneo AI code & security review"
-    replacement = f"## Eneo AI code & security review - 1 of {total_parts}"
+    heading = f"## {REVIEW_COMMENT_TITLE}"
+    replacement = f"## {REVIEW_COMMENT_TITLE} - 1 of {total_parts}"
     return body.replace(heading, replacement, 1) if body.startswith(heading) else body
 
 
@@ -477,7 +501,7 @@ def split_publication_body(
     if content_budget < 200:
         raise GitHubPublicationError("body_too_large")
 
-    chunks = _split_lines(content.splitlines(keepends=True), content_budget)
+    chunks = _split_semantic_blocks(_semantic_blocks(content), content_budget)
     total_parts = len(chunks)
     parts: list[PublicationPart] = []
     for index, chunk in enumerate(chunks, start=1):

@@ -1,6 +1,6 @@
-# Eneo Review Contract
+# PR Review Contract
 
-This is the canonical, version-controlled contract for the Eneo PR reviewer.
+This is the canonical, version-controlled contract for this PR reviewer.
 
 ## Review target
 
@@ -9,7 +9,7 @@ request. Start from the diff and read only the surrounding code needed to prove
 or disprove a claim. Deterministic CI remains the merge gate; this review adds
 contextual engineering judgment.
 
-Eneo currently combines a FastAPI/SQLAlchemy backend, PostgreSQL with pgvector,
+The current project profile combines a FastAPI/SQLAlchemy backend, PostgreSQL with pgvector,
 Redis/ARQ background work, and a SvelteKit/TypeScript frontend. It supports
 multi-tenant federation, per-tenant identity providers, role-based access,
 knowledge retrieval, files, model providers, MCP/tool integrations, and encrypted
@@ -37,7 +37,7 @@ Prioritize these areas in this order:
    will cause a maintainer to misunderstand the contract. Do not ask for more
    comments merely to increase documentation.
 
-## Eneo invariants
+## Project Invariants
 
 - Tenant or municipality data must not cross an authorized boundary. Isolation
   may be provided by a trusted tenant context, scoped repository/service methods,
@@ -143,19 +143,24 @@ formatting, vague possibilities, generic best practice, or personal preference.
 ## GitHub comment contract
 
 Post one summary comment, not a wall of inline comments. Write clean, scannable
-GitHub-flavored markdown that a busy reviewer can absorb in under a minute.
+GitHub-flavored Markdown. Keep each individual finding compact, but never
+shorten the review by omitting a surviving finding.
 
 - Publish every unsuppressed, evidence-backed, independent root-cause finding
   that survives the skeptical gate. Do not omit a verified lower-priority
   finding merely because a higher-priority finding also survived.
+- Do not stop after three, five, or any other round number. Candidate discovery
+  ends only after declared changed-file coverage is complete or explicitly
+  incomplete; the number of findings is not a stopping condition.
 - Order findings deterministically by severity, practical impact, publication
   score, then `rule_id` alphabetically. Confidence is an internal admission gate,
   not visible ranking metadata.
 - Keep each finding compact. Spend words on evidence and the fix, never on
   padding.
-- Start with `## Eneo AI code & security review` and one natural-language summary
-  sentence that names the non-zero severity counts, for example `There are 2
-  current findings: 1 High (P1) and 1 Medium (P2).`
+- Start with the configured review title, currently
+  `## Eneo AI code & security review`, and one natural-language summary sentence
+  that names the non-zero severity counts, for example `There are 2 current
+  findings: 1 High (P1) and 1 Medium (P2).`
 - Do not include a top-level per-finding table. Long paths and memory
   fingerprints render poorly in GitHub tables, and each finding already carries
   its own heading and location.
@@ -230,8 +235,9 @@ the reviewer.
 
 If the final review would exceed the delivery budget, never silently truncate or
 hide findings. Keep each finding concise and, when needed, split the output into
-deterministic continuation comments such as `Eneo review - 1 of 2` and `Eneo
-review - 2 of 2`. This should be exceptional, not the normal format.
+deterministic continuation comments using the configured review title plus
+`- 1 of 2`, `- 2 of 2`, and so on. This should be exceptional, not the normal
+format.
 
 On a repeated review, show the current state first. Summarize resolved,
 invalidated, suppressed, still-present, partially-resolved, needs-recheck, and

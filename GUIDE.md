@@ -185,7 +185,7 @@ The added test covers the happy path for a worker loading its own document, but 
 
 ```text
 Task:
-Review and address all current findings from the Eneo PR review.
+Review and address all current findings from this PR review.
 
 Review basis:
 eneo-ai/eneo PR #123 at commit a1b2c3d.
@@ -799,7 +799,7 @@ Keep policy separated by purpose:
 
 ```text
 SOUL.md       who the reviewer is, its tone, evidence standard, and brevity
-AGENTS.md     Eneo invariants, review areas, severity, score, comment contract
+AGENTS.md     project invariants, review areas, severity, score, comment contract
 SKILL.md      the exact webhook review procedure and tool sequence
 SQLite        mutable findings, decisions, suppressions, and audit history
 ```
