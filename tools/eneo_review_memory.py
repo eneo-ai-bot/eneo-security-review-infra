@@ -113,6 +113,12 @@ class MemoryDbModule(Protocol):
         pr_number: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, object]]: ...
+    def coverage_summary(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: int | None,
+    ) -> dict[str, object] | None: ...
     def mark_stale_runs_failed(
         self,
         connection: sqlite3.Connection,
@@ -197,6 +203,7 @@ def _evict_stale_memory_modules(candidate: Path) -> None:
         "memory_db",
         "memory_schema",
         "memory_migration",
+        "memory_coverage",
         "memory_identity",
         "memory_decisions",
         "memory_findings",
@@ -367,6 +374,25 @@ def print_publications(publications: Sequence[JsonObject]) -> None:
         )
 
 
+def print_coverage(summary: JsonObject | None) -> None:
+    if summary is None or summary.get("state") == "unknown":
+        print("No coverage ledger recorded for this run.")
+        return
+    print(f"review context coverage: {summary['state']}")
+    print(f"  changed paths: {summary['changed_paths']}")
+    print(f"  diff exposed:  {summary['diff_exposed']}")
+    print(f"  context reads: {summary['context_reads']}")
+    print(f"  unavailable:   {summary['unavailable']}")
+    print(f"  truncated:     {summary['diff_truncated']}")
+    unavailable_paths = cast(Sequence[object], summary.get("unavailable_paths", ()))
+    if unavailable_paths:
+        print("  unavailable paths: " + ", ".join(str(path) for path in unavailable_paths))
+    truncated_paths = cast(Sequence[object], summary.get("truncated_paths", ()))
+    if truncated_paths:
+        print("  truncated paths: " + ", ".join(str(path) for path in truncated_paths))
+    print(f"  hash:          {summary['coverage_hash']}")
+
+
 def print_run_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
@@ -486,6 +512,13 @@ def main() -> int:
     )
     publications_parser.add_argument("--limit", type=int, default=50)
     publications_parser.add_argument("--json", action="store_true")
+
+    coverage_parser = sub.add_parser(
+        "coverage",
+        help="Show objective changed-path context coverage for one review run.",
+    )
+    coverage_parser.add_argument("--run-id", type=int, required=True)
+    coverage_parser.add_argument("--json", action="store_true")
 
     learning_parser = sub.add_parser(
         "learning-report",
@@ -837,6 +870,17 @@ def main() -> int:
                 print(memory_db.json_dumps(publications))
             else:
                 print_publications(publications)
+            return 0
+
+        if args.command == "coverage":
+            try:
+                summary = memory_db.coverage_summary(connection, run_id=args.run_id)
+            except memory_db.ReviewMemoryError as exc:
+                raise SystemExit(str(exc)) from exc
+            if args.json:
+                print(memory_db.json_dumps(summary or {}))
+            else:
+                print_coverage(summary)
             return 0
 
     return 1

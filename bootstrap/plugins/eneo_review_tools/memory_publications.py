@@ -11,6 +11,7 @@ from typing import Any, Literal, TypedDict, cast
 
 try:
     from .memory_decisions import active_suppression
+    from .memory_coverage import coverage_summary
     from .memory_findings import assign_local_reference
     from .memory_validation import (
         HASH_RE,
@@ -28,10 +29,16 @@ try:
     from .review_renderer import (
         ClosedFinding,
         PublishedFinding,
-        render_review_markdown,
+        ReviewBlock,
+        ReviewCoverageSummary,
+        render_review,
+        review_blocks_from_json,
+        review_blocks_to_json,
+        review_markdown_from_blocks,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from memory_decisions import active_suppression
+    from memory_coverage import coverage_summary
     from memory_findings import assign_local_reference
     from memory_validation import (
         HASH_RE,
@@ -46,7 +53,16 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         normalize_repository,
         utc_now,
     )
-    from review_renderer import ClosedFinding, PublishedFinding, render_review_markdown
+    from review_renderer import (
+        ClosedFinding,
+        PublishedFinding,
+        ReviewBlock,
+        ReviewCoverageSummary,
+        render_review,
+        review_blocks_from_json,
+        review_blocks_to_json,
+        review_markdown_from_blocks,
+    )
 
 
 ClosedFindingVerdict = Literal["resolved", "invalidated", "suppressed"]
@@ -84,6 +100,7 @@ class PublicationForPosting(TypedDict):
     policy_revision: str
     publication_key: str
     rendered_markdown: str
+    rendered_blocks_json: str
     rendered_hash: str
     comment_id: int | None
     previous_comment_ids: list[int]
@@ -178,9 +195,13 @@ def _publication_key(
     return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _with_publication_marker(markdown: str, publication_key: str) -> str:
+def _with_publication_marker_blocks(
+    blocks: Sequence[ReviewBlock], publication_key: str
+) -> tuple[ReviewBlock, ...]:
     marker = f"<!-- eneo-review:canonical publication={publication_key} -->"
-    return markdown if marker in markdown else f"{markdown.rstrip()}\n\n{marker}\n"
+    if any(marker in block.markdown for block in blocks):
+        return tuple(blocks)
+    return (*blocks, ReviewBlock(kind="metadata", markdown=marker))
 
 
 def publication_marker(publication_key: str) -> str:
@@ -322,6 +343,7 @@ def _publication_result(
         "findings_count": int(current[0] if current else 0),
         "resolved_count": int(closed[0] if closed else 0),
         "closed_count": int(closed[0] if closed else 0),
+        "rendered_blocks_json": str(publication.get("rendered_blocks_json") or ""),
         "rendered_hash": str(publication["rendered_hash"]),
         "markdown": markdown,
     }
@@ -722,7 +744,7 @@ def finalize_review(
             if previous and fingerprint not in previous_current
         ]
 
-        markdown = render_review_markdown(
+        rendered = render_review(
             repository=repository,
             pr_number=pr_number,
             head_sha=head_sha,
@@ -733,7 +755,12 @@ def finalize_review(
             new_refs=new_refs,
             needs_recheck=needs_recheck,
             feedback_enabled=_feedback_enabled(),
+            coverage=cast(
+                ReviewCoverageSummary | None,
+                coverage_summary(connection, run_id=review_run_id),
+            ),
         )
+        markdown = rendered.markdown
         markdown_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
         key = _publication_key(
             repository=repository,
@@ -744,7 +771,9 @@ def finalize_review(
             review_run_id=review_run_id,
             markdown_hash=markdown_hash,
         )
-        markdown = _with_publication_marker(markdown, key)
+        blocks = _with_publication_marker_blocks(rendered.blocks, key)
+        markdown = review_markdown_from_blocks(blocks)
+        rendered_blocks_json = review_blocks_to_json(blocks)
         rendered_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
         cursor = connection.execute(
@@ -752,8 +781,9 @@ def finalize_review(
             INSERT INTO review_publications (
                 review_run_id, repository, pr_number, base_sha, head_sha,
                 policy_revision, publication_key, comment_id, rendered_markdown,
-                rendered_hash, delivery_status, published_at, generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)
+                rendered_blocks_json, rendered_hash, delivery_status, published_at,
+                generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)
             """,
             (
                 review_run_id,
@@ -765,6 +795,7 @@ def finalize_review(
                 key,
                 int(comment_id) if comment_id is not None else None,
                 markdown,
+                rendered_blocks_json,
                 rendered_hash,
                 isoformat(moment),
                 isoformat(moment),
@@ -823,6 +854,7 @@ def finalize_review(
         "findings_count": len(current),
         "resolved_count": sum(1 for item in closed if item["verdict"] == "resolved"),
         "closed_count": len(closed),
+        "rendered_blocks_json": rendered_blocks_json,
         "rendered_hash": rendered_hash,
         "markdown": markdown,
     }
@@ -863,11 +895,19 @@ def _publication_for_posting(
     }:
         raise ReviewMemoryError("publication has an unknown delivery_status")
     body = str(row["rendered_markdown"] or "")
+    blocks_json = str(row["rendered_blocks_json"] or "")
     rendered_hash = str(row["rendered_hash"] or "")
     if not body:
         raise ReviewMemoryError("publication is missing rendered_markdown")
     if hashlib.sha256(body.encode("utf-8")).hexdigest() != rendered_hash:
         raise ReviewMemoryError("publication rendered_markdown hash mismatch")
+    if blocks_json:
+        try:
+            blocks = review_blocks_from_json(blocks_json, fallback_markdown=body)
+        except ValueError as exc:
+            raise ReviewMemoryError("publication rendered_blocks_json is invalid") from exc
+        if review_markdown_from_blocks(blocks) != body:
+            raise ReviewMemoryError("publication rendered_blocks_json does not match markdown")
     previous = connection.execute(
         """
         SELECT id, comment_id
@@ -895,6 +935,7 @@ def _publication_for_posting(
         "policy_revision": str(row["policy_revision"]),
         "publication_key": str(row["publication_key"]),
         "rendered_markdown": body,
+        "rendered_blocks_json": blocks_json,
         "rendered_hash": rendered_hash,
         "comment_id": int(row["comment_id"]) if row["comment_id"] is not None else None,
         "previous_comment_ids": previous_comment_ids,

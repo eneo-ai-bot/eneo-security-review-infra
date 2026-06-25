@@ -417,6 +417,63 @@ class ReviewMemoryTests(unittest.TestCase):
         finally:
             migrated.close()
 
+    def test_review_run_coverage_tracks_diff_and_source_reads(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            head_sha="a" * 40,
+        )
+        run_id = int(run["id"])
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            files=[
+                {"path": "backend/api/documents.py", "status": "modified"},
+                {"path": "frontend/app/routes/page.svelte", "status": "added"},
+            ],
+        )
+
+        summary = memory_db.coverage_summary(self.connection, run_id=run_id)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "incomplete")
+        self.assertEqual(summary["changed_paths"], 2)
+        self.assertEqual(summary["diff_exposed"], 0)
+
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            paths=[
+                "backend/api/documents.py",
+                "frontend/app/routes/page.svelte",
+            ],
+            truncated=False,
+        )
+        memory_db.record_file_range(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            path="backend/api/documents.py",
+            side="head",
+            start_line=10,
+            end_line=25,
+        )
+
+        summary = memory_db.coverage_summary(self.connection, run_id=run_id)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "complete")
+        self.assertEqual(summary["diff_exposed"], 2)
+        self.assertEqual(summary["context_reads"], 1)
+        self.assertTrue(str(summary["coverage_hash"]).startswith("sha256:"))
+
+        state = memory_db.export_state(self.connection)
+        self.assertEqual(len(state["review_run_files"]), 2)
+
     def test_finalize_review_omits_feedback_help_when_disabled(self):
         self.record()
 

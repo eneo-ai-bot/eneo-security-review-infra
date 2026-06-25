@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence, TypedDict
+from dataclasses import dataclass
+import json
+from typing import Any, Literal, Sequence, TypedDict, cast
 import urllib.parse
 
 try:
@@ -60,6 +62,98 @@ class ClosedFinding(TypedDict):
     verdict: Literal["resolved", "invalidated", "suppressed"]
     title: str
     evidence: str
+
+
+class ReviewCoverageSummary(TypedDict):
+    state: Literal["complete", "incomplete", "unknown"]
+    changed_paths: int
+    diff_exposed: int
+    context_reads: int
+    unavailable: int
+    diff_truncated: int
+    coverage_hash: str
+    unavailable_paths: list[str]
+    truncated_paths: list[str]
+
+
+ReviewBlockKind = Literal[
+    "header",
+    "finding",
+    "closed_history",
+    "fix_brief",
+    "feedback_help",
+    "metadata",
+]
+
+
+@dataclass(frozen=True)
+class ReviewBlock:
+    kind: ReviewBlockKind
+    markdown: str
+
+
+@dataclass(frozen=True)
+class RenderedReview:
+    markdown: str
+    blocks: tuple[ReviewBlock, ...]
+
+
+_BLOCK_KINDS = frozenset(
+    {
+        "header",
+        "finding",
+        "closed_history",
+        "fix_brief",
+        "feedback_help",
+        "metadata",
+    }
+)
+_FIX_BRIEF_FINDINGS_PER_BLOCK = 10
+
+
+def review_markdown_from_blocks(blocks: Sequence[ReviewBlock]) -> str:
+    body = "\n\n".join(
+        block.markdown.rstrip() for block in blocks if block.markdown.strip()
+    )
+    return body.rstrip() + "\n" if body else ""
+
+
+def review_blocks_to_json(blocks: Sequence[ReviewBlock]) -> str:
+    return json.dumps(
+        [{"kind": block.kind, "markdown": block.markdown} for block in blocks],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def review_blocks_from_json(
+    raw: str, *, fallback_markdown: str = ""
+) -> tuple[ReviewBlock, ...]:
+    if not raw.strip():
+        return (
+            (ReviewBlock(kind="header", markdown=fallback_markdown),)
+            if fallback_markdown
+            else ()
+        )
+    try:
+        value: object = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("rendered_blocks_json is invalid JSON") from exc
+    if not isinstance(value, list):
+        raise ValueError("rendered_blocks_json must be a list")
+    blocks: list[ReviewBlock] = []
+    for index, item in enumerate(cast(list[object], value)):
+        if not isinstance(item, dict):
+            raise ValueError(f"rendered_blocks_json[{index}] must be an object")
+        item_map = cast(dict[object, object], item)
+        kind = item_map.get("kind")
+        markdown = item_map.get("markdown")
+        if kind not in _BLOCK_KINDS:
+            raise ValueError(f"rendered_blocks_json[{index}].kind is unsupported")
+        if not isinstance(markdown, str) or not markdown.strip():
+            raise ValueError(f"rendered_blocks_json[{index}].markdown must be text")
+        blocks.append(ReviewBlock(kind=cast(ReviewBlockKind, kind), markdown=markdown))
+    return tuple(blocks)
 
 
 def safe_text(value: Any, *, maximum: int = 800) -> str:
@@ -194,6 +288,30 @@ def lifecycle_summary(
     return f"**Since the previous review:** {detail}\n\n{severity_summary(findings)}"
 
 
+def coverage_summary_line(coverage: ReviewCoverageSummary | None) -> str:
+    if coverage is None or coverage["state"] == "unknown":
+        return ""
+    if coverage["state"] == "complete":
+        return (
+            f"<sub>Review context: all {coverage['changed_paths']} changed paths "
+            f"were available in the diff; {coverage['context_reads']} received "
+            "additional source-context reads.</sub>"
+        )
+    representative = coverage["unavailable_paths"] or coverage["truncated_paths"]
+    suffix = ""
+    if representative:
+        suffix = " Representative paths: " + ", ".join(
+            safe_text(path, maximum=120) for path in representative
+        ) + "."
+    return (
+        f"**Coverage incomplete:** {coverage['diff_exposed']} of "
+        f"{coverage['changed_paths']} changed paths were available in the diff; "
+        f"{coverage['unavailable']} unavailable and "
+        f"{coverage['diff_truncated']} truncated.{suffix} "
+        "This review is not a clean result."
+    )
+
+
 def ordered_findings(items: Sequence[PublishedFinding]) -> list[PublishedFinding]:
     return sorted(
         items,
@@ -227,15 +345,30 @@ def _closed_by_verdict(
     return grouped
 
 
+def _finding_ref_range(findings: Sequence[PublishedFinding]) -> str:
+    first = findings[0]["local_reference"]
+    last = findings[-1]["local_reference"]
+    return first if first == last else f"{first}-{last}"
+
+
 def render_fix_brief(
     repository: str,
     pr_number: int,
     head_sha: str,
     findings: Sequence[PublishedFinding],
+    *,
+    part_number: int = 1,
+    total_parts: int = 1,
 ) -> str:
+    summary = "Copyable fix brief for a coding agent"
+    if total_parts > 1:
+        summary = (
+            f"{summary} ({part_number} of {total_parts}, "
+            f"{_finding_ref_range(findings)})"
+        )
     lines = [
         "<details>",
-        "<summary>Copyable fix brief for a coding agent</summary>",
+        f"<summary>{summary}</summary>",
         "",
         "```text",
         "Task:",
@@ -288,6 +421,35 @@ def render_fix_brief(
         ]
     )
     return "\n".join(lines)
+
+
+def render_fix_brief_blocks(
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    findings: Sequence[PublishedFinding],
+) -> list[ReviewBlock]:
+    blocks: list[ReviewBlock] = []
+    chunks = [
+        findings[index : index + _FIX_BRIEF_FINDINGS_PER_BLOCK]
+        for index in range(0, len(findings), _FIX_BRIEF_FINDINGS_PER_BLOCK)
+    ]
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        blocks.append(
+            ReviewBlock(
+                kind="fix_brief",
+                markdown=render_fix_brief(
+                    repository,
+                    pr_number,
+                    head_sha,
+                    chunk,
+                    part_number=index,
+                    total_parts=total,
+                ),
+            )
+        )
+    return blocks
 
 
 def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
@@ -343,6 +505,134 @@ def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
     return "\n".join(lines)
 
 
+def render_review(
+    *,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    findings: Sequence[PublishedFinding],
+    closed: Sequence[ClosedFinding],
+    still_present: Sequence[str],
+    partially_resolved: Sequence[str],
+    new_refs: Sequence[str],
+    needs_recheck: Sequence[str],
+    feedback_enabled: bool = False,
+    coverage: ReviewCoverageSummary | None = None,
+) -> RenderedReview:
+    current = ordered_findings(findings)
+    header_lines = [
+        f"## {REVIEW_COMMENT_TITLE}",
+        "",
+        lifecycle_summary(
+            findings=current,
+            closed=closed,
+            still_present=still_present,
+            partially_resolved=partially_resolved,
+            new_refs=new_refs,
+            needs_recheck=needs_recheck,
+        ),
+    ]
+    coverage_line = coverage_summary_line(coverage)
+    if coverage_line:
+        header_lines.extend(["", coverage_line])
+    blocks: list[ReviewBlock] = []
+    blocks.append(
+        ReviewBlock(
+            kind="header",
+            markdown="\n".join(header_lines),
+        )
+    )
+
+    for item in current:
+        location = source_link(
+            repository,
+            head_sha,
+            str(item["path"]),
+            int(item["line"]),
+        )
+        finding_lines = [
+            (
+                f"### {item['local_reference']} · {severity_label(item['severity'])}: "
+                f"{safe_text(item['title'], maximum=160)}"
+            ),
+            f"{location} · {item['category']}",
+            "",
+            safe_text(item["evidence"], maximum=900),
+            "",
+            f"**Impact:** {safe_text(item['impact'], maximum=700)}",
+            "",
+            f"**Suggested change:** {safe_text(item['smallest_fix'], maximum=700)}",
+            "",
+            f"**Reviewer checks:** {safe_text(item['disproof_checks'], maximum=500)}",
+        ]
+        if item["review_status"] == "carried_forward":
+            finding_lines.extend(
+                [
+                    "",
+                    (
+                        "**Recheck needed:** This previous finding was not explicitly "
+                        "observed in the latest run, so it remains current until verified."
+                    ),
+                ]
+            )
+        blocks.append(ReviewBlock(kind="finding", markdown="\n".join(finding_lines)))
+
+    if closed:
+        closed_lines = [
+            "<details>",
+            "<summary>Closed since the previous review</summary>",
+            "",
+        ]
+        for item in closed:
+            title = safe_text(item.get("title", ""), maximum=180)
+            evidence = safe_text(item.get("evidence", ""), maximum=320)
+            label = item["verdict"].replace("_", " ")
+            if item["verdict"] == "invalidated":
+                label = "withdrawn after recheck"
+            line = f"- {item['local_reference']} - {label}"
+            if title:
+                line += f": {title}"
+            if evidence:
+                line += f" ({evidence})"
+            closed_lines.append(line)
+        closed_lines.extend(["", "</details>"])
+        blocks.append(
+            ReviewBlock(kind="closed_history", markdown="\n".join(closed_lines))
+        )
+
+    if current:
+        blocks.extend(render_fix_brief_blocks(repository, pr_number, head_sha, current))
+
+    if feedback_enabled:
+        blocks.append(
+            ReviewBlock(kind="feedback_help", markdown=render_feedback_help(current))
+        )
+
+    metadata_lines = ["<!--", "eneo-review:", f"head={head_sha}"]
+    if coverage is not None and coverage["state"] != "unknown":
+        metadata_lines.extend(
+            [
+                f"coverage_state={coverage['state']}",
+                f"changed_paths={coverage['changed_paths']}",
+                f"diff_exposed={coverage['diff_exposed']}",
+                f"context_reads={coverage['context_reads']}",
+                f"unavailable={coverage['unavailable']}",
+                f"diff_truncated={coverage['diff_truncated']}",
+                f"coverage_hash={coverage['coverage_hash']}",
+            ]
+        )
+    for item in current:
+        metadata_lines.append(f"{item['local_reference']}={item['fingerprint']}")
+    metadata_lines.append("-->")
+    blocks.append(ReviewBlock(kind="metadata", markdown="\n".join(metadata_lines)))
+
+    result_blocks = tuple(blocks)
+    return RenderedReview(
+        markdown=review_markdown_from_blocks(result_blocks),
+        blocks=result_blocks,
+    )
+
+
 def render_review_markdown(
     *,
     repository: str,
@@ -355,89 +645,18 @@ def render_review_markdown(
     new_refs: Sequence[str],
     needs_recheck: Sequence[str],
     feedback_enabled: bool = False,
+    coverage: ReviewCoverageSummary | None = None,
 ) -> str:
-    current = ordered_findings(findings)
-    lines = [f"## {REVIEW_COMMENT_TITLE}", ""]
-    lines.extend(
-        [
-            lifecycle_summary(
-                findings=current,
-                closed=closed,
-                still_present=still_present,
-                partially_resolved=partially_resolved,
-                new_refs=new_refs,
-                needs_recheck=needs_recheck,
-            ),
-            "",
-        ]
-    )
-
-    for item in current:
-        location = source_link(
-            repository,
-            head_sha,
-            str(item["path"]),
-            int(item["line"]),
-        )
-        lines.extend(
-            [
-                (
-                    f"### {item['local_reference']} · {severity_label(item['severity'])}: "
-                    f"{safe_text(item['title'], maximum=160)}"
-                ),
-                f"{location} · {item['category']}",
-                "",
-                safe_text(item["evidence"], maximum=900),
-                "",
-                f"**Impact:** {safe_text(item['impact'], maximum=700)}",
-                "",
-                f"**Suggested change:** {safe_text(item['smallest_fix'], maximum=700)}",
-                "",
-                f"**Reviewer checks:** {safe_text(item['disproof_checks'], maximum=500)}",
-                "",
-            ]
-        )
-        if item["review_status"] == "carried_forward":
-            lines.extend(
-                [
-                    (
-                        "**Recheck needed:** This previous finding was not explicitly "
-                        "observed in the latest run, so it remains current until verified."
-                    ),
-                    "",
-                ]
-            )
-
-    if closed:
-        lines.extend(
-            [
-                "<details>",
-                "<summary>Closed since the previous review</summary>",
-                "",
-            ]
-        )
-        for item in closed:
-            title = safe_text(item.get("title", ""), maximum=180)
-            evidence = safe_text(item.get("evidence", ""), maximum=320)
-            label = item["verdict"].replace("_", " ")
-            if item["verdict"] == "invalidated":
-                label = "withdrawn after recheck"
-            line = f"- {item['local_reference']} - {label}"
-            if title:
-                line += f": {title}"
-            if evidence:
-                line += f" ({evidence})"
-            lines.append(line)
-        lines.extend(["", "</details>", ""])
-
-    if current:
-        lines.extend([render_fix_brief(repository, pr_number, head_sha, current), ""])
-
-    if feedback_enabled:
-        lines.extend([render_feedback_help(current), ""])
-
-    lines.extend(["<!--", "eneo-review:", f"head={head_sha}"])
-    for item in current:
-        lines.append(f"{item['local_reference']}={item['fingerprint']}")
-    lines.extend(["-->", ""])
-    return "\n".join(lines).rstrip() + "\n"
+    return render_review(
+        repository=repository,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        findings=findings,
+        closed=closed,
+        still_present=still_present,
+        partially_resolved=partially_resolved,
+        new_refs=new_refs,
+        needs_recheck=needs_recheck,
+        feedback_enabled=feedback_enabled,
+        coverage=coverage,
+    ).markdown

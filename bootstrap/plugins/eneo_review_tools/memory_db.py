@@ -13,6 +13,7 @@ try:
     from .memory_decisions import *  # noqa: F403
     from .memory_findings import *  # noqa: F403
     from .memory_publications import *  # noqa: F403
+    from .memory_coverage import *  # noqa: F403
     from .memory_feedback import *  # noqa: F403
     from .memory_reporting import *  # noqa: F403
     from .memory_runs import *  # noqa: F403
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_decisions import *  # noqa: F403
     from memory_findings import *  # noqa: F403
     from memory_publications import *  # noqa: F403
+    from memory_coverage import *  # noqa: F403
     from memory_feedback import *  # noqa: F403
     from memory_reporting import *  # noqa: F403
     from memory_runs import *  # noqa: F403

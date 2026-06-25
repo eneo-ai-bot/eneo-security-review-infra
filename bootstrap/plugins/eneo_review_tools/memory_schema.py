@@ -31,13 +31,14 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
         "findings",
         "decisions",
         "review_runs",
+        "review_run_files",
         "coach_runs",
         "coach_candidates",
         "review_subjects",
@@ -580,6 +581,29 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_runs_repo_started
             ON review_runs(repository, started_at DESC);
 
+        CREATE TABLE IF NOT EXISTS review_run_files (
+            run_id INTEGER NOT NULL,
+            repository TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            change_status TEXT NOT NULL DEFAULT '',
+            domain TEXT NOT NULL DEFAULT '',
+            review_mode TEXT NOT NULL DEFAULT 'normal',
+            diff_requested INTEGER NOT NULL DEFAULT 0 CHECK (diff_requested IN (0, 1)),
+            diff_returned INTEGER NOT NULL DEFAULT 0 CHECK (diff_returned IN (0, 1)),
+            diff_truncated INTEGER NOT NULL DEFAULT 0 CHECK (diff_truncated IN (0, 1)),
+            head_ranges_read_json TEXT NOT NULL DEFAULT '[]',
+            base_ranges_read_json TEXT NOT NULL DEFAULT '[]',
+            unavailable_reason TEXT NOT NULL DEFAULT '',
+            first_accessed_at TEXT NOT NULL,
+            last_accessed_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, path),
+            FOREIGN KEY (run_id) REFERENCES review_runs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_run_files_repo_pr
+            ON review_run_files(repository, pr_number, run_id);
+
         CREATE TABLE IF NOT EXISTS coach_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL DEFAULT '',
@@ -691,6 +715,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             publication_key TEXT NOT NULL DEFAULT '',
             comment_id INTEGER,
             rendered_markdown TEXT,
+            rendered_blocks_json TEXT NOT NULL DEFAULT '',
             rendered_hash TEXT NOT NULL DEFAULT '',
             delivery_status TEXT NOT NULL DEFAULT 'generated' CHECK (
                 delivery_status IN (
@@ -850,6 +875,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(
         connection,
         "review_publications",
+        "rendered_blocks_json",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
         "delivery_status",
         "TEXT NOT NULL DEFAULT 'legacy_unverified'",
     )
@@ -902,6 +933,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS uq_review_publications_run
             ON review_publications(review_run_id)
             WHERE review_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_run_files_repo_pr
+            ON review_run_files(repository, pr_number, run_id)
         """
     )
     connection.execute(

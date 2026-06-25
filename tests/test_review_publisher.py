@@ -12,7 +12,7 @@ from unittest import mock
 PLUGIN_PARENT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PLUGIN_PARENT))
 
-from eneo_review_tools import memory_db, review_publisher  # noqa: E402
+from eneo_review_tools import memory_db, review_publisher, review_renderer  # noqa: E402
 
 
 class FakeHTTPResponse:
@@ -297,36 +297,66 @@ class ReviewPublisherTests(unittest.TestCase):
 
     def test_split_keeps_findings_and_details_whole(self) -> None:
         publication_key = "sha256:" + ("1" * 64)
-        body = (
-            "## Eneo AI code & security review\n\n"
-            "There are 2 current findings: 2 High (P1).\n\n"
-            "### F1 · High (P1): First root cause\n"
-            "`backend/a.py:10` · security\n\n"
-            + ("First finding evidence. " * 20)
-            + "\nF1 body end.\n\n"
-            "### F2 · High (P1): Second root cause\n"
-            "`backend/b.py:20` · correctness\n\n"
-            + ("Second finding evidence. " * 20)
-            + "\nF2 body end.\n\n"
-            "<details>\n"
-            "<summary>Copyable fix brief for a coding agent</summary>\n\n"
-            "```text\n"
-            + ("Fix brief line. " * 20)
-            + "\n```\n\n"
-            "</details>\n\n"
-            "<!--\n"
-            "eneo-review:\n"
-            "head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-            "F1=first\n"
-            "F2=second\n"
-            "-->\n\n"
-            f"<!-- eneo-review:canonical publication={publication_key} -->\n"
+        blocks = (
+            review_renderer.ReviewBlock(
+                kind="header",
+                markdown=(
+                    "## Eneo AI code & security review\n\n"
+                    "There are 2 current findings: 2 High (P1)."
+                ),
+            ),
+            review_renderer.ReviewBlock(
+                kind="finding",
+                markdown=(
+                    "### F1 · High (P1): First root cause\n"
+                    "`backend/a.py:10` · security\n\n"
+                    + ("First finding evidence. " * 20)
+                    + "\nF1 body end."
+                ),
+            ),
+            review_renderer.ReviewBlock(
+                kind="finding",
+                markdown=(
+                    "### F2 · High (P1): Second root cause\n"
+                    "`backend/b.py:20` · correctness\n\n"
+                    + ("Second finding evidence. " * 20)
+                    + "\nF2 body end."
+                ),
+            ),
+            review_renderer.ReviewBlock(
+                kind="fix_brief",
+                markdown=(
+                    "<details>\n"
+                    "<summary>Copyable fix brief for a coding agent</summary>\n\n"
+                    "```text\n"
+                    + ("Fix brief line. " * 20)
+                    + "\n```\n\n"
+                    "</details>"
+                ),
+            ),
+            review_renderer.ReviewBlock(
+                kind="metadata",
+                markdown=(
+                    "<!--\n"
+                    "eneo-review:\n"
+                    "head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "F1=first\n"
+                    "F2=second\n"
+                    "-->"
+                ),
+            ),
+            review_renderer.ReviewBlock(
+                kind="metadata",
+                markdown=f"<!-- eneo-review:canonical publication={publication_key} -->",
+            ),
         )
+        body = review_renderer.review_markdown_from_blocks(blocks)
 
         parts = review_publisher.split_publication_body(
             body,
             publication_key=publication_key,
             max_comment_bytes=1250,
+            rendered_blocks_json=review_renderer.review_blocks_to_json(blocks),
         )
 
         self.assertGreater(len(parts), 1)
@@ -402,6 +432,7 @@ class ReviewPublisherTests(unittest.TestCase):
             str(publication["markdown"]),
             publication_key=str(publication["publication_key"]),
             max_comment_bytes=1300,
+            rendered_blocks_json=str(publication["rendered_blocks_json"]),
         )
         self.assertGreater(len(split_parts), 1)
         original_ids = [900 + part.part_number for part in split_parts]

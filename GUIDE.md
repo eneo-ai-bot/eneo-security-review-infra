@@ -127,6 +127,13 @@ The canonical live contract for the visible comment is
 - stable local references such as `F1` and `F2`;
 - one collapsed, copyable fix brief containing all findings when findings exist.
 
+When the read tools recorded a coverage ledger for the run, the comment includes
+a compact review-context line. Complete coverage means every changed path was
+available in the diff; incomplete coverage names the representative unavailable
+or truncated paths and must not be treated as a clean result. This is
+deterministic tool telemetry, not a model-written assurance that every behavior
+was fully reviewed.
+
 Each finding contains:
 
 - a short severity-prefixed heading;
@@ -558,13 +565,17 @@ GitHub UI state:
 ```bash
 eneo-review-memory runs --repo eneo-ai/eneo --limit 10
 eneo-review-memory publications --repo eneo-ai/eneo --pr 123
+eneo-review-memory coverage --run-id 123 --json
 ```
 
 `generated` with no `posting` timestamp means an old review skill generated a
 publication but did not invoke delivery. `publish_failed` means GitHub posting
 was attempted and `failure=` is the root cause. `stale` means the PR base or
 head changed before the canonical comment could be updated. A crashed run that
-stays `running` can be marked failed without touching completed runs:
+stays `running` can be marked failed without touching completed runs. The
+coverage command shows objective changed-path context telemetry for one run:
+registered paths, diff exposure, truncation/unavailable counts, explicit source
+reads, and a stable hash for operator comparison.
 
 ```bash
 eneo-review-memory runs --mark-stalled --older-than-minutes 10 --repo eneo-ai/eneo --pr 123

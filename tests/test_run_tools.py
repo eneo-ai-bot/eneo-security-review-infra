@@ -206,6 +206,28 @@ class RunToolTests(unittest.TestCase):
             "base": {"sha": base_sha},
         }
 
+    def pull_with_repositories(self, *, base_sha="b" * 40, head_sha="a" * 40):
+        return {
+            "state": "open",
+            "draft": False,
+            "title": "Test PR",
+            "html_url": "https://github.com/eneo-ai/eneo/pull/12",
+            "user": {"login": "alice"},
+            "changed_files": 1,
+            "additions": 2,
+            "deletions": 1,
+            "head": {
+                "ref": "feature/example",
+                "sha": head_sha,
+                "repo": {"full_name": "eneo-ai/eneo"},
+            },
+            "base": {
+                "ref": "main",
+                "sha": base_sha,
+                "repo": {"full_name": "eneo-ai/eneo"},
+            },
+        }
+
     def prepare_recorded_review(self, *, pr=9, base_sha="b" * 40, head_sha="a" * 40):
         finding = self.finding()
         with closing(memory_db.connect()) as connection:
@@ -280,6 +302,92 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(run["status"], "failed")
         self.assertEqual(publication["delivery_status"], "stale")
         self.assertEqual(publication["failure_code"], "base_sha_changed")
+
+    def test_read_tools_record_review_context_coverage(self):
+        start = self.start(pr=12)
+        run_id = int(start["run_id"])
+        changed_files = [
+            {
+                "path": "backend/api.py",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3,
+                "patch_available": True,
+                "context_hash": "d" * 40,
+                "context_hash_source": "blob",
+            }
+        ]
+        pull = self.pull_with_repositories()
+
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=changed_files),
+        ):
+            overview = self.call(
+                tools.pr_overview,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 12,
+                    "run_id": run_id,
+                },
+            )
+        self.assertEqual(overview["files"][0]["path"], "backend/api.py")
+
+        with closing(memory_db.connect()) as connection:
+            summary = memory_db.coverage_summary(connection, run_id=run_id)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "incomplete")
+        self.assertEqual(summary["changed_paths"], 1)
+        self.assertEqual(summary["diff_exposed"], 0)
+
+        diff = (
+            b"diff --git a/backend/api.py b/backend/api.py\n"
+            b"@@ -1,2 +1,3 @@\n-old\n+new\n"
+        )
+        with patch.object(tools, "_request", return_value=(diff, False, {})):
+            result = self.call(
+                tools.pr_diff,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 12,
+                    "run_id": run_id,
+                    "path": "backend/api.py",
+                },
+            )
+        self.assertEqual(result["path"], "backend/api.py")
+
+        with closing(memory_db.connect()) as connection:
+            summary = memory_db.coverage_summary(connection, run_id=run_id)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["state"], "complete")
+        self.assertEqual(summary["diff_exposed"], 1)
+        self.assertEqual(summary["context_reads"], 0)
+
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=changed_files),
+            patch.object(tools, "_file_at_revision", return_value=b"one\ntwo\nthree\n"),
+        ):
+            file_result = self.call(
+                tools.pr_file,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 12,
+                    "run_id": run_id,
+                    "path": "backend/api.py",
+                    "side": "head",
+                    "start_line": 2,
+                    "max_lines": 2,
+                },
+            )
+        self.assertEqual(file_result["start_line"], 2)
+        self.assertEqual(file_result["end_line"], 3)
+
+        with closing(memory_db.connect()) as connection:
+            summary = memory_db.coverage_summary(connection, run_id=run_id)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["context_reads"], 1)
 
 
 if __name__ == "__main__":

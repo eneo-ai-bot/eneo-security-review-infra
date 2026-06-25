@@ -16,10 +16,20 @@ from typing import Any, Literal, Protocol, cast
 try:
     from . import memory_publications
     from .memory_validation import ReviewMemoryError
+    from .review_renderer import (
+        ReviewBlock,
+        review_blocks_from_json,
+        review_markdown_from_blocks,
+    )
     from .review_identity import CONTINUATION_LEAD, REVIEW_COMMENT_TITLE
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     import memory_publications  # type: ignore[no-redef]
     from memory_validation import ReviewMemoryError
+    from review_renderer import (  # type: ignore[no-redef]
+        ReviewBlock,
+        review_blocks_from_json,
+        review_markdown_from_blocks,
+    )
     from review_identity import (  # type: ignore[no-redef]
         CONTINUATION_LEAD,
         REVIEW_COMMENT_TITLE,
@@ -410,46 +420,7 @@ def _body_size(body: str) -> int:
     return len(body.encode("utf-8"))
 
 
-def _semantic_blocks(body: str) -> list[str]:
-    lines = body.splitlines(keepends=True)
-    blocks: list[str] = []
-    current: list[str] = []
-    in_details = False
-    in_hidden_marker = False
-
-    def flush() -> None:
-        nonlocal current
-        if current:
-            blocks.append("".join(current))
-            current = []
-
-    for line in lines:
-        starts_block = (
-            line.startswith("### F")
-            or line.startswith("<details>")
-            or line.startswith("<!--")
-        )
-        if starts_block and current and not in_details and not in_hidden_marker:
-            flush()
-
-        current.append(line)
-
-        if line.startswith("<details>"):
-            in_details = True
-        elif line.startswith("<!--"):
-            in_hidden_marker = True
-        elif in_details and line.strip() == "</details>":
-            in_details = False
-            flush()
-        elif in_hidden_marker and line.strip() == "-->":
-            in_hidden_marker = False
-            flush()
-
-    flush()
-    return blocks
-
-
-def _split_semantic_blocks(blocks: list[str], max_bytes: int) -> list[str]:
+def _pack_blocks(blocks: list[str], max_bytes: int) -> list[str]:
     chunks: list[str] = []
     current = ""
     for block in blocks:
@@ -464,6 +435,28 @@ def _split_semantic_blocks(blocks: list[str], max_bytes: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def _publication_blocks(
+    body: str, *, rendered_blocks_json: str, publication_key: str
+) -> list[str]:
+    marker = _canonical_html_marker(publication_key)
+    if rendered_blocks_json:
+        try:
+            blocks = review_blocks_from_json(rendered_blocks_json, fallback_markdown=body)
+        except ValueError as exc:
+            raise GitHubPublicationError("rendered_blocks_invalid") from exc
+        if review_markdown_from_blocks(blocks) != body:
+            raise GitHubPublicationError("rendered_blocks_mismatch")
+    else:
+        blocks = (ReviewBlock(kind="header", markdown=body),)
+
+    content_blocks: list[str] = []
+    for block in blocks:
+        markdown = block.markdown.replace(marker, "").strip()
+        if markdown:
+            content_blocks.append(markdown + "\n")
+    return content_blocks
 
 
 def _continuation_prefix(part_number: int, total_parts: int) -> str:
@@ -484,13 +477,15 @@ def _with_part_heading(body: str, part_number: int, total_parts: int) -> str:
 
 
 def split_publication_body(
-    body: str, *, publication_key: str, max_comment_bytes: int
+    body: str,
+    *,
+    publication_key: str,
+    max_comment_bytes: int,
+    rendered_blocks_json: str = "",
 ) -> list[PublicationPart]:
     if _body_size(body) <= max_comment_bytes:
         return [PublicationPart(part_number=1, body=body)]
 
-    marker = _canonical_html_marker(publication_key)
-    content = body.replace(marker, "").rstrip() + "\n"
     reserved = _body_size(
         _continuation_prefix(9999, 9999)
         + "\n\n<!-- "
@@ -501,7 +496,12 @@ def split_publication_body(
     if content_budget < 200:
         raise GitHubPublicationError("body_too_large")
 
-    chunks = _split_semantic_blocks(_semantic_blocks(content), content_budget)
+    blocks = _publication_blocks(
+        body,
+        rendered_blocks_json=rendered_blocks_json,
+        publication_key=publication_key,
+    )
+    chunks = _pack_blocks(blocks, content_budget)
     total_parts = len(chunks)
     parts: list[PublicationPart] = []
     for index, chunk in enumerate(chunks, start=1):
@@ -640,6 +640,7 @@ def publish_review(
             body,
             publication_key=publication["publication_key"],
             max_comment_bytes=budget,
+            rendered_blocks_json=publication["rendered_blocks_json"],
         )
     except GitHubPublicationError as exc:
         memory_publications.mark_publication_failed(

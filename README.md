@@ -233,6 +233,7 @@ container:
 ```bash
 eneo-review-memory runs --repo eneo-ai/eneo --limit 10
 eneo-review-memory publications --repo eneo-ai/eneo --pr 123
+eneo-review-memory coverage --run-id 123 --json
 ```
 
 `generated` with no `posting` timestamp means an old review skill did not call
@@ -242,7 +243,11 @@ failed; read `failure=` for the root cause. Endpoint-specific failures such as
 `github_403_create_issue_comment` identify which GitHub token permission or org
 approval path to fix. `body_too_large` means the review could not fit within the
 configured comment budget, and `stale` means the PR base or head changed before
-posting.
+posting. The coverage command shows the objective changed-path ledger for one
+run: how many changed paths were registered, how many had diff context exposed
+to the reviewer, whether any diff was truncated or unavailable, and how many
+explicit source ranges were read. It is telemetry, not a model claim that the PR
+was deeply reviewed.
 If a container crash leaves a run `running`, mark only stale runs failed:
 
 ```bash

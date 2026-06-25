@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from . import memory_db, review_publisher
 
@@ -79,6 +79,12 @@ def _positive_id(raw: Any, *, field: str) -> int:
     if value < 1:
         raise ToolInputError(f"{field} must be a positive integer")
     return value
+
+
+def _optional_run_id(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    return _positive_id(raw, field="run_id")
 
 
 def _path(raw: Any, *, required: bool = True) -> str:
@@ -278,8 +284,18 @@ def pr_overview(args: dict[str, Any], **_: Any) -> str:
     try:
         repository = _allowlisted_repository(args.get("repository"))
         number = _pr_number(args.get("pr_number"))
+        run_id = _optional_run_id(args.get("run_id"))
         pull = _pr(repository, number)
         files = _changed_files(repository, number)
+        if run_id is not None:
+            with closing(memory_db.connect_existing()) as connection:
+                memory_db.register_changed_files(
+                    connection,
+                    run_id=run_id,
+                    repository=repository,
+                    pr_number=number,
+                    files=files,
+                )
         result = {
             "repository": repository,
             "number": number,
@@ -346,10 +362,30 @@ def _filter_diff(text: str, path: str) -> str:
     return "".join(matches)
 
 
+def _diff_paths(text: str) -> list[str]:
+    paths: list[str] = []
+    for line in text.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        marker = " b/"
+        marker_index = line.rfind(marker)
+        if marker_index < 0:
+            continue
+        path = line[marker_index + len(marker) :].strip()
+        if path.startswith('"') and path.endswith('"') and len(path) >= 2:
+            path = path[1:-1]
+        try:
+            paths.append(_path(path))
+        except ToolInputError:
+            continue
+    return sorted(set(paths))
+
+
 def pr_diff(args: dict[str, Any], **_: Any) -> str:
     try:
         repository = _allowlisted_repository(args.get("repository"))
         number = _pr_number(args.get("pr_number"))
+        run_id = _optional_run_id(args.get("run_id"))
         path = _path(args.get("path"), required=False)
         try:
             requested = int(args.get("max_chars", 120000))
@@ -365,10 +401,32 @@ def pr_diff(args: dict[str, Any], **_: Any) -> str:
         text = raw.decode("utf-8", errors="replace")
         text = _filter_diff(text, path)
         if path and not text:
+            if run_id is not None:
+                with closing(memory_db.connect_existing()) as connection:
+                    memory_db.record_diff_exposure(
+                        connection,
+                        run_id=run_id,
+                        repository=repository,
+                        pr_number=number,
+                        paths=[path],
+                        truncated=False,
+                        unavailable_reason="diff_path_missing",
+                    )
             raise ToolInputError(
                 "the requested path was not present in the rendered diff"
             )
         result_truncated = len(text) > max_chars
+        if run_id is not None:
+            exposed_paths = [path] if path else _diff_paths(text[:max_chars])
+            with closing(memory_db.connect_existing()) as connection:
+                memory_db.record_diff_exposure(
+                    connection,
+                    run_id=run_id,
+                    repository=repository,
+                    pr_number=number,
+                    paths=exposed_paths,
+                    truncated=transport_truncated or result_truncated,
+                )
         return _output(
             {
                 "repository": repository,
@@ -460,6 +518,7 @@ def pr_file(args: dict[str, Any], **_: Any) -> str:
     try:
         repository = _allowlisted_repository(args.get("repository"))
         number = _pr_number(args.get("pr_number"))
+        run_id = _optional_run_id(args.get("run_id"))
         path = _path(args.get("path"))
         side = str(args.get("side", "head")).strip().lower()
         if side not in {"head", "base"}:
@@ -523,6 +582,19 @@ def pr_file(args: dict[str, Any], **_: Any) -> str:
             f"{line_number}: {line}"
             for line_number, line in enumerate(selected, start=start_line)
         )
+        end_line = start_line + len(selected) - 1 if selected else start_line - 1
+        if run_id is not None and selected:
+            with closing(memory_db.connect_existing()) as connection:
+                memory_db.record_file_range(
+                    connection,
+                    run_id=run_id,
+                    repository=repository,
+                    pr_number=number,
+                    path=path,
+                    side=cast(Literal["head", "base"], side),
+                    start_line=start_line,
+                    end_line=end_line,
+                )
         return _output(
             {
                 "repository": repository,
@@ -532,9 +604,7 @@ def pr_file(args: dict[str, Any], **_: Any) -> str:
                 "side": side,
                 "revision": revision,
                 "start_line": start_line,
-                "end_line": start_line + len(selected) - 1
-                if selected
-                else start_line - 1,
+                "end_line": end_line,
                 "total_lines": len(lines),
                 "content": numbered,
                 "truncated": start_index + len(selected) < len(lines),

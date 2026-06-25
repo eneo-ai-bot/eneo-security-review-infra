@@ -318,6 +318,54 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertEqual(payload[0]["review_run_id"], run["id"])
         self.connection = memory_db.connect(str(self.db_path))
 
+    def test_coverage_cli_reports_run_context_summary(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo-ai/eneo",
+            240,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=int(run["id"]),
+            repository="eneo-ai/eneo",
+            pr_number=240,
+            files=[{"path": "backend/api.py", "status": "modified"}],
+        )
+        memory_db.record_diff_exposure(
+            self.connection,
+            run_id=int(run["id"]),
+            repository="eneo-ai/eneo",
+            pr_number=240,
+            paths=["backend/api.py"],
+            truncated=False,
+        )
+        self.connection.close()
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "eneo_review_memory.py"),
+                "--db",
+                str(self.db_path),
+                "coverage",
+                "--run-id",
+                str(run["id"]),
+                "--json",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["state"], "complete")
+        self.assertEqual(payload["changed_paths"], 1)
+        self.assertEqual(payload["diff_exposed"], 1)
+        self.connection = memory_db.connect(str(self.db_path))
+
     def test_repo_scopes_runs(self):
         memory_db.start_run(self.connection, "eneo-ai/eneo", 1, head_sha="a" * 40)
         memory_db.start_run(self.connection, "other/repo", 1, head_sha="b" * 40)

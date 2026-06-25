@@ -14,6 +14,14 @@ ENEO_PR_OVERVIEW = {
         "properties": {
             "repository": {"type": "string", "description": "GitHub owner/repository."},
             "pr_number": {"type": "integer", "minimum": 1},
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "Optional review run id. After eneo_review_run_start, pass it "
+                    "to register the changed-path coverage ledger."
+                ),
+            },
         },
         "required": ["repository", "pr_number"],
         "additionalProperties": False,
@@ -41,6 +49,11 @@ ENEO_PR_DIFF = {
                 "maximum": 120000,
                 "default": 120000,
             },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Review run id used for objective diff exposure telemetry.",
+            },
         },
         "required": ["repository", "pr_number"],
         "additionalProperties": False,
@@ -66,6 +79,11 @@ ENEO_PR_FILE = {
                 "minimum": 1,
                 "maximum": 400,
                 "default": 200,
+            },
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Review run id used for objective source-range telemetry.",
             },
         },
         "required": ["repository", "pr_number", "path"],
