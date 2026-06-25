@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr
+import importlib
 import io
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
@@ -21,6 +23,10 @@ class _FailingBridge:
 
 
 class FeedbackBridgeEntrypointTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        for name in ("eneo_review_tools.feedback_bridge", "eneo_review_tools"):
+            sys.modules.pop(name, None)
+
     def test_env_presence_summary_redacts_secret_values(self) -> None:
         environment = {
             "ENEO_FEEDBACK_WEBHOOK_SECRET": "super-secret",
@@ -55,6 +61,46 @@ class FeedbackBridgeEntrypointTests(unittest.TestCase):
         self.assertIn("ENEO_FEEDBACK_GH_TOKEN=missing", output)
         self.assertIn("GH_TOKEN=set", output)
         self.assertNotIn("legacy-secret", output)
+
+    def test_loader_prefers_image_plugin_and_evicts_stale_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stale_parent = root / "stale"
+            fresh_parent = root / "fresh"
+            for parent, marker in [(stale_parent, "stale"), (fresh_parent, "fresh")]:
+                package = parent / "eneo_review_tools"
+                package.mkdir(parents=True)
+                (package / "__init__.py").write_text("", encoding="utf-8")
+                (package / "feedback_bridge.py").write_text(
+                    f"MARKER = {marker!r}\n"
+                    "DEFAULT_PATH = '/webhooks/eneo-review-feedback'\n"
+                    "DEFAULT_PORT = 8645\n"
+                    "MAX_BODY_BYTES = 65536\n"
+                    "class BridgeError(Exception): pass\n"
+                    "class GitHubError(Exception): pass\n"
+                    "class GitHubNotFound(Exception): pass\n"
+                    "class UnauthorizedFeedback(Exception): pass\n",
+                    encoding="utf-8",
+                )
+
+            sys.path.insert(0, str(stale_parent))
+            try:
+                stale = importlib.import_module("eneo_review_tools.feedback_bridge")
+                self.assertEqual(stale.MARKER, "stale")
+            finally:
+                sys.path.remove(str(stale_parent))
+
+            stderr = io.StringIO()
+            with patch.object(
+                entrypoint,
+                "plugin_parent_candidates",
+                return_value=(fresh_parent, stale_parent),
+            ):
+                with redirect_stderr(stderr):
+                    loaded = entrypoint.load_feedback_bridge()
+
+        self.assertEqual(getattr(loaded, "MARKER"), "fresh")
+        self.assertIn(str(fresh_parent), stderr.getvalue())
 
 
 if __name__ == "__main__":

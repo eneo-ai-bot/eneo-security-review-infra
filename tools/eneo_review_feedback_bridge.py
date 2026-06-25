@@ -72,23 +72,58 @@ def _import_module(name: str) -> ModuleType:
     return importlib.import_module(name)
 
 
-def _insert_plugin_parent() -> None:
-    candidates = [
-        Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins",
+def plugin_parent_candidates() -> tuple[Path, ...]:
+    candidates: list[Path] = [
         Path("/opt/eneo-bootstrap/plugins"),
+        Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins",
         Path(__file__).resolve().parents[1] / "bootstrap" / "plugins",
     ]
     candidates.extend(Path(entry) for entry in sys.path if entry)
-    for candidate in candidates:
+    return tuple(candidates)
+
+
+def _insert_plugin_parent() -> Path:
+    for candidate in plugin_parent_candidates():
         if (candidate / "eneo_review_tools" / "feedback_bridge.py").exists():
             sys.path.insert(0, str(candidate))
-            return
+            return candidate
     raise SystemExit("Could not locate the eneo_review_tools plugin")
 
 
+def _module_is_from_parent(module: ModuleType, parent: Path) -> bool:
+    raw = getattr(module, "__file__", None)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        path = Path(raw).resolve()
+        root = parent.resolve()
+    except OSError:
+        return False
+    return path == root or root in path.parents
+
+
+def _evict_stale_plugin_modules(parent: Path) -> None:
+    for name in ("eneo_review_tools.feedback_bridge", "eneo_review_tools"):
+        module = sys.modules.get(name)
+        if module is not None and not _module_is_from_parent(module, parent):
+            sys.modules.pop(name, None)
+
+
+def _describe_bridge_source(module: ModuleType, parent: Path) -> None:
+    raw = getattr(module, "__file__", "unknown")
+    print(
+        f"feedback bridge plugin source: {raw} (parent={parent})",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def load_feedback_bridge() -> FeedbackBridgeModule:
-    _insert_plugin_parent()
-    return cast(FeedbackBridgeModule, _import_module("eneo_review_tools.feedback_bridge"))
+    parent = _insert_plugin_parent()
+    _evict_stale_plugin_modules(parent)
+    module = _import_module("eneo_review_tools.feedback_bridge")
+    _describe_bridge_source(module, parent)
+    return cast(FeedbackBridgeModule, module)
 
 
 def env_presence_summary() -> str:
