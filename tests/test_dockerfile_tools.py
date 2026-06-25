@@ -6,7 +6,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from fnmatch import fnmatch
+import io
+import importlib
 from pathlib import Path
 from unittest import mock
 
@@ -37,6 +40,27 @@ def _copy_source_covers(source: str, relative_path: str) -> bool:
 
 
 class DockerfileToolsTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        for name in (
+            "memory_db",
+            "memory_schema",
+            "memory_migration",
+            "memory_identity",
+            "memory_decisions",
+            "memory_findings",
+            "memory_publications",
+            "memory_feedback",
+            "memory_reporting",
+            "memory_runs",
+            "memory_coach",
+            "memory_validation",
+            "feedback_authorization",
+            "feedback_commands",
+            "feedback_contract",
+            "eneo_review_memory",
+        ):
+            sys.modules.pop(name, None)
+
     def test_container_installs_every_review_memory_runtime_module(self) -> None:
         sources = _docker_copy_sources()
         modules = [
@@ -113,6 +137,48 @@ class DockerfileToolsTests(unittest.TestCase):
             Path("/opt/eneo-bootstrap/plugins/eneo_review_tools"),
             candidates,
         )
+
+    def test_memory_cli_prefers_image_plugin_and_evicts_stale_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stale = root / "stale"
+            fresh = root / "fresh"
+            stale.mkdir()
+            fresh.mkdir()
+            (stale / "memory_db.py").write_text("MARKER = 'stale'\n", encoding="utf-8")
+            (fresh / "memory_db.py").write_text(
+                "MARKER = 'fresh'\n"
+                "class ReviewMemoryError(Exception): pass\n"
+                "def connect(explicit=None): return None\n"
+                "def connect_existing(explicit=None): return None\n",
+                encoding="utf-8",
+            )
+
+            sys.path.insert(0, str(stale))
+            try:
+                stale_module = importlib.import_module("memory_db")
+                self.assertEqual(stale_module.MARKER, "stale")
+            finally:
+                sys.path.remove(str(stale))
+
+            sys.path.insert(0, str(ROOT / "tools"))
+            try:
+                import eneo_review_memory
+
+                stderr = io.StringIO()
+                with mock.patch.object(
+                    eneo_review_memory,
+                    "memory_module_candidates",
+                    return_value=(fresh, stale),
+                ):
+                    with redirect_stderr(stderr):
+                        loaded = eneo_review_memory.load_memory_module()
+            finally:
+                sys.path.remove(str(ROOT / "tools"))
+
+        self.assertEqual(getattr(loaded, "MARKER"), "fresh")
+        self.assertTrue(hasattr(loaded, "connect_existing"))
+        self.assertIn(str(fresh), stderr.getvalue())
 
 
 if __name__ == "__main__":

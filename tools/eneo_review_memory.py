@@ -156,9 +156,53 @@ def _import_module(name: str) -> ModuleType:
 
 def memory_module_candidates() -> tuple[Path, ...]:
     return (
-        Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins" / "eneo_review_tools",
         Path("/opt/eneo-bootstrap/plugins/eneo_review_tools"),
+        Path(os.environ.get("HERMES_HOME", "/opt/data")) / "plugins" / "eneo_review_tools",
         Path(__file__).resolve().parents[1] / "bootstrap" / "plugins" / "eneo_review_tools",
+    )
+
+
+def _module_is_from_candidate(module: ModuleType, candidate: Path) -> bool:
+    raw = getattr(module, "__file__", None)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        path = Path(raw).resolve()
+        root = candidate.resolve()
+    except OSError:
+        return False
+    return path == root or root in path.parents
+
+
+def _evict_stale_memory_modules(candidate: Path) -> None:
+    for name in (
+        "memory_db",
+        "memory_schema",
+        "memory_migration",
+        "memory_identity",
+        "memory_decisions",
+        "memory_findings",
+        "memory_publications",
+        "memory_feedback",
+        "memory_reporting",
+        "memory_runs",
+        "memory_coach",
+        "memory_validation",
+        "feedback_authorization",
+        "feedback_commands",
+        "feedback_contract",
+    ):
+        module = sys.modules.get(name)
+        if module is not None and not _module_is_from_candidate(module, candidate):
+            sys.modules.pop(name, None)
+
+
+def _describe_memory_source(module: ModuleType, candidate: Path) -> None:
+    raw = getattr(module, "__file__", "unknown")
+    print(
+        f"review memory plugin source: {raw} (path={candidate})",
+        file=sys.stderr,
+        flush=True,
     )
 
 
@@ -168,7 +212,10 @@ def load_memory_module() -> MemoryDbModule:
             # Installed Hermes plugins are path-loaded as top-level modules; the
             # Protocol above keeps this dynamic boundary explicit and typed.
             sys.path.insert(0, str(candidate))
-            return cast(MemoryDbModule, _import_module("memory_db"))
+            _evict_stale_memory_modules(candidate)
+            module = _import_module("memory_db")
+            _describe_memory_source(module, candidate)
+            return cast(MemoryDbModule, module)
     raise SystemExit("Could not locate the eneo_review_tools plugin")
 
 
