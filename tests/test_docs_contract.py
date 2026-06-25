@@ -216,6 +216,10 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("ENEO_REVIEW_PUBLISH_GH_TOKEN", guide)
         self.assertIn("deterministic publisher", readme)
         self.assertIn("deterministic publisher", guide)
+        self.assertIn("continuation comments", readme)
+        self.assertIn("continuation comments", guide)
+        self.assertIn("not the number of findings", readme)
+        self.assertIn("not the number of findings", guide)
         self.assertNotIn("Native Hermes `github_comment`", readme)
         self.assertNotIn("github_comment delivery", guide)
 

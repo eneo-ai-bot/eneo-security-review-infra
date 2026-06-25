@@ -69,6 +69,9 @@ The model does not receive a general shell, repository write tool, or arbitrary
 GitHub mutation tool. The final Hermes response is logged only; the
 `eneo_review_publish` tool loads the stored body and PR target from SQLite,
 verifies the exact base/head SHA, and creates or updates the canonical comment.
+If the rendered review is too large for one GitHub comment, the publisher splits
+it into deterministic continuation comments instead of truncating or hiding
+verified findings.
 
 ## 1. Create the GitHub reviewer identity
 
@@ -128,6 +131,10 @@ ENEO_REVIEW_PUBLISH_MAX_BYTES=60000
 HERMES_DASHBOARD=0
 API_SERVER_ENABLED=false
 ```
+
+`ENEO_REVIEW_PUBLISH_MAX_BYTES` controls the maximum size of each GitHub comment,
+not the number of findings reviewed or published. Lowering it does not suppress
+findings; it only makes the publisher use more continuation comments.
 
 Attach an HTTPS domain such as `review-bot.example.org` to service
 `hermes-review`, container port `8644`. Attach a second HTTPS route such as

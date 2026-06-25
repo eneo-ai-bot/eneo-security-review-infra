@@ -63,7 +63,7 @@ class MemoryCoachTests(unittest.TestCase):
             )
         }
 
-        self.assertEqual(memory_db.SCHEMA_VERSION, 7)
+        self.assertEqual(memory_db.SCHEMA_VERSION, 8)
         self.assertIn("coach_runs", tables)
         self.assertIn("coach_candidates", tables)
         self.assertIn("review_quality_feedback", tables)

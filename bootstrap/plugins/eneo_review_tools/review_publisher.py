@@ -38,14 +38,19 @@ class PullRequestState:
 class IssueComment:
     comment_id: int
     body: str
+    author_login: str = ""
+
+
+@dataclass(frozen=True)
+class PublicationPart:
+    part_number: int
+    body: str
 
 
 class GitHubPublicationGateway(Protocol):
-    def get_pull_request(self, repository: str, pr_number: int) -> PullRequestState: ...
+    def current_user_login(self) -> str: ...
 
-    def get_issue_comment(
-        self, repository: str, comment_id: int
-    ) -> IssueComment | None: ...
+    def get_pull_request(self, repository: str, pr_number: int) -> PullRequestState: ...
 
     def list_issue_comments(
         self, repository: str, issue_number: int
@@ -58,6 +63,8 @@ class GitHubPublicationGateway(Protocol):
     def create_issue_comment(
         self, repository: str, issue_number: int, body: str
     ) -> IssueComment: ...
+
+    def delete_issue_comment(self, repository: str, comment_id: int) -> None: ...
 
 
 class GitHubPublicationError(RuntimeError):
@@ -88,6 +95,7 @@ class GitHubIssueCommentGateway:
         if not token:
             raise GitHubPublicationError("missing_publish_token")
         self._token = token
+        self._current_user_login: str | None = None
 
     def _request_json(
         self,
@@ -131,6 +139,8 @@ class GitHubIssueCommentGateway:
                 raise GitHubPublicationError("github_unreachable") from exc
             if len(data) > max_bytes:
                 raise GitHubPublicationError("github_response_too_large")
+            if method == "DELETE" and not data:
+                return {}
             try:
                 return json.loads(data.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -151,22 +161,14 @@ class GitHubIssueCommentGateway:
             head_sha=str(head.get("sha", "")).lower(),
         )
 
-    def get_issue_comment(
-        self, repository: str, comment_id: int
-    ) -> IssueComment | None:
-        try:
-            root = _json_object(
-                self._request_json(
-                    "GET",
-                    f"/repos/{_owner_repo(repository)}/issues/comments/{comment_id}",
-                ),
-                "github_bad_comment_response",
-            )
-        except GitHubPublicationError as exc:
-            if exc.code == "github_404":
-                return None
-            raise
-        return IssueComment(comment_id=int(root.get("id", 0)), body=str(root.get("body", "")))
+    def current_user_login(self) -> str:
+        if self._current_user_login is None:
+            root = _json_object(self._request_json("GET", "/user"), "github_bad_user_response")
+            login = str(root.get("login", "")).strip()
+            if not login:
+                raise GitHubPublicationError("github_bad_user_response")
+            self._current_user_login = login
+        return self._current_user_login
 
     def list_issue_comments(
         self, repository: str, issue_number: int
@@ -194,6 +196,11 @@ class GitHubIssueCommentGateway:
                         IssueComment(
                             comment_id=comment_id,
                             body=str(comment.get("body", "")),
+                            author_login=str(
+                                _json_object(
+                                    comment.get("user"), "github_bad_comments_response"
+                                ).get("login", "")
+                            ),
                         )
                     )
             if len(page_items) < 100:
@@ -211,7 +218,12 @@ class GitHubIssueCommentGateway:
             ),
             "github_bad_comment_response",
         )
-        return IssueComment(comment_id=int(root.get("id", 0)), body=str(root.get("body", "")))
+        user = _json_object(root.get("user"), "github_bad_comment_response")
+        return IssueComment(
+            comment_id=int(root.get("id", 0)),
+            body=str(root.get("body", "")),
+            author_login=str(user.get("login", "")),
+        )
 
     def create_issue_comment(
         self, repository: str, issue_number: int, body: str
@@ -224,7 +236,19 @@ class GitHubIssueCommentGateway:
             ),
             "github_bad_comment_response",
         )
-        return IssueComment(comment_id=int(root.get("id", 0)), body=str(root.get("body", "")))
+        user = _json_object(root.get("user"), "github_bad_comment_response")
+        return IssueComment(
+            comment_id=int(root.get("id", 0)),
+            body=str(root.get("body", "")),
+            author_login=str(user.get("login", "")),
+        )
+
+    def delete_issue_comment(self, repository: str, comment_id: int) -> None:
+        self._request_json(
+            "DELETE",
+            f"/repos/{_owner_repo(repository)}/issues/comments/{comment_id}",
+            max_bytes=0,
+        )
 
 
 def _max_comment_bytes() -> int:
@@ -261,22 +285,235 @@ def _verify_pr_target(
     return None
 
 
-def _find_comment_with_marker(
-    comments: list[IssueComment], marker: str
-) -> IssueComment | None:
+def _extract_publication_key(body: str) -> str | None:
+    token = "eneo-review:canonical publication="
+    token_index = body.find(token)
+    if token_index < 0:
+        return None
+    remainder = body[token_index + len(token) :]
+    parts = remainder.split()
+    if not parts:
+        return None
+    key = parts[0].rstrip(" -\"'>")
+    return key if key.startswith("sha256:") else None
+
+
+def _latest_publication_key(comments: list[IssueComment]) -> str | None:
     for comment in reversed(comments):
-        if marker in comment.body:
-            return comment
+        key = _extract_publication_key(comment.body)
+        if key:
+            return key
     return None
 
 
-def _find_latest_canonical_comment(
-    comments: list[IssueComment],
-) -> IssueComment | None:
-    for comment in reversed(comments):
-        if "eneo-review:canonical publication=" in comment.body:
-            return comment
-    return None
+def _comments_by_author(
+    comments: list[IssueComment], author_login: str
+) -> list[IssueComment]:
+    expected = author_login.casefold()
+    return [
+        comment
+        for comment in comments
+        if comment.author_login and comment.author_login.casefold() == expected
+    ]
+
+
+def _canonical_html_marker(publication_key: str) -> str:
+    return f"<!-- {memory_publications.publication_marker(publication_key)} -->"
+
+
+def _part_marker(publication_key: str, part_number: int, total_parts: int) -> str:
+    return (
+        f"{memory_publications.publication_marker(publication_key)} "
+        f"part={part_number}/{total_parts}"
+    )
+
+
+def _body_size(body: str) -> int:
+    return len(body.encode("utf-8"))
+
+
+def _split_line(line: str, max_bytes: int) -> list[str]:
+    parts: list[str] = []
+    current = ""
+    for character in line:
+        candidate = current + character
+        if current and _body_size(candidate) > max_bytes:
+            parts.append(current)
+            current = character
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _split_lines(lines: list[str], max_bytes: int) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        candidate = current + line
+        if current and _body_size(candidate) > max_bytes:
+            chunks.append(current)
+            current = ""
+        if _body_size(line) > max_bytes:
+            split_parts = _split_line(line, max_bytes)
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(split_parts[:-1])
+            current = split_parts[-1] if split_parts else ""
+        else:
+            current += line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _continuation_prefix(part_number: int, total_parts: int) -> str:
+    if part_number == 1:
+        return ""
+    return (
+        f"## Eneo AI code & security review - {part_number} of {total_parts}\n\n"
+        "Continued from the previous Eneo review comment.\n\n"
+    )
+
+
+def _with_part_heading(body: str, part_number: int, total_parts: int) -> str:
+    if part_number != 1:
+        return _continuation_prefix(part_number, total_parts) + body
+    heading = "## Eneo AI code & security review"
+    replacement = f"## Eneo AI code & security review - 1 of {total_parts}"
+    return body.replace(heading, replacement, 1) if body.startswith(heading) else body
+
+
+def split_publication_body(
+    body: str, *, publication_key: str, max_comment_bytes: int
+) -> list[PublicationPart]:
+    if _body_size(body) <= max_comment_bytes:
+        return [PublicationPart(part_number=1, body=body)]
+
+    marker = _canonical_html_marker(publication_key)
+    content = body.replace(marker, "").rstrip() + "\n"
+    reserved = _body_size(
+        _continuation_prefix(9999, 9999)
+        + "\n\n<!-- "
+        + _part_marker(publication_key, 9999, 9999)
+        + " -->\n"
+    )
+    content_budget = max_comment_bytes - reserved
+    if content_budget < 200:
+        raise GitHubPublicationError("body_too_large")
+
+    chunks = _split_lines(content.splitlines(keepends=True), content_budget)
+    total_parts = len(chunks)
+    parts: list[PublicationPart] = []
+    for index, chunk in enumerate(chunks, start=1):
+        part_body = _with_part_heading(chunk.rstrip(), index, total_parts)
+        part_body = f"{part_body.rstrip()}\n\n<!-- {_part_marker(publication_key, index, total_parts)} -->\n"
+        if _body_size(part_body) > max_comment_bytes:
+            raise GitHubPublicationError("body_too_large")
+        parts.append(PublicationPart(part_number=index, body=part_body))
+    return parts
+
+
+def _publication_comments(
+    comments: list[IssueComment], publication_key: str
+) -> dict[int, IssueComment]:
+    found: dict[int, IssueComment] = {}
+    for comment in comments:
+        if _extract_publication_key(comment.body) != publication_key:
+            continue
+        marker = memory_publications.publication_marker(publication_key)
+        marker_index = comment.body.find(marker)
+        part_number = 1
+        part_token = " part="
+        part_index = comment.body.find(part_token, marker_index)
+        if part_index >= 0:
+            raw_part = comment.body[part_index + len(part_token) :].split("/", 1)[0]
+            try:
+                part_number = int(raw_part)
+            except ValueError:
+                part_number = 1
+        if part_number >= 1:
+            found[part_number] = comment
+    return found
+
+
+def _ordered_publication_comments(
+    comments: list[IssueComment], publication_key: str
+) -> list[IssueComment]:
+    parts = _publication_comments(comments, publication_key)
+    return [parts[number] for number in sorted(parts)]
+
+
+def _comments_by_id(
+    comments: list[IssueComment], comment_ids: list[int]
+) -> list[IssueComment]:
+    indexed = {comment.comment_id: comment for comment in comments}
+    return [
+        indexed[comment_id]
+        for comment_id in comment_ids
+        if comment_id in indexed
+        and "eneo-review:canonical publication=" in indexed[comment_id].body
+    ]
+
+
+def _fallback_targets(
+    comments: list[IssueComment], previous_comment_ids: list[int]
+) -> list[IssueComment]:
+    previous_targets = _comments_by_id(comments, previous_comment_ids)
+    previous_key = next(
+        (
+            key
+            for key in (_extract_publication_key(comment.body) for comment in previous_targets)
+            if key
+        ),
+        None,
+    )
+    key = previous_key or _latest_publication_key(comments)
+    return _ordered_publication_comments(comments, key) if key else []
+
+
+def _publish_parts(
+    *,
+    github: GitHubPublicationGateway,
+    repository: str,
+    pr_number: int,
+    parts: list[PublicationPart],
+    existing_parts: dict[int, IssueComment],
+    fallback_targets: list[IssueComment],
+) -> list[int]:
+    posted_ids: list[int] = []
+    for part in parts:
+        target = existing_parts.get(part.part_number)
+        if target is None and part.part_number <= len(fallback_targets):
+            target = fallback_targets[part.part_number - 1]
+        if target is not None:
+            comment = (
+                target
+                if target.body == part.body
+                else github.update_issue_comment(repository, target.comment_id, part.body)
+            )
+        else:
+            comment = github.create_issue_comment(repository, pr_number, part.body)
+        posted_ids.append(comment.comment_id)
+
+    stale_candidates = [
+        comment
+        for part_number, comment in existing_parts.items()
+        if part_number > len(parts) and comment.comment_id not in posted_ids
+    ] + [
+        comment
+        for index, comment in enumerate(fallback_targets, start=1)
+        if index > len(parts) and comment.comment_id not in posted_ids
+    ]
+    deleted_ids: set[int] = set()
+    for comment in stale_candidates:
+        if comment.comment_id in deleted_ids:
+            continue
+        github.delete_issue_comment(repository, comment.comment_id)
+        deleted_ids.add(comment.comment_id)
+    return posted_ids
 
 
 def publish_review(
@@ -300,25 +537,29 @@ def publish_review(
         }
 
     body = publication["rendered_markdown"]
-    body_bytes = len(body.encode("utf-8"))
     budget = max_comment_bytes if max_comment_bytes is not None else _max_comment_bytes()
-    if body_bytes > budget:
+    try:
+        parts = split_publication_body(
+            body,
+            publication_key=publication["publication_key"],
+            max_comment_bytes=budget,
+        )
+    except GitHubPublicationError as exc:
         memory_publications.mark_publication_failed(
             connection,
             publication_id=publication_id,
             review_run_id=review_run_id,
-            failure_code="body_too_large",
+            failure_code=exc.code,
         )
         return {
             "published": False,
             "publication_id": publication_id,
             "delivery_status": "publish_failed",
-            "failure_code": "body_too_large",
-            "body_bytes": body_bytes,
+            "failure_code": exc.code,
+            "body_bytes": _body_size(body),
             "max_comment_bytes": budget,
         }
 
-    marker = memory_publications.publication_marker(publication["publication_key"])
     try:
         github = github or _default_gateway()
         stale_code = _verify_pr_target(
@@ -340,60 +581,64 @@ def publish_review(
                 "failure_code": stale_code,
             }
 
-        comments = github.list_issue_comments(publication["repository"], publication["pr_number"])
-        current = _find_comment_with_marker(comments, marker)
-        if current is not None:
-            if current.body != body:
-                current = github.update_issue_comment(
-                    publication["repository"], current.comment_id, body
-                )
+        comments = _comments_by_author(
+            github.list_issue_comments(
+                publication["repository"], publication["pr_number"]
+            ),
+            github.current_user_login(),
+        )
+        current_parts = _publication_comments(comments, publication["publication_key"])
+        if current_parts:
+            current_targets = [current_parts[number] for number in sorted(current_parts)]
+            comment_ids = _publish_parts(
+                github=github,
+                repository=publication["repository"],
+                pr_number=publication["pr_number"],
+                parts=parts,
+                existing_parts=current_parts,
+                fallback_targets=current_targets,
+            )
             posted = memory_publications.mark_publication_posted(
                 connection,
                 publication_id=publication_id,
                 review_run_id=review_run_id,
-                comment_id=current.comment_id,
+                comment_id=comment_ids[0],
+                comment_ids=comment_ids,
             )
             return {
                 "published": True,
                 "publication_id": publication_id,
-                "comment_id": current.comment_id,
+                "comment_id": comment_ids[0],
+                "comment_ids": comment_ids,
+                "parts": len(comment_ids),
                 "delivery_status": posted["delivery_status"],
                 "recovered": True,
             }
 
-        target = None
-        if publication["previous_comment_id"]:
-            target = github.get_issue_comment(
-                publication["repository"], publication["previous_comment_id"]
-            )
-            if target is not None and "eneo-review:canonical publication=" not in target.body:
-                target = None
-        if target is None:
-            target = _find_latest_canonical_comment(comments)
+        fallback_targets = _fallback_targets(comments, publication["previous_comment_ids"])
 
-        if target is not None:
-            comment = (
-                target
-                if target.body == body
-                else github.update_issue_comment(
-                    publication["repository"], target.comment_id, body
-                )
-            )
-        else:
-            comment = github.create_issue_comment(
-                publication["repository"], publication["pr_number"], body
-            )
+        comment_ids = _publish_parts(
+            github=github,
+            repository=publication["repository"],
+            pr_number=publication["pr_number"],
+            parts=parts,
+            existing_parts={},
+            fallback_targets=fallback_targets,
+        )
 
         posted = memory_publications.mark_publication_posted(
             connection,
             publication_id=publication_id,
             review_run_id=review_run_id,
-            comment_id=comment.comment_id,
+            comment_id=comment_ids[0],
+            comment_ids=comment_ids,
         )
         return {
             "published": True,
             "publication_id": publication_id,
-            "comment_id": comment.comment_id,
+            "comment_id": comment_ids[0],
+            "comment_ids": comment_ids,
+            "parts": len(comment_ids),
             "delivery_status": posted["delivery_status"],
             "recovered": False,
         }

@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -44,6 +44,7 @@ REQUIRED_TABLES = frozenset(
         "finding_observations",
         "pr_finding_references",
         "review_publications",
+        "review_publication_comments",
         "publication_findings",
         "review_quality_feedback",
         "processed_feedback_events",
@@ -710,6 +711,16 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_publications_current
             ON review_publications(repository, pr_number, superseded_at, id DESC);
 
+        CREATE TABLE IF NOT EXISTS review_publication_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            publication_id INTEGER NOT NULL,
+            part_number INTEGER NOT NULL CHECK (part_number >= 1),
+            comment_id INTEGER NOT NULL CHECK (comment_id >= 1),
+            posted_at TEXT NOT NULL,
+            UNIQUE(publication_id, part_number),
+            FOREIGN KEY (publication_id) REFERENCES review_publications(id)
+        );
+
         CREATE TABLE IF NOT EXISTS publication_findings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             publication_id INTEGER NOT NULL,
@@ -899,6 +910,31 @@ def init_schema(connection: sqlite3.Connection) -> None:
             ON review_publications(repository, pr_number, delivery_status, id DESC)
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS review_publication_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            publication_id INTEGER NOT NULL,
+            part_number INTEGER NOT NULL CHECK (part_number >= 1),
+            comment_id INTEGER NOT NULL CHECK (comment_id >= 1),
+            posted_at TEXT NOT NULL,
+            UNIQUE(publication_id, part_number),
+            FOREIGN KEY (publication_id) REFERENCES review_publications(id)
+        )
+        """
+    )
+    if existing_version < 8:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO review_publication_comments (
+                publication_id, part_number, comment_id, posted_at
+            )
+            SELECT id, 1, comment_id, COALESCE(NULLIF(posted_at, ''), published_at)
+            FROM review_publications
+            WHERE comment_id IS NOT NULL
+              AND delivery_status = 'posted'
+            """
+        )
     _ensure_current_publication_unique_index(connection)
     if existing_version < OBSERVATION_BACKFILL_VERSION:
         _backfill_observations(connection)

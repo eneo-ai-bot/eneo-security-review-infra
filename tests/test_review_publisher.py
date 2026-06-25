@@ -17,14 +17,20 @@ class FakeGitHub:
         *,
         base_sha: str = "b" * 40,
         head_sha: str = "a" * 40,
+        bot_login: str = "eneo-ai-bot",
         comments: list[review_publisher.IssueComment] | None = None,
     ) -> None:
         self.base_sha = base_sha
         self.head_sha = head_sha
+        self.bot_login = bot_login
         self.comments = list(comments or [])
         self.created: list[str] = []
         self.updated: list[tuple[int, str]] = []
+        self.deleted: list[int] = []
         self.next_comment_id = 1000
+
+    def current_user_login(self) -> str:
+        return self.bot_login
 
     def get_pull_request(
         self, repository: str, pr_number: int
@@ -56,7 +62,9 @@ class FakeGitHub:
         self, repository: str, comment_id: int, body: str
     ) -> review_publisher.IssueComment:
         del repository
-        updated = review_publisher.IssueComment(comment_id=comment_id, body=body)
+        updated = review_publisher.IssueComment(
+            comment_id=comment_id, body=body, author_login=self.bot_login
+        )
         self.comments = [
             updated if item.comment_id == comment_id else item for item in self.comments
         ]
@@ -69,11 +77,20 @@ class FakeGitHub:
         del repository, issue_number
         self.next_comment_id += 1
         created = review_publisher.IssueComment(
-            comment_id=self.next_comment_id, body=body
+            comment_id=self.next_comment_id,
+            body=body,
+            author_login=self.bot_login,
         )
         self.comments.append(created)
         self.created.append(body)
         return created
+
+    def delete_issue_comment(self, repository: str, comment_id: int) -> None:
+        del repository
+        self.comments = [
+            comment for comment in self.comments if comment.comment_id != comment_id
+        ]
+        self.deleted.append(comment_id)
 
 
 class ReviewPublisherTests(unittest.TestCase):
@@ -102,9 +119,16 @@ class ReviewPublisherTests(unittest.TestCase):
         self.connection.close()
         self.temp.cleanup()
 
-    def generate(self, *, base_sha: str = "b" * 40, head_sha: str = "a" * 40):
+    def generate(
+        self,
+        *,
+        base_sha: str = "b" * 40,
+        head_sha: str = "a" * 40,
+        connection=None,
+    ):
+        connection = connection or self.connection
         memory_db.record_findings(
-            self.connection,
+            connection,
             "eneo/platform",
             17,
             head_sha,
@@ -113,14 +137,14 @@ class ReviewPublisherTests(unittest.TestCase):
             context_hashes={self.finding["path"]: "d" * 40},
         )
         run = memory_db.start_run(
-            self.connection,
+            connection,
             "eneo/platform",
             17,
             base_sha=base_sha,
             head_sha=head_sha,
         )
         publication = memory_db.finalize_review(
-            self.connection,
+            connection,
             "eneo/platform",
             17,
             head_sha,
@@ -207,7 +231,7 @@ class ReviewPublisherTests(unittest.TestCase):
         )
         self.assertEqual(current.publication_id, int(first["publication_id"]))
 
-    def test_oversize_body_fails_without_truncating_or_superseding(self) -> None:
+    def test_tiny_comment_budget_fails_without_truncating_or_superseding(self) -> None:
         run, publication = self.generate()
 
         result = review_publisher.publish_review(
@@ -215,7 +239,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(publication["publication_id"]),
             review_run_id=int(run["id"]),
             github=FakeGitHub(),
-            max_comment_bytes=1000,
+            max_comment_bytes=100,
         )
 
         self.assertFalse(result["published"])
@@ -226,6 +250,158 @@ class ReviewPublisherTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["delivery_status"], "publish_failed")
         self.assertEqual(row["rendered_markdown"], publication["markdown"])
+
+    def test_large_body_posts_deterministic_continuation_comments(self) -> None:
+        run, publication = self.generate()
+        github = FakeGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+            max_comment_bytes=1000,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertGreater(result["parts"], 1)
+        comment_ids = memory_db.publication_comment_ids(
+            self.connection, int(publication["publication_id"])
+        )
+        self.assertEqual(comment_ids, result["comment_ids"])
+        self.assertEqual(comment_ids[0], result["comment_id"])
+        for index, body in enumerate(github.created, start=1):
+            self.assertLessEqual(len(body.encode("utf-8")), 1000)
+            self.assertIn(f"part={index}/{result['parts']}", body)
+        self.assertIn("Eneo AI code & security review - 1 of", github.created[0])
+
+    def test_smaller_replacement_deletes_stale_continuation_comments(self) -> None:
+        first_run, first = self.generate()
+        github = FakeGitHub()
+        first_result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(first["publication_id"]),
+            review_run_id=int(first_run["id"]),
+            github=github,
+            max_comment_bytes=1000,
+        )
+        self.assertGreater(first_result["parts"], 1)
+        first_comment_ids = list(first_result["comment_ids"])
+
+        second_run, second = self.generate(head_sha="c" * 40)
+        github.head_sha = "c" * 40
+        second_result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(second["publication_id"]),
+            review_run_id=int(second_run["id"]),
+            github=github,
+            max_comment_bytes=60000,
+        )
+
+        self.assertTrue(second_result["published"])
+        self.assertEqual(second_result["parts"], 1)
+        self.assertEqual(second_result["comment_id"], first_comment_ids[0])
+        self.assertEqual(github.deleted, first_comment_ids[1:])
+        self.assertEqual(
+            memory_db.publication_comment_ids(
+                self.connection, int(second["publication_id"])
+            ),
+            [first_comment_ids[0]],
+        )
+
+    def test_retry_with_larger_budget_deletes_stale_current_parts(self) -> None:
+        run, publication = self.generate()
+        split_parts = review_publisher.split_publication_body(
+            str(publication["markdown"]),
+            publication_key=str(publication["publication_key"]),
+            max_comment_bytes=1000,
+        )
+        self.assertGreater(len(split_parts), 1)
+        original_ids = [900 + part.part_number for part in split_parts]
+        github = FakeGitHub(
+            comments=[
+                review_publisher.IssueComment(
+                    comment_id=comment_id,
+                    body=part.body,
+                    author_login="eneo-ai-bot",
+                )
+                for comment_id, part in zip(original_ids, split_parts, strict=True)
+            ]
+        )
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+            max_comment_bytes=60000,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertTrue(result["recovered"])
+        self.assertEqual(result["parts"], 1)
+        self.assertEqual(result["comment_id"], original_ids[0])
+        self.assertEqual(github.deleted, original_ids[1:])
+
+    def test_stateless_fallback_replaces_all_previous_parts(self) -> None:
+        first_run, first = self.generate()
+        github = FakeGitHub()
+        first_result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(first["publication_id"]),
+            review_run_id=int(first_run["id"]),
+            github=github,
+            max_comment_bytes=1000,
+        )
+        first_comment_ids = list(first_result["comment_ids"])
+        self.assertGreater(len(first_comment_ids), 1)
+
+        fresh_connection = memory_db.connect(str(Path(self.temp.name) / "fresh.sqlite3"))
+        try:
+            second_run, second = self.generate(
+                head_sha="c" * 40,
+                connection=fresh_connection,
+            )
+            github.head_sha = "c" * 40
+            second_result = review_publisher.publish_review(
+                fresh_connection,
+                publication_id=int(second["publication_id"]),
+                review_run_id=int(second_run["id"]),
+                github=github,
+                max_comment_bytes=60000,
+            )
+        finally:
+            fresh_connection.close()
+
+        self.assertTrue(second_result["published"])
+        self.assertEqual(second_result["parts"], 1)
+        self.assertEqual(second_result["comment_id"], first_comment_ids[0])
+        self.assertEqual(github.deleted, first_comment_ids[1:])
+
+    def test_non_bot_marker_comment_is_not_reused(self) -> None:
+        run, publication = self.generate()
+        github = FakeGitHub(
+            comments=[
+                review_publisher.IssueComment(
+                    comment_id=77,
+                    body=str(publication["markdown"]),
+                    author_login="alice",
+                )
+            ]
+        )
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertNotEqual(result["comment_id"], 77)
+        self.assertEqual(github.updated, [])
+        self.assertEqual(github.deleted, [])
+        self.assertEqual(len(github.created), 1)
 
     def test_hash_mismatch_prevents_publication(self) -> None:
         run, publication = self.generate()
@@ -250,6 +426,7 @@ class ReviewPublisherTests(unittest.TestCase):
                 review_publisher.IssueComment(
                     comment_id=88,
                     body=f"{publication['markdown']}\n<!-- {marker} -->",
+                    author_login="eneo-ai-bot",
                 )
             ]
         )

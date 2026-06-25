@@ -86,7 +86,7 @@ class PublicationForPosting(TypedDict):
     rendered_markdown: str
     rendered_hash: str
     comment_id: int | None
-    previous_comment_id: int | None
+    previous_comment_ids: list[int]
     delivery_status: PublicationStatus
 
 
@@ -187,6 +187,41 @@ def publication_marker(publication_key: str) -> str:
     return f"eneo-review:canonical publication={publication_key}"
 
 
+def _publication_comment_ids(
+    connection: sqlite3.Connection, publication_id: int
+) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT comment_id
+        FROM review_publication_comments
+        WHERE publication_id = ?
+        ORDER BY part_number
+        """,
+        (publication_id,),
+    ).fetchall()
+    comment_ids = [int(row["comment_id"]) for row in rows]
+    if comment_ids:
+        return comment_ids
+    fallback = connection.execute(
+        """
+        SELECT comment_id
+        FROM review_publications
+        WHERE id = ? AND comment_id IS NOT NULL
+        """,
+        (publication_id,),
+    ).fetchone()
+    return [int(fallback["comment_id"])] if fallback else []
+
+
+def publication_comment_ids(
+    connection: sqlite3.Connection, publication_id: int
+) -> list[int]:
+    publication_id = int(publication_id)
+    if publication_id < 1:
+        raise ReviewMemoryError("publication_id must be positive")
+    return _publication_comment_ids(connection, publication_id)
+
+
 def _publication_findings(
     connection: sqlite3.Connection, publication_id: int
 ) -> list[dict[str, Any]]:
@@ -240,6 +275,7 @@ def _publication_result(
             if publication.get("comment_id") is not None
             else None
         ),
+        "comment_ids": _publication_comment_ids(connection, int(publication["id"])),
         "findings_count": int(current[0] if current else 0),
         "resolved_count": int(closed[0] if closed else 0),
         "closed_count": int(closed[0] if closed else 0),
@@ -791,7 +827,7 @@ def _publication_for_posting(
         raise ReviewMemoryError("publication rendered_markdown hash mismatch")
     previous = connection.execute(
         """
-        SELECT comment_id
+        SELECT id, comment_id
         FROM review_publications
         WHERE repository = ? AND pr_number = ?
           AND delivery_status = 'posted'
@@ -803,6 +839,9 @@ def _publication_for_posting(
         """,
         (str(row["repository"]), int(row["pr_number"]), publication_id),
     ).fetchone()
+    previous_comment_ids = (
+        _publication_comment_ids(connection, int(previous["id"])) if previous else []
+    )
     return {
         "publication_id": publication_id,
         "review_run_id": int(row["review_run_id"] or 0),
@@ -815,11 +854,7 @@ def _publication_for_posting(
         "rendered_markdown": body,
         "rendered_hash": rendered_hash,
         "comment_id": int(row["comment_id"]) if row["comment_id"] is not None else None,
-        "previous_comment_id": (
-            int(previous["comment_id"])
-            if previous and previous["comment_id"] is not None
-            else None
-        ),
+        "previous_comment_ids": previous_comment_ids,
         "delivery_status": cast(PublicationStatus, status),
     }
 
@@ -877,12 +912,27 @@ def mark_publication_posted(
     publication_id: int,
     review_run_id: int | None = None,
     comment_id: int,
+    comment_ids: Sequence[int] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if publication_id < 1 or comment_id < 1:
+    if isinstance(comment_id, bool) or publication_id < 1 or comment_id < 1:
         raise ReviewMemoryError("publication_id and comment_id must be positive")
     if review_run_id is not None and review_run_id < 1:
         raise ReviewMemoryError("review_run_id must be positive")
+    recorded_comment_ids: list[int] = [int(comment_id)]
+    if comment_ids is not None:
+        recorded_comment_ids = []
+        for value in comment_ids:
+            if isinstance(value, bool):
+                raise ReviewMemoryError("comment_ids must contain positive integers")
+            comment_part_id = int(value)
+            if comment_part_id < 1:
+                raise ReviewMemoryError("comment_ids must contain positive integers")
+            recorded_comment_ids.append(comment_part_id)
+        if not recorded_comment_ids:
+            raise ReviewMemoryError("comment_ids must not be empty")
+        if recorded_comment_ids[0] != int(comment_id):
+            raise ReviewMemoryError("comment_id must match the first comment_ids item")
     moment = isoformat(now)
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -930,6 +980,19 @@ def mark_publication_posted(
                 WHERE id = ?
                 """,
                 (comment_id, review_run_id),
+            )
+        connection.execute(
+            "DELETE FROM review_publication_comments WHERE publication_id = ?",
+            (publication_id,),
+        )
+        for part_number, part_comment_id in enumerate(recorded_comment_ids, start=1):
+            connection.execute(
+                """
+                INSERT INTO review_publication_comments (
+                    publication_id, part_number, comment_id, posted_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (publication_id, part_number, part_comment_id, moment),
             )
         updated = _publication_for_posting(
             connection, publication_id=publication_id, review_run_id=review_run_id

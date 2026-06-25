@@ -44,9 +44,11 @@ one structured, constructive PR comment
 Hermes’ current webhook adapter supports HMAC verification, route-specific
 skills, and idempotency. This bundle sets the review route delivery to `log`;
 the deterministic publisher writes the PR comment after verifying the stored
-body and exact base/head SHA. The official Docker image keeps mutable state
-under `/opt/data`, which is the right place for Codex OAuth state,
-configuration, plugins, sessions, and the SQLite review database.
+body and exact base/head SHA. If the stored review exceeds the GitHub comment
+budget, the publisher uses deterministic continuation comments rather than
+dropping findings. The official Docker image keeps mutable state under
+`/opt/data`, which is the right place for Codex OAuth state, configuration,
+plugins, sessions, and the SQLite review database.
 
 ### What this is
 
@@ -362,6 +364,10 @@ PYTHONUNBUFFERED=1
 
 The default image is pinned by digest. Update it through a reviewed dependency
 PR instead of changing the deployment to `latest`.
+
+`ENEO_REVIEW_PUBLISH_MAX_BYTES` controls the maximum size of each GitHub comment,
+not the number of findings reviewed or published. Oversized reviews are split
+into continuation comments.
 
 Route an HTTPS domain to service `hermes-review`, container port `8644`. Route a
 second HTTPS domain or path to service `hermes-review-feedback`, container port
