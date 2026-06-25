@@ -387,6 +387,103 @@ class ReviewMemoryTests(unittest.TestCase):
 
         self.assertEqual(actual_tables, memory_schema.REQUIRED_TABLES)
 
+    def test_init_migrates_legacy_tables_before_new_column_indexes(self):
+        legacy_path = str(Path(self.temp.name) / "legacy.sqlite3")
+        legacy = sqlite3.connect(legacy_path)
+        try:
+            legacy.executescript(
+                """
+                CREATE TABLE review_run_files (
+                    run_id INTEGER NOT NULL,
+                    repository TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    change_status TEXT NOT NULL DEFAULT '',
+                    domain TEXT NOT NULL DEFAULT '',
+                    review_mode TEXT NOT NULL DEFAULT 'normal',
+                    diff_requested INTEGER NOT NULL DEFAULT 0,
+                    diff_returned INTEGER NOT NULL DEFAULT 0,
+                    diff_truncated INTEGER NOT NULL DEFAULT 0,
+                    head_ranges_read_json TEXT NOT NULL DEFAULT '[]',
+                    base_ranges_read_json TEXT NOT NULL DEFAULT '[]',
+                    unavailable_reason TEXT NOT NULL DEFAULT '',
+                    first_accessed_at TEXT NOT NULL,
+                    last_accessed_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, path)
+                );
+
+                CREATE TABLE finding_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    review_subject_id INTEGER NOT NULL,
+                    repository TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    head_sha TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    line INTEGER NOT NULL,
+                    symbol TEXT NOT NULL DEFAULT '',
+                    anchor TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    publication_score INTEGER NOT NULL,
+                    confidence REAL NOT NULL,
+                    context_hash TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL,
+                    disproof_checks TEXT NOT NULL DEFAULT '',
+                    impact TEXT NOT NULL DEFAULT '',
+                    smallest_fix TEXT NOT NULL,
+                    introduced_by_diff INTEGER NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    UNIQUE(review_subject_id, fingerprint)
+                );
+
+                CREATE TABLE review_publications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repository TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    head_sha TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    comment_id INTEGER,
+                    delivery_status TEXT NOT NULL DEFAULT 'posted',
+                    published_at TEXT NOT NULL
+                );
+
+                PRAGMA user_version = 10;
+                """
+            )
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        migrated = memory_db.connect(legacy_path)
+        try:
+            self.assertEqual(
+                migrated.execute("PRAGMA user_version").fetchone()[0],
+                memory_db.SCHEMA_VERSION,
+            )
+            observation_columns = {
+                str(row["name"])
+                for row in migrated.execute("PRAGMA table_info(finding_observations)")
+            }
+            publication_columns = {
+                str(row["name"])
+                for row in migrated.execute("PRAGMA table_info(review_publications)")
+            }
+            run_file_columns = {
+                str(row["name"])
+                for row in migrated.execute("PRAGMA table_info(review_run_files)")
+            }
+            self.assertIn("review_run_id", observation_columns)
+            self.assertIn("review_run_id", publication_columns)
+            self.assertIn("superseded_at", publication_columns)
+            self.assertIn("is_changed_path", run_file_columns)
+            self.assertIn("diff_state", run_file_columns)
+        finally:
+            migrated.close()
+
     def test_migrate_volume_uses_sqlite_backup_and_preserves_committed_wal_rows(self):
         source_path = Path(self.temp.name) / "source.sqlite3"
         destination_path = Path(self.temp.name) / "dest" / "review_memory.sqlite3"

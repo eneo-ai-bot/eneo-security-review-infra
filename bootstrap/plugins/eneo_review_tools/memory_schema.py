@@ -936,9 +936,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (run_id) REFERENCES review_runs(id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_review_run_files_repo_pr
-            ON review_run_files(repository, pr_number, run_id);
-
         CREATE TABLE IF NOT EXISTS coach_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL DEFAULT '',
@@ -1022,14 +1019,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
         );
 
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_observations_run_fingerprint
-            ON finding_observations(review_run_id, fingerprint)
-            WHERE review_run_id IS NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_observations_run
-            ON finding_observations(review_run_id, id DESC)
-            WHERE review_run_id IS NOT NULL;
-
         CREATE INDEX IF NOT EXISTS idx_observations_repo_pr_path_seen
             ON finding_observations(repository, pr_number, path, observed_at DESC);
 
@@ -1083,9 +1072,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (superseded_by_publication_id) REFERENCES review_publications(id),
             FOREIGN KEY (review_run_id) REFERENCES review_runs(id)
         );
-
-        CREATE INDEX IF NOT EXISTS idx_review_publications_current
-            ON review_publications(repository, pr_number, superseded_at, id DESC);
 
         CREATE TABLE IF NOT EXISTS review_publication_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1245,6 +1231,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(
         connection, "review_publications", "failure_code", "TEXT NOT NULL DEFAULT ''"
     )
+    _ensure_column(connection, "review_publications", "superseded_at", "TEXT")
     _ensure_column(connection, "review_publications", "review_number", "INTEGER")
     _ensure_column(
         connection,
@@ -1433,6 +1420,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_review_publications_delivery
             ON review_publications(repository, pr_number, delivery_status, id DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_publications_current
+            ON review_publications(repository, pr_number, superseded_at, id DESC)
         """
     )
     connection.execute(
