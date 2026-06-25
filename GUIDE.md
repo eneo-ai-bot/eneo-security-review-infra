@@ -390,7 +390,10 @@ reading full Hermes state. Never run two Hermes gateways against the same
 volumes, refreshes the managed reviewer profile and plugin under `/opt/data`,
 and runs schema creation or migration before either long-running service starts.
 An `Exited (0)` init container is a successful one-shot run, not a service that
-should keep running.
+should keep running. Managed skill and plugin directories are replaced instead
+of overlaid, and Python bytecode is disabled, so stale files or `__pycache__`
+entries in the persistent volume cannot execute an older schema owner after a
+deploy.
 
 Deploy the service.
 

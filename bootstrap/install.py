@@ -47,9 +47,15 @@ def atomic_write(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
-def copy_tree(source: Path, target: Path) -> None:
+def copy_managed_tree(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, dirs_exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(
+        source,
+        target,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
 
 
 def main() -> int:
@@ -97,9 +103,14 @@ def main() -> int:
             shutil.copy2(agents_target, agents_target.with_suffix(".md.before-eneo"))
         shutil.copy2(SOURCE / "workspace" / "AGENTS.md", agents_target)
 
-    copy_tree(SOURCE / "skills" / "eneo-pr-review", HERMES_HOME / "skills" / "eneo-pr-review")
-    copy_tree(SOURCE / "skills" / "ponytail", HERMES_HOME / "skills" / "ponytail")
-    copy_tree(SOURCE / "plugins" / "eneo_review_tools", HERMES_HOME / "plugins" / "eneo_review_tools")
+    copy_managed_tree(
+        SOURCE / "skills" / "eneo-pr-review", HERMES_HOME / "skills" / "eneo-pr-review"
+    )
+    copy_managed_tree(SOURCE / "skills" / "ponytail", HERMES_HOME / "skills" / "ponytail")
+    copy_managed_tree(
+        SOURCE / "plugins" / "eneo_review_tools",
+        HERMES_HOME / "plugins" / "eneo_review_tools",
+    )
 
     # Prevent future bundled-skill seeding. Existing bundled skills are not deleted.
     (HERMES_HOME / ".no-bundled-skills").touch(exist_ok=True)

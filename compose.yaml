@@ -15,6 +15,7 @@ services:
       HERMES_HOME: /opt/data
       ENEO_REVIEW_DB: /opt/data/review-memory/review_memory.sqlite3
       PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - hermes_review_data:/opt/data
       - review_memory_data:/opt/data/review-memory
@@ -46,6 +47,7 @@ services:
       HERMES_DASHBOARD: "${HERMES_DASHBOARD:-0}"
       API_SERVER_ENABLED: "${API_SERVER_ENABLED:-false}"
       PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
     expose:
       - "8644"
     networks:

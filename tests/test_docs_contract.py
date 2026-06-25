@@ -194,6 +194,7 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("GITHUB_READ_TOKEN", reviewer_section)
         self.assertIn("ENEO_REVIEW_PUBLISH_GH_TOKEN", reviewer_section)
         self.assertNotIn("\n      GH_TOKEN:", reviewer_section)
+        self.assertIn("PYTHONDONTWRITEBYTECODE", reviewer_section)
         self.assertIn("review_memory_data:/review-memory", feedback_section)
         self.assertNotIn("hermes_review_data:/opt/data", feedback_section)
         self.assertNotIn("env_file:", feedback_section)
@@ -214,6 +215,7 @@ class DocsContractTests(unittest.TestCase):
             "ENEO_REVIEW_DB: /opt/data/review-memory/review_memory.sqlite3",
             init_section,
         )
+        self.assertIn("PYTHONDONTWRITEBYTECODE", init_section)
         self.assertIn("hermes_review_data:/opt/data", init_section)
         self.assertIn("review_memory_data:/opt/data/review-memory", init_section)
         self.assertNotIn("/opt/eneo-bootstrap/install.sh", reviewer_section)

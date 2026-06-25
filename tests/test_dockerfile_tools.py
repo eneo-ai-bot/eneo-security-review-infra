@@ -10,11 +10,35 @@ from contextlib import redirect_stderr
 from fnmatch import fnmatch
 import io
 import importlib
+import importlib.util
 from pathlib import Path
+import types
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_install_module():
+    spec = importlib.util.spec_from_file_location(
+        "eneo_bootstrap_install", ROOT / "bootstrap" / "install.py"
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load bootstrap installer")
+    module = importlib.util.module_from_spec(spec)
+    previous_yaml = sys.modules.get("yaml")
+    yaml_stub = types.ModuleType("yaml")
+    yaml_stub.safe_load = lambda _text: {}
+    yaml_stub.safe_dump = lambda *_args, **_kwargs: ""
+    sys.modules["yaml"] = yaml_stub
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_yaml is None:
+            sys.modules.pop("yaml", None)
+        else:
+            sys.modules["yaml"] = previous_yaml
+    return module
 
 
 def _docker_copy_sources() -> list[str]:
@@ -87,6 +111,34 @@ class DockerfileToolsTests(unittest.TestCase):
             "cp /usr/local/bin/eneo_review_feedback_bridge.py /usr/local/bin/eneo-review-feedback-bridge",
             dockerfile,
         )
+
+    def test_docker_build_context_excludes_python_bytecode(self) -> None:
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+        self.assertIn("**/__pycache__/", dockerignore)
+        self.assertIn("**/*.py[cod]", dockerignore)
+
+    def test_installer_replaces_managed_trees_and_ignores_bytecode(self) -> None:
+        install = _load_install_module()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            target = root / "target"
+            (source / "__pycache__").mkdir(parents=True)
+            (source / "memory_schema.py").write_text("SCHEMA_VERSION = 8\n", encoding="utf-8")
+            (source / "__pycache__" / "memory_schema.cpython-313.pyc").write_bytes(b"stale")
+            (target / "__pycache__").mkdir(parents=True)
+            (target / "old_module.py").write_text("SCHEMA_VERSION = 6\n", encoding="utf-8")
+            (target / "__pycache__" / "old_module.cpython-313.pyc").write_bytes(b"old")
+
+            install.copy_managed_tree(source, target)
+
+            self.assertEqual(
+                "SCHEMA_VERSION = 8\n",
+                (target / "memory_schema.py").read_text(encoding="utf-8"),
+            )
+            self.assertFalse((target / "old_module.py").exists())
+            self.assertFalse((target / "__pycache__").exists())
 
     def test_installed_memory_cli_imports_support_modules(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -161,7 +161,10 @@ sidecar on each deploy. It refreshes the managed profile, skills, and plugin
 under `/opt/data`, then runs the idempotent review-memory schema migration
 against `/opt/data/review-memory/review_memory.sqlite3`. Seeing the init
 container as `Exited (0)` is expected; use its logs for startup failures and use
-the running `hermes-review` container for shell commands.
+the running `hermes-review` container for shell commands. Managed skill and
+plugin directories are replaced, not overlaid, so stale files or Python
+`__pycache__` bytecode in the persistent volume cannot keep an old schema owner
+alive after deploy.
 
 If upgrading from an older deployment that stored the database under
 `/opt/data/review-memory` inside `hermes_review_data`, do not copy the SQLite
