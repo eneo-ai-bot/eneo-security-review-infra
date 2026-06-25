@@ -12,11 +12,24 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 from types import ModuleType
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 
 REQUEST_TIMEOUT_SECONDS = 10.0
 MAX_CONCURRENT_REQUESTS = 8
+CONFIG_ENV_NAMES = (
+    "ENEO_FEEDBACK_WEBHOOK_SECRET",
+    "ENEO_FEEDBACK_GH_TOKEN",
+    "ENEO_ALLOWED_REPOSITORIES",
+    "ENEO_FEEDBACK_ALLOWED_ACTOR_IDS",
+    "ENEO_REVIEW_DB",
+)
+DIAGNOSTIC_ENV_NAMES = CONFIG_ENV_NAMES + (
+    "GH_TOKEN",
+    "GITHUB_READ_TOKEN",
+    "ENEO_REVIEW_PUBLISH_GH_TOKEN",
+)
 
 
 class FeedbackBridgeModule(Protocol):
@@ -76,6 +89,47 @@ def _insert_plugin_parent() -> None:
 def load_feedback_bridge() -> FeedbackBridgeModule:
     _insert_plugin_parent()
     return cast(FeedbackBridgeModule, _import_module("eneo_review_tools.feedback_bridge"))
+
+
+def env_presence_summary() -> str:
+    states: list[str] = []
+    for name in DIAGNOSTIC_ENV_NAMES:
+        state = "set" if os.environ.get(name, "").strip() else "missing"
+        states.append(f"{name}={state}")
+    return ", ".join(states)
+
+
+def _exit_code(exc: SystemExit) -> int:
+    return exc.code if isinstance(exc.code, int) and exc.code != 0 else 1
+
+
+def load_config_or_explain(bridge: FeedbackBridgeModule) -> ConfigLike:
+    try:
+        return cast(ConfigLike, bridge.load_config())
+    except SystemExit as exc:
+        message = str(exc.code) if exc.code else "configuration failed"
+        print(
+            f"feedback bridge configuration error: {message}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f"feedback bridge environment: {env_presence_summary()}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(_exit_code(exc)) from None
+
+
+def hold_after_config_error() -> NoReturn:
+    print(
+        "feedback bridge startup halted; fix Dokploy env and redeploy or restart "
+        "the container",
+        file=sys.stderr,
+        flush=True,
+    )
+    while True:
+        time.sleep(3600)
 
 
 class FeedbackRequestHandler(BaseHTTPRequestHandler):
@@ -189,9 +243,20 @@ class FeedbackServer(ThreadingHTTPServer):
         self._request_slots.release()
 
 
-def serve(host: str, port: int, bridge: FeedbackBridgeModule | None = None) -> None:
+def serve(
+    host: str,
+    port: int,
+    bridge: FeedbackBridgeModule | None = None,
+    *,
+    hold_on_config_error: bool = False,
+) -> None:
     bridge = bridge or load_feedback_bridge()
-    config = cast(ConfigLike, bridge.load_config())
+    try:
+        config = load_config_or_explain(bridge)
+    except SystemExit:
+        if hold_on_config_error:
+            hold_after_config_error()
+        raise
     github_client_class = cast(
         GitHubClientClass,
         getattr(bridge, "GitHubApiClient"),
@@ -212,13 +277,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["serve", "verify-config"])
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=bridge.DEFAULT_PORT)
+    parser.add_argument(
+        "--hold-on-config-error",
+        action="store_true",
+        help="Keep the sidecar alive after startup config failure so logs stay inspectable.",
+    )
     args = parser.parse_args(argv)
     if args.command == "verify-config":
-        config = bridge.load_config()
+        config = load_config_or_explain(bridge)
         bridge.ready_check(config)
         print("ok")
         return 0
-    serve(str(args.host), int(args.port), bridge)
+    serve(
+        str(args.host),
+        int(args.port),
+        bridge,
+        hold_on_config_error=bool(args.hold_on_config_error),
+    )
     return 0
 
 

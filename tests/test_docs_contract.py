@@ -202,6 +202,7 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("no-new-privileges:true", feedback_section)
         self.assertIn("PYTHONDONTWRITEBYTECODE", feedback_section)
         self.assertIn("http://127.0.0.1:8645/ready", feedback_section)
+        self.assertIn("--hold-on-config-error", feedback_section)
         self.assertIn("  review-memory-init:", compose)
         self.assertIn("condition: service_completed_successfully", compose)
 

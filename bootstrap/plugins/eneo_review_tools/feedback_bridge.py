@@ -42,6 +42,7 @@ DEFAULT_PATH = "/webhooks/eneo-review-feedback"
 DEFAULT_PORT = 8645
 MAX_BODY_BYTES = 64 * 1024
 GITHUB_API = "https://api.github.com"
+FEEDBACK_TOKEN_ENV = "ENEO_FEEDBACK_GH_TOKEN"
 
 
 class BridgeError(Exception):
@@ -165,13 +166,22 @@ def parse_repository_allowlist(raw: str) -> frozenset[str]:
     return frozenset(repositories)
 
 
+def feedback_github_token() -> str:
+    token = os.environ.get(FEEDBACK_TOKEN_ENV, "").strip()
+    if token:
+        return token
+    if os.environ.get("GH_TOKEN", "").strip():
+        raise SystemExit(
+            f"{FEEDBACK_TOKEN_ENV} is required; legacy GH_TOKEN is intentionally ignored"
+        )
+    raise SystemExit(f"{FEEDBACK_TOKEN_ENV} is required")
+
+
 def load_config() -> BridgeConfig:
     secret = os.environ.get("ENEO_FEEDBACK_WEBHOOK_SECRET", "").strip()
     if not secret:
         raise SystemExit("ENEO_FEEDBACK_WEBHOOK_SECRET is required")
-    token = os.environ.get("ENEO_FEEDBACK_GH_TOKEN", "").strip()
-    if not token:
-        raise SystemExit("ENEO_FEEDBACK_GH_TOKEN is required")
+    token = feedback_github_token()
     allowed_actor_ids = parse_feedback_actor_allowlist(
         os.environ.get("ENEO_FEEDBACK_ALLOWED_ACTOR_IDS", "")
     )

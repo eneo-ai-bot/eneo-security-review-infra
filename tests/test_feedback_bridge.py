@@ -163,6 +163,18 @@ class FeedbackBridgeTests(unittest.TestCase):
         self.assertEqual(config.token, "feedback-token")
         self.assertEqual(config.allowed_actor_ids, frozenset({"12345"}))
 
+    def test_config_ignores_legacy_gh_token(self) -> None:
+        environment = {
+            "ENEO_FEEDBACK_WEBHOOK_SECRET": "secret",
+            "GH_TOKEN": "legacy-token",
+            "ENEO_ALLOWED_REPOSITORIES": "eneo/platform",
+            "ENEO_FEEDBACK_ALLOWED_ACTOR_IDS": "12345",
+        }
+
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(SystemExit, "legacy GH_TOKEN is intentionally ignored"):
+                feedback_bridge.load_config()
+
     def test_config_rejects_malformed_actor_allowlist_at_startup(self) -> None:
         environment = {
             "ENEO_FEEDBACK_WEBHOOK_SECRET": "secret",

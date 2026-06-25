@@ -91,7 +91,7 @@ services:
     restart: unless-stopped
     user: "10000:10000"
     entrypoint: ["/usr/local/bin/eneo-review-feedback-bridge"]
-    command: ["serve", "--host", "0.0.0.0", "--port", "8645"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "8645", "--hold-on-config-error"]
     depends_on:
       review-memory-init:
         condition: service_completed_successfully
