@@ -22,6 +22,8 @@ class FeedbackWorkflowTests(unittest.TestCase):
         self.assertIn("HERMES_REVIEW_FEEDBACK_URL", workflow)
         self.assertIn("HERMES_REVIEW_FEEDBACK_SECRET", workflow)
         self.assertIn('delivery_id = f"{event[\'comment\'][\'id\']}:feedback"', workflow)
+        self.assertIn('timeout = 900 if mode == "review" else 60', workflow)
+        self.assertIn("urllib.request.urlopen(request, timeout=timeout)", workflow)
         self.assertIn('event["comment"]["user"].get("type") == "Bot"', workflow)
 
 

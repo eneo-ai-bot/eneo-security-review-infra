@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import tempfile
@@ -19,6 +20,8 @@ class ReviewMemoryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = str(Path(self.temp.name) / "memory.sqlite3")
         self.connection = memory_db.connect(self.db)
+        self.feedback_env = patch.dict(os.environ, {"ENEO_REVIEW_FEEDBACK_ENABLED": "true"})
+        self.feedback_env.start()
         self.finding = {
             "rule_id": "tenant.missing-scope",
             "category": "security",
@@ -38,6 +41,7 @@ class ReviewMemoryTests(unittest.TestCase):
         }
 
     def tearDown(self):
+        self.feedback_env.stop()
         self.connection.close()
         self.temp.cleanup()
 
@@ -270,14 +274,18 @@ class ReviewMemoryTests(unittest.TestCase):
         visible = markdown.split("<!--", 1)[0]
         self.assertEqual(result["findings_count"], 2)
         self.assertIn(
-            "There are 2 current findings: 1 Critical / P0 and 1 Medium / P2.",
+            "There are 2 current findings: 1 Critical (P0) and 1 Medium (P2).",
             markdown,
         )
-        self.assertIn("### F1 - Critical / P0: Document creation omits tenant scope", markdown)
-        self.assertIn("### F2 - Medium / P2: Regression test misses tenant failure path", markdown)
+        self.assertIn("### F1 · Critical (P0): Document creation omits tenant scope", markdown)
+        self.assertIn("### F2 · Medium (P2): Regression test misses tenant failure path", markdown)
+        self.assertIn("**Impact:**", markdown)
+        self.assertIn("**Reviewer checks:**", markdown)
+        self.assertNotIn("Required outcome:", markdown)
+        self.assertNotIn("Verification:", markdown)
         self.assertIn("Copyable fix brief for a coding agent", markdown)
         self.assertIn("Give feedback on this review", markdown)
-        self.assertIn("Post one command as a new PR Conversation comment", markdown)
+        self.assertIn("Post one command as a new top-level PR comment", markdown)
         self.assertIn("```text\n/review false-positive F1 because <what code, guard, or invariant disproves it>\n```", markdown)
         self.assertIn("```text\n/review feedback missed because <what concrete issue was missed and where>\n```", markdown)
         self.assertNotIn("@review false-positive", markdown)
@@ -315,8 +323,19 @@ class ReviewMemoryTests(unittest.TestCase):
 
         result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "a" * 40)
 
-        self.assertIn("There are 2 current findings: 2 High / P1.", result["markdown"])
-        self.assertNotIn("I found 2 High / P1 finding.", result["markdown"])
+        self.assertIn("There are 2 current findings: 2 High (P1).", result["markdown"])
+        self.assertNotIn("I found 2 High (P1) finding.", result["markdown"])
+
+    def test_finalize_review_omits_feedback_help_when_disabled(self):
+        self.record()
+
+        with patch.dict(os.environ, {"ENEO_REVIEW_FEEDBACK_ENABLED": "false"}):
+            result = memory_db.finalize_review(
+                self.connection, "eneo/platform", 17, "a" * 40
+            )
+
+        self.assertIn("Copyable fix brief for a coding agent", result["markdown"])
+        self.assertNotIn("Give feedback on this review", result["markdown"])
 
     def test_finalize_review_carries_unobserved_previous_findings(self):
         first = self.finding
@@ -353,15 +372,15 @@ class ReviewMemoryTests(unittest.TestCase):
 
         self.assertEqual(result["findings_count"], 2)
         self.assertEqual(result["resolved_count"], 0)
-        self.assertIn("Review updated for the latest commit.", result["markdown"])
-        self.assertIn("Needs recheck: F1", result["markdown"])
-        self.assertIn("Still present: F2", result["markdown"])
+        self.assertIn("I rechecked the latest commit.", result["markdown"])
+        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertIn("F2 still present", result["markdown"])
         self.assertIn(
-            "### F1 - Critical / P0: Document creation omits tenant scope",
+            "### F1 · Critical (P0): Document creation omits tenant scope",
             result["markdown"],
         )
-        self.assertIn("F1 - Critical / P0 - security", result["markdown"])
-        self.assertNotIn("Resolved since the previous review: F1", result["markdown"])
+        self.assertIn("F1 - Critical (P0) - security", result["markdown"])
+        self.assertNotIn("F1 resolved", result["markdown"])
 
     def test_finalize_review_resolves_prior_finding_with_explicit_verdict(self):
         first = self.finding
@@ -412,15 +431,15 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(result["findings_count"], 1)
         self.assertEqual(result["resolved_count"], 1)
         self.assertEqual(result["closed_count"], 1)
-        self.assertIn("Resolved since the previous review: F1", result["markdown"])
-        self.assertIn("Still present: F2", result["markdown"])
-        self.assertNotIn("Needs recheck: F1", result["markdown"])
+        self.assertIn("F1 resolved", result["markdown"])
+        self.assertIn("F2 still present", result["markdown"])
+        self.assertNotIn("F1 needs recheck", result["markdown"])
         visible_brief = result["markdown"].split(
             "<summary>Copyable fix brief for a coding agent</summary>",
             1,
         )[1]
-        self.assertNotIn("F1 - Critical / P0 - security", visible_brief)
-        self.assertIn("F2 - Medium / P2 - tests", visible_brief)
+        self.assertNotIn("F1 - Critical (P0) - security", visible_brief)
+        self.assertIn("F2 - Medium (P2) - tests", visible_brief)
         self.assertNotIn("/review false-positive F1", result["markdown"])
         self.assertIn("/review false-positive F2", result["markdown"])
         context = memory_db.memory_context(
@@ -468,8 +487,8 @@ class ReviewMemoryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["findings_count"], 1)
-        self.assertIn("Partially resolved: F1", result["markdown"])
-        self.assertNotIn("Still present: F1", result["markdown"])
+        self.assertIn("F1 partially resolved", result["markdown"])
+        self.assertNotIn("F1 still present", result["markdown"])
 
     def test_finalize_review_invalidates_absent_prior_finding(self):
         memory_db.record_findings(
@@ -507,8 +526,8 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(result["findings_count"], 0)
         self.assertEqual(result["resolved_count"], 0)
         self.assertEqual(result["closed_count"], 1)
-        self.assertIn("Invalidated since the previous review: F1", result["markdown"])
-        self.assertIn("No current findings survived this review.", result["markdown"])
+        self.assertIn("F1 withdrawn after recheck", result["markdown"])
+        self.assertIn("I did not identify any current in-scope findings in this review.", result["markdown"])
         self.assertNotIn("Copyable fix brief for a coding agent", result["markdown"])
         self.assertIn("Give feedback on this review", result["markdown"])
         self.assertIn("/review feedback missed because <what concrete issue was missed and where>", result["markdown"])
@@ -547,7 +566,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(result["findings_count"], 0)
         self.assertEqual(result["resolved_count"], 0)
         self.assertEqual(result["closed_count"], 1)
-        self.assertIn("Suppressed by human decision: F1", result["markdown"])
+        self.assertIn("F1 suppressed by human decision", result["markdown"])
 
     def test_finalize_review_closes_observed_finding_with_human_suppression(self):
         recorded = memory_db.record_findings(
@@ -588,7 +607,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(result["findings_count"], 0)
         self.assertEqual(result["resolved_count"], 0)
         self.assertEqual(result["closed_count"], 1)
-        self.assertIn("Suppressed by human decision: F1", result["markdown"])
+        self.assertIn("F1 suppressed by human decision", result["markdown"])
         self.assertNotIn("### F1", result["markdown"])
 
     def test_finalize_review_rejects_contradictory_prior_verdict(self):
@@ -671,8 +690,8 @@ class ReviewMemoryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["findings_count"], 2)
-        self.assertIn("Needs recheck: F1", result["markdown"])
-        self.assertIn("Still present: F2", result["markdown"])
+        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertIn("F2 still present", result["markdown"])
 
     def test_carried_reference_is_not_reused_by_new_finding(self):
         first = self.finding
@@ -727,11 +746,11 @@ class ReviewMemoryTests(unittest.TestCase):
 
         result = memory_db.finalize_review(self.connection, "eneo/platform", 17, "c" * 40)
 
-        self.assertIn("Still present: F2", result["markdown"])
-        self.assertIn("Needs recheck: F1", result["markdown"])
-        self.assertIn("New findings: F3", result["markdown"])
+        self.assertIn("F2 still present", result["markdown"])
+        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertIn("F3 new", result["markdown"])
         self.assertIn(
-            "### F3 - High / P1: Migration job can run without bounded retries",
+            "### F3 · High (P1): Migration job can run without bounded retries",
             result["markdown"],
         )
 

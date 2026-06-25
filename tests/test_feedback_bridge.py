@@ -141,18 +141,18 @@ class FeedbackBridgeTests(unittest.TestCase):
         environment = {
             "ENEO_FEEDBACK_WEBHOOK_SECRET": "secret",
             "ENEO_ALLOWED_REPOSITORIES": "eneo/platform",
-            "GITHUB_READ_TOKEN": "read-only-token",
+            "GH_TOKEN": "broader-review-token",
         }
 
         with patch.dict(os.environ, environment, clear=True):
-            with self.assertRaisesRegex(SystemExit, "GH_TOKEN is required"):
+            with self.assertRaisesRegex(SystemExit, "ENEO_FEEDBACK_GH_TOKEN is required"):
                 feedback_bridge.load_config()
 
-        environment["GH_TOKEN"] = "write-token"
+        environment["ENEO_FEEDBACK_GH_TOKEN"] = "feedback-token"
         with patch.dict(os.environ, environment, clear=True):
             config = feedback_bridge.load_config()
 
-        self.assertEqual(config.token, "write-token")
+        self.assertEqual(config.token, "feedback-token")
 
     def test_false_positive_records_and_confirms_with_success_reaction_only(self) -> None:
         github = FakeGitHub(
@@ -216,7 +216,7 @@ class FeedbackBridgeTests(unittest.TestCase):
 
     def test_placeholder_command_gets_idempotent_help_without_decision(self) -> None:
         github = FakeGitHub(
-            body="/review false-positive F1 because <what code disproves it>"
+            body="/review false-positive F1 because <what code, guard, or invariant disproves it>"
         )
 
         feedback_bridge.process_feedback(
@@ -234,6 +234,21 @@ class FeedbackBridgeTests(unittest.TestCase):
         self.assertEqual(len(github.comments), 1)
         self.assertIn("replace placeholder text", github.comments[0])
         self.assertEqual(self.count_rows("decisions"), 0)
+
+    def test_angle_brackets_in_real_reason_are_allowed(self) -> None:
+        github = FakeGitHub(
+            body="/review false-positive F1 because the List<T> wrapper enforces tenant scope."
+        )
+
+        response = feedback_bridge.process_feedback(
+            payload=self.payload(),
+            config=self.config,
+            github=github,
+        )
+
+        self.assertEqual(response.status, "recorded")
+        self.assertEqual(github.reaction_attempts, [(500, "+1")])
+        self.assertEqual(self.count_rows("decisions"), 1)
 
     def test_unauthorized_actor_gets_no_public_response_or_event_row(self) -> None:
         github = FakeGitHub(

@@ -65,15 +65,19 @@ def inline_code(value: Any, *, maximum: int = 800) -> str:
     return f"`{safe_text(value, maximum=maximum)}`"
 
 
+def severity_label(severity: str) -> str:
+    return f"{severity} (P{SEVERITY_PRIORITY[severity]})"
+
+
 def severity_summary(findings: Sequence[PublishedFinding]) -> str:
     if not findings:
-        return "No current findings survived this review."
+        return "I did not identify any current in-scope findings in this review."
     total = len(findings)
     counts = {severity: 0 for severity in SEVERITY_ORDER}
     for item in findings:
         counts[str(item["severity"])] += 1
     parts = [
-        f"{counts[severity]} {severity} / P{SEVERITY_PRIORITY[severity]}"
+        f"{counts[severity]} {severity_label(severity)}"
         for severity in SEVERITY_ORDER
         if counts[severity]
     ]
@@ -84,6 +88,57 @@ def severity_summary(findings: Sequence[PublishedFinding]) -> str:
     if len(parts) == 2:
         return f"There are {total} current findings: {parts[0]} and {parts[1]}."
     return f"There are {total} current findings: {', '.join(parts[:-1])}, and {parts[-1]}."
+
+
+def joined_refs(items: Sequence[str]) -> str:
+    ordered = ordered_refs(items)
+    if not ordered:
+        return ""
+    if len(ordered) == 1:
+        return ordered[0]
+    if len(ordered) == 2:
+        return f"{ordered[0]} and {ordered[1]}"
+    return f"{', '.join(ordered[:-1])}, and {ordered[-1]}"
+
+
+def lifecycle_summary(
+    *,
+    findings: Sequence[PublishedFinding],
+    closed: Sequence[ClosedFinding],
+    still_present: Sequence[str],
+    partially_resolved: Sequence[str],
+    new_refs: Sequence[str],
+    needs_recheck: Sequence[str],
+) -> str:
+    if not (closed or still_present or partially_resolved or new_refs or needs_recheck):
+        return severity_summary(findings)
+
+    clauses: list[str] = []
+    if closed:
+        grouped = _closed_by_verdict(closed)
+        if grouped["resolved"]:
+            clauses.append(
+                f"{joined_refs([item['local_reference'] for item in grouped['resolved']])} resolved"
+            )
+        if grouped["invalidated"]:
+            clauses.append(
+                f"{joined_refs([item['local_reference'] for item in grouped['invalidated']])} withdrawn after recheck"
+            )
+        if grouped["suppressed"]:
+            clauses.append(
+                f"{joined_refs([item['local_reference'] for item in grouped['suppressed']])} suppressed by human decision"
+            )
+    if still_present:
+        clauses.append(f"{joined_refs(still_present)} still present")
+    if partially_resolved:
+        clauses.append(f"{joined_refs(partially_resolved)} partially resolved")
+    if needs_recheck:
+        clauses.append(f"{joined_refs(needs_recheck)} needs recheck")
+    if new_refs:
+        clauses.append(f"{joined_refs(new_refs)} new")
+
+    detail = "; ".join(clauses)
+    return f"I rechecked the latest commit. {detail}. {severity_summary(findings)}"
 
 
 def ordered_findings(items: Sequence[PublishedFinding]) -> list[PublishedFinding]:
@@ -131,7 +186,7 @@ def render_fix_brief(
         "",
         "```text",
         "Task:",
-        "Address all confirmed findings from the Eneo PR review.",
+        "Review and address all current findings from the Eneo PR review.",
         "",
         "Review basis:",
         f"{repository} PR #{pr_number} at commit {head_sha[:7]}.",
@@ -152,14 +207,14 @@ def render_fix_brief(
         lines.extend(
             [
                 (
-                    f"{item['local_reference']} - {item['severity']} / "
-                    f"P{SEVERITY_PRIORITY[item['severity']]} - {item['category']}"
+                    f"{item['local_reference']} - {severity_label(item['severity'])} "
+                    f"- {item['category']}"
                 ),
                 f"Location: {safe_text(item['path'], maximum=500)}:{item['line']}",
                 f"Problem: {safe_text(item['title'], maximum=220)}",
-                f"Required outcome: {safe_text(item['impact'], maximum=420)}",
+                f"Impact: {safe_text(item['impact'], maximum=420)}",
                 f"Suggested approach: {safe_text(item['smallest_fix'], maximum=520)}",
-                f"Verification: {verification}",
+                f"Reviewer checks: {verification}",
                 "",
             ]
         )
@@ -193,7 +248,7 @@ def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
         lines.extend(
             [
                 (
-                    "Post one command as a new PR Conversation comment after "
+                    "Post one command as a new top-level PR comment after "
                     "replacing the text in angle brackets."
                 ),
                 (
@@ -211,7 +266,7 @@ def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
     else:
         lines.extend(
             [
-                "Did the review miss something important? Post this as a new PR Conversation comment:",
+                "Did the review miss something important? Post this as a new top-level PR comment:",
                 "",
             ]
         )
@@ -245,58 +300,41 @@ def render_review_markdown(
     partially_resolved: Sequence[str],
     new_refs: Sequence[str],
     needs_recheck: Sequence[str],
+    feedback_enabled: bool = False,
 ) -> str:
     current = ordered_findings(findings)
     lines = ["## Eneo AI code & security review", ""]
-    if closed or still_present or partially_resolved or new_refs or needs_recheck:
-        lines.extend(["Review updated for the latest commit.", ""])
-        if closed:
-            grouped = _closed_by_verdict(closed)
-            if grouped["resolved"]:
-                lines.append(
-                    "Resolved since the previous review: "
-                    + ", ".join(item["local_reference"] for item in grouped["resolved"])
-                )
-            if grouped["invalidated"]:
-                lines.append(
-                    "Invalidated since the previous review: "
-                    + ", ".join(
-                        item["local_reference"] for item in grouped["invalidated"]
-                    )
-                )
-            if grouped["suppressed"]:
-                lines.append(
-                    "Suppressed by human decision: "
-                    + ", ".join(item["local_reference"] for item in grouped["suppressed"])
-                )
-        if still_present:
-            lines.append("Still present: " + ", ".join(ordered_refs(still_present)))
-        if partially_resolved:
-            lines.append(
-                "Partially resolved: " + ", ".join(ordered_refs(partially_resolved))
-            )
-        if needs_recheck:
-            lines.append("Needs recheck: " + ", ".join(ordered_refs(needs_recheck)))
-        if new_refs:
-            lines.append("New findings: " + ", ".join(ordered_refs(new_refs)))
-        lines.append("")
-
-    lines.extend([severity_summary(current), ""])
+    lines.extend(
+        [
+            lifecycle_summary(
+                findings=current,
+                closed=closed,
+                still_present=still_present,
+                partially_resolved=partially_resolved,
+                new_refs=new_refs,
+                needs_recheck=needs_recheck,
+            ),
+            "",
+        ]
+    )
 
     for item in current:
-        priority = f"P{SEVERITY_PRIORITY[item['severity']]}"
         location = inline_code(f"{item['path']}:{item['line']}", maximum=520)
         lines.extend(
             [
                 (
-                    f"### {item['local_reference']} - {item['severity']} / {priority}: "
+                    f"### {item['local_reference']} · {severity_label(item['severity'])}: "
                     f"{safe_text(item['title'], maximum=160)}"
                 ),
                 f"{location} · {item['category']}",
                 "",
                 safe_text(item["evidence"], maximum=900),
                 "",
+                f"**Impact:** {safe_text(item['impact'], maximum=700)}",
+                "",
                 f"**Suggested change:** {safe_text(item['smallest_fix'], maximum=700)}",
+                "",
+                f"**Reviewer checks:** {safe_text(item['disproof_checks'], maximum=500)}",
                 "",
             ]
         )
@@ -323,6 +361,8 @@ def render_review_markdown(
             title = safe_text(item.get("title", ""), maximum=180)
             evidence = safe_text(item.get("evidence", ""), maximum=320)
             label = item["verdict"].replace("_", " ")
+            if item["verdict"] == "invalidated":
+                label = "withdrawn after recheck"
             line = f"- {item['local_reference']} - {label}"
             if title:
                 line += f": {title}"
@@ -334,7 +374,8 @@ def render_review_markdown(
     if current:
         lines.extend([render_fix_brief(repository, pr_number, head_sha, current), ""])
 
-    lines.extend([render_feedback_help(current), ""])
+    if feedback_enabled:
+        lines.extend([render_feedback_help(current), ""])
 
     lines.extend(["<!--", "eneo-review:", f"head={head_sha}"])
     for item in current:

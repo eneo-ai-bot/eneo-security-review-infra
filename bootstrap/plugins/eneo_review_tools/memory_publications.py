@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -151,6 +152,15 @@ def _finding_payload(
         "disproof_checks": str(item["disproof_checks"]),
         "impact": str(item["impact"]),
         "smallest_fix": str(item["smallest_fix"]),
+    }
+
+
+def _feedback_enabled() -> bool:
+    return os.environ.get("ENEO_REVIEW_FEEDBACK_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -492,6 +502,7 @@ def finalize_review(
             partially_resolved=partially_resolved,
             new_refs=new_refs,
             needs_recheck=needs_recheck,
+            feedback_enabled=_feedback_enabled(),
         )
         rendered_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 

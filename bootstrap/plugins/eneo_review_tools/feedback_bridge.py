@@ -167,9 +167,9 @@ def load_config() -> BridgeConfig:
     secret = os.environ.get("ENEO_FEEDBACK_WEBHOOK_SECRET", "").strip()
     if not secret:
         raise SystemExit("ENEO_FEEDBACK_WEBHOOK_SECRET is required")
-    token = os.environ.get("GH_TOKEN", "").strip()
+    token = os.environ.get("ENEO_FEEDBACK_GH_TOKEN", "").strip()
     if not token:
-        raise SystemExit("GH_TOKEN is required")
+        raise SystemExit("ENEO_FEEDBACK_GH_TOKEN is required")
     return BridgeConfig(
         secret=secret,
         token=token,

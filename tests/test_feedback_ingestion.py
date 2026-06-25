@@ -164,7 +164,8 @@ class FeedbackIngestionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(memory_db.ReviewMemoryError, "replace placeholder"):
             memory_db.parse_review_feedback_command(
-                "/review false-positive F1 because <what code disproves it>"
+                "/review false-positive F1 because "
+                "<what code, guard, or invariant disproves it>"
             )
 
         self.assertIsNone(memory_db.parse_review_feedback_command("@review"))

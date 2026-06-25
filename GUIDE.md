@@ -147,32 +147,36 @@ Use wording such as “This path can…” and “A minimal fix is…”, not �
 ````md
 ## Eneo AI code & security review
 
-There are 2 current findings: 1 High / P1 and 1 Medium / P2.
+There are 2 current findings: 1 High (P1) and 1 Medium (P2).
 
-### F1 - High / P1: Tenant context is dropped before the background job
+### F1 · High (P1): Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The worker later reloads the row by primary key, so the authorization boundary from the request is no longer present in the asynchronous path.
 
+**Impact:** the worker lookup can run outside the tenant that created the job.
+
 **Suggested change:** include the trusted tenant ID in the job payload and scope the worker lookup by both tenant and document ID.
 
-**Verify:** add a regression test where a job created under tenant A cannot load tenant B's document.
+**Reviewer checks:** confirmed the enqueue path has document ID only, and the worker lookup does not re-bind the tenant context.
 
-### F2 - Medium / P2: Regression test misses the cross-tenant worker path
+### F2 · Medium (P2): Regression test misses the cross-tenant worker path
 `backend/tests/jobs/test_service.py:88` · tests
 
 The added test covers the happy path for a worker loading its own document, but it would also have passed before the tenant boundary fix because it never creates a second tenant with a conflicting document ID.
 
+**Impact:** the tenant-boundary regression can return without a failing test.
+
 **Suggested change:** add a regression case with tenant A and tenant B documents and assert that the worker created under tenant A cannot load tenant B's row.
 
-**Verify:** the new test must fail against the unsafe worker lookup and pass only when tenant ID is part of the lookup.
+**Reviewer checks:** compared the new test against the unsafe lookup path; it does not exercise the cross-tenant case.
 
 <details>
 <summary>Copyable fix brief for a coding agent</summary>
 
 ```text
 Task:
-Address all confirmed findings from the Eneo PR review.
+Review and address all current findings from the Eneo PR review.
 
 Review basis:
 PR #123 at commit a1b2c3d.
@@ -183,25 +187,23 @@ and explain why. Do not blindly apply this brief if the code has changed.
 
 Findings:
 
-F1 - High / P1 - security
+F1 - High (P1) - security
 Location: backend/src/intric/jobs/service.py:142
 Problem: Tenant context is dropped before the background job.
-Required outcome: The worker lookup remains scoped to the tenant that created
-the job.
+Impact: The worker lookup can run outside the tenant that created the job.
 Suggested approach: Carry tenant_id in the job payload and scope the worker
 lookup by tenant_id and document_id.
-Verification: Add a regression test proving a tenant A job cannot load tenant B's
-document.
+Reviewer checks: Confirmed the enqueue path has document ID only, and the worker
+lookup does not re-bind the tenant context.
 
-F2 - Medium / P2 - tests
+F2 - Medium (P2) - tests
 Location: backend/tests/jobs/test_service.py:88
 Problem: The regression test misses the cross-tenant worker path.
-Required outcome: The test fails against the unsafe lookup and passes only when
-tenant_id is part of the lookup.
+Impact: The tenant-boundary regression can return without a failing test.
 Suggested approach: Add tenant A and tenant B documents with conflicting IDs or
 equivalent fixtures, then assert the tenant A job cannot load tenant B's row.
-Verification: Run the focused backend tests and strict Pyright for changed
-modules.
+Reviewer checks: Compared the new test against the unsafe lookup path; it does
+not exercise the cross-tenant case.
 
 Constraints:
 - Reuse the existing tenant-scoped repository or service.
@@ -219,7 +221,7 @@ what changed and identify any finding that was not implemented.
 <details>
 <summary>Give feedback on this review</summary>
 
-Post one command as a new PR Conversation comment after replacing the text in angle brackets.
+Post one command as a new top-level PR comment after replacing the text in angle brackets.
 Use the F reference from the relevant finding heading. The bot reacts 👍 when
 feedback is recorded.
 
@@ -290,10 +292,23 @@ Create a fine-grained personal access token restricted to `eneo-ai/eneo` with:
 ```text
 Contents: read
 Pull requests: read and write
+Issues: read and write
 Metadata: read
 ```
 
 Store it only as `GH_TOKEN` in Dokploy. Hermes’ `github_comment` delivery uses the `gh` CLI. The model itself does not receive an arbitrary GitHub write tool.
+
+Create a second fine-grained token for `ENEO_FEEDBACK_GH_TOKEN` with only:
+
+```text
+Pull requests: read
+Issues: read and write
+Metadata: read
+```
+
+The feedback sidecar uses this token for refetching PR/comment state and posting
+reactions or deterministic explanations. It does not need repository contents
+access.
 
 ## 8. Deploy in Dokploy
 
@@ -308,12 +323,16 @@ TZ=Europe/Stockholm
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
 WEBHOOK_SECRET=<output from: openssl rand -hex 32>
+ENEO_FEEDBACK_WEBHOOK_SECRET=<different output from: openssl rand -hex 32>
 
 GH_TOKEN=<fine-grained GitHub bot token>
+ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
 GH_PROMPT_DISABLED=1
 
 ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
 ENEO_REVIEW_DB=/opt/data/review-memory/review_memory.sqlite3
+ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
+ENEO_REVIEW_FEEDBACK_ENABLED=true
 
 HERMES_DASHBOARD=0
 API_SERVER_ENABLED=false
@@ -322,11 +341,36 @@ PYTHONUNBUFFERED=1
 
 For production, replace `latest` with a reviewed immutable image digest after the initial proof of concept.
 
-Route an HTTPS domain to service `hermes-review`, container port `8644`. Do not expose a dashboard, shell, database, or OpenAI-compatible API.
+Route an HTTPS domain to service `hermes-review`, container port `8644`. Route a
+second HTTPS domain or path to service `hermes-review-feedback`, container port
+`8645`. Do not expose a dashboard, shell, database, or OpenAI-compatible API.
 
-The named volume is mounted at `/opt/data`. Back it up securely. It contains Codex OAuth state, the GitHub review database, configuration, and possibly sensitive unpublished finding text. Never run two Hermes gateways against the same volume.
+The compose file intentionally passes an explicit environment allowlist to each
+container instead of forwarding every `.env` key. Add any future required runtime
+variable to the correct service's `environment:` block deliberately.
+
+The `hermes_review_data` volume is mounted at `/opt/data` only in the main
+reviewer. Back it up securely; it contains Codex OAuth state, Hermes
+configuration, and sessions. The SQLite review database lives in the separate
+`review_memory_data` volume so the feedback sidecar can write feedback without
+reading full Hermes state. Never run two Hermes gateways against the same
+`hermes_review_data` volume.
 
 Deploy the service.
+
+## Prompt-injection posture
+
+PR code, comments, commit messages, docs, and review feedback are untrusted
+inputs. The reviewer skill instructs the model to treat those strings as data,
+not commands, and the review tools expose structured read/record/finalize
+operations rather than shell or arbitrary GitHub write access.
+
+The feedback bridge is deterministic and outside the LLM path. It verifies HMAC,
+refetches the GitHub comment and PR, authorizes the numeric actor id, parses only
+supported `/review ...` commands, writes SQLite through the memory owner, and
+posts only a reaction or short deterministic explanation. Human feedback,
+learning reports, and coach exports require human review before any prompt,
+skill, suppression, or policy change.
 
 ## 9. Install the Eneo reviewer and connect Codex
 
@@ -378,6 +422,8 @@ Create these Actions secrets:
 ```text
 HERMES_REVIEW_URL=https://review-bot.example.org/webhooks/eneo-review
 HERMES_WEBHOOK_SECRET=<same value as WEBHOOK_SECRET>
+HERMES_REVIEW_FEEDBACK_URL=https://review-feedback.example.org/webhooks/eneo-review-feedback
+HERMES_REVIEW_FEEDBACK_SECRET=<same value as ENEO_FEEDBACK_WEBHOOK_SECRET>
 ```
 
 Create this Actions variable:
@@ -509,15 +555,15 @@ untrusted PR text or autonomous prompt mutation. Keep finding-level feedback and
 review-quality feedback separate:
 
 ```text
-/review false-positive F2 <reason>
+/review false-positive F2 because <what code disproves it>
 
-/review feedback missed <issue link or description>
+/review feedback missed because <what concrete issue was missed and where>
 ```
 
 `false-positive` is a durable suppressive decision and requires an allowlisted
 maintainer. `feedback missed` records review-quality feedback for metrics,
 replay cases, and private reviewer-improvement analysis. Post feedback as a new
-top-level PR Conversation comment; it does not need to be a reply to the bot
+top-level PR comment; it does not need to be a reply to the bot
 comment. Do not edit an old command after posting it, reply in an inline diff
 thread, or quote the whole bot review. The bridge treats one source comment ID as
 one immutable feedback event.

@@ -101,9 +101,10 @@ jobs:
                   "X-Hub-Signature-256": signature,
               },
           )
+          timeout = 900 if mode == "review" else 60
 
           try:
-              with urllib.request.urlopen(request, timeout=900) as response:
+              with urllib.request.urlopen(request, timeout=timeout) as response:
                   text = response.read(4096).decode("utf-8", errors="replace")
                   print(f"Eneo {mode} webhook accepted the request: HTTP {response.status} {text}")
           except urllib.error.HTTPError as error:

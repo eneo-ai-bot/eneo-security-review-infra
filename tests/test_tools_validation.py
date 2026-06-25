@@ -328,7 +328,10 @@ class ToolValidationTests(unittest.TestCase):
             )
 
         self.assertEqual(finalize_result["findings_count"], 1)
-        self.assertIn("### F1 - Critical / P0: Tenant scope omitted", finalize_result["markdown"])
+        self.assertIn(
+            "### F1 · Critical (P0): Tenant scope omitted",
+            finalize_result["markdown"],
+        )
         self.assertIn("Copyable fix brief for a coding agent", finalize_result["markdown"])
         self.assertNotIn(record_result["recorded"][0]["fingerprint"], finalize_result["markdown"].split("<!--", 1)[0])
 

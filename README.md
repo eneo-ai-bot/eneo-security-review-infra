@@ -77,9 +77,18 @@ repository with:
 - **Issues: read and write**
 - **Metadata: read**
 
-Issues write is needed for feedback reactions and short deterministic error
-comments on PR conversation comments. Store this token only as `GH_TOKEN` on the
-VPS. Do not put it in the public repository or in the trigger workflow.
+Issues write is needed because Hermes posts the final PR comment through the
+GitHub CLI. Store this token only as `GH_TOKEN` on the VPS. Do not put it in the
+public repository or in the trigger workflow.
+
+Create a second fine-grained token for the deterministic feedback sidecar:
+
+- **Pull requests: read**
+- **Issues: read and write**
+- **Metadata: read**
+
+Store that token as `ENEO_FEEDBACK_GH_TOKEN`. It does not need Contents read and
+it should not be reused by the main reviewer.
 
 ## 2. Deploy with Dokploy
 
@@ -92,8 +101,10 @@ Copy `.env.example` to `.env` and set at least:
 WEBHOOK_SECRET=<output of: openssl rand -hex 32>
 ENEO_FEEDBACK_WEBHOOK_SECRET=<different output of: openssl rand -hex 32>
 GH_TOKEN=<fine-grained GitHub bot token>
+ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
 ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
 ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
+ENEO_REVIEW_FEEDBACK_ENABLED=true
 ```
 
 Keep these defaults:
@@ -114,9 +125,21 @@ OpenAI-compatible API are disabled. Keep edge rate limiting available on the
 feedback route in Dokploy/Traefik; the sidecar verifies HMAC before GitHub or DB
 work, but abuse throttling belongs at the HTTP edge.
 
-The named `hermes_review_data` volume is mounted at `/opt/data`. It contains
-Hermes configuration, Codex OAuth state, sessions, skills, plugins, and the
-review database. Never run two Hermes gateways against the same volume.
+The compose file intentionally passes an explicit environment allowlist to each
+container instead of forwarding every `.env` key. Add any future required runtime
+variable to the correct service's `environment:` block deliberately.
+
+The named `hermes_review_data` volume is mounted at `/opt/data` only in the main
+reviewer. It contains Hermes configuration, Codex OAuth state, sessions, skills,
+and plugins. The SQLite review database lives in the separate
+`review_memory_data` volume, mounted at `/opt/data/review-memory` in the reviewer
+and `/review-memory` in the feedback sidecar. Never run two Hermes gateways
+against the same `hermes_review_data` volume.
+
+If upgrading from an older deployment that stored the database under
+`/opt/data/review-memory` inside `hermes_review_data`, copy
+`review_memory.sqlite3` into the new `review_memory_data` volume before relying
+on prior findings or feedback history.
 
 Deploy the application.
 
@@ -190,6 +213,20 @@ must exist on the repository's default branch (`develop` for Eneo) before an
 agent review and GitHub delivery; the workflow job itself has a 20-minute cap.
 Retries reuse the original comment ID so Hermes' idempotency cache does not start
 a duplicate review.
+
+## Prompt-injection posture
+
+PR code, comments, commit messages, docs, and review feedback are treated as
+untrusted data. The review skill explicitly forbids following instructions found
+inside repository content, and the reviewer tools accept structured parameters
+instead of free-form shell commands.
+
+The deterministic feedback bridge is intentionally outside the LLM path. It
+refetches the GitHub comment, parses only supported `/review ...` commands,
+authorizes the numeric GitHub actor id, writes SQLite through the memory owner,
+and posts only a reaction or short deterministic explanation. Human feedback and
+coach exports can inform future reviewer changes, but they do not automatically
+rewrite prompts, skills, suppressions, or policy.
 
 ## 5. Run a review
 
@@ -392,9 +429,11 @@ eneo-review-memory decide <fingerprint> reopen \
 The deterministic bridge for PR-comment feedback separates finding decisions
 from review-quality feedback. Finding commands use local references from the
 latest generated review,
-for example `/review false-positive F2 <reason>`. Review-quality commands such
-as `/review feedback missed <issue>` feed metrics and replay cases, not automatic
-suppressions. Post feedback as a new top-level PR Conversation comment; do not
+for example `/review false-positive F2 because <what code disproves it>`.
+Review-quality commands such as
+`/review feedback missed because <what concrete issue was missed and where>`
+feed metrics and replay cases, not automatic suppressions. Post feedback as a
+new top-level PR comment; do not
 edit an old command or reply in an inline diff thread. The feedback path requires
 an allowlisted numeric GitHub actor id from `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`.
 Successful feedback receives a `+1` reaction. Invalid, stale, or unsupported

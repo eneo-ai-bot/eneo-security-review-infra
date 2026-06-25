@@ -1,39 +1,43 @@
 ## Eneo AI code & security review
 
-There are 2 current findings: 1 High / P1 and 1 Medium / P2.
+There are 2 current findings: 1 High (P1) and 1 Medium (P2).
 
-### F1 - High / P1: Tenant context is dropped before the background job
+### F1 · High (P1): Tenant context is dropped before the background job
 `backend/src/intric/jobs/service.py:142` · security
 
 The new enqueue path passes the document ID but not the verified tenant ID. The
 worker later reloads the row by primary key, so the authorization boundary from
 the request is no longer present in the asynchronous path.
 
+**Impact:** a tenant A job can load tenant B's document when IDs collide.
+
 **Suggested change:** include the trusted tenant ID in the job payload and scope
 the worker lookup by both tenant and document ID.
 
-**Verify:** add a regression test where a job created under tenant A cannot load
-tenant B's document.
+**Reviewer checks:** confirmed the enqueue path has document ID only, and the
+worker lookup does not re-bind the tenant context.
 
-### F2 - Medium / P2: Regression test misses the cross-tenant worker path
+### F2 · Medium (P2): Regression test misses the cross-tenant worker path
 `backend/tests/jobs/test_service.py:88` · tests
 
 The added test covers the happy path for a worker loading its own document, but it
 would also have passed before the tenant boundary fix because it never creates a
 second tenant with a conflicting document ID.
 
+**Impact:** the tenant-boundary regression can return without a failing test.
+
 **Suggested change:** add a regression case with tenant A and tenant B documents
 and assert that the worker created under tenant A cannot load tenant B's row.
 
-**Verify:** the new test must fail against the unsafe worker lookup and pass only
-when the tenant ID is part of the lookup.
+**Reviewer checks:** compared the new test against the unsafe lookup path; it
+does not exercise the cross-tenant case.
 
 <details>
 <summary>Copyable fix brief for a coding agent</summary>
 
 ```text
 Task:
-Address all confirmed findings from the Eneo PR review.
+Review and address all current findings from the Eneo PR review.
 
 Review basis:
 PR #123 at commit a1b2c3d.
@@ -44,25 +48,23 @@ and explain why. Do not blindly apply this brief if the code has changed.
 
 Findings:
 
-F1 - High / P1 - security
+F1 - High (P1) - security
 Location: backend/src/intric/jobs/service.py:142
 Problem: Tenant context is dropped before the background job.
-Required outcome: The worker lookup remains scoped to the tenant that created
-the job.
+Impact: The worker lookup can run outside the tenant that created the job.
 Suggested approach: Carry tenant_id in the job payload and scope the worker
 lookup by tenant_id and document_id.
-Verification: Add a regression test proving a tenant A job cannot load tenant B's
-document.
+Reviewer checks: Confirmed the enqueue path has document ID only, and the worker
+lookup does not re-bind the tenant context.
 
-F2 - Medium / P2 - tests
+F2 - Medium (P2) - tests
 Location: backend/tests/jobs/test_service.py:88
 Problem: The regression test misses the cross-tenant worker path.
-Required outcome: The test fails against the unsafe lookup and passes only when
-tenant_id is part of the lookup.
+Impact: The tenant-boundary regression can return without a failing test.
 Suggested approach: Add tenant A and tenant B documents with conflicting IDs or
 equivalent fixtures, then assert the tenant A job cannot load tenant B's row.
-Verification: Run the focused backend tests and strict Pyright for changed
-modules.
+Reviewer checks: Compared the new test against the unsafe lookup path; it does
+not exercise the cross-tenant case.
 
 Constraints:
 - Reuse the existing tenant-scoped repository or service.
@@ -80,7 +82,7 @@ what changed and identify any finding that was not implemented.
 <details>
 <summary>Give feedback on this review</summary>
 
-Post one command as a new PR Conversation comment after replacing the text in angle brackets.
+Post one command as a new top-level PR comment after replacing the text in angle brackets.
 Use the F reference from the relevant finding heading. The bot reacts 👍 when
 feedback is recorded.
 

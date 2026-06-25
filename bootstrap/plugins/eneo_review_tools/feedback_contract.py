@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 CANONICAL_TRIGGER = "/review"
@@ -10,8 +9,6 @@ COMPATIBLE_TRIGGERS = ("/review", "@review")
 
 FALSE_POSITIVE_PLACEHOLDER = "<what code, guard, or invariant disproves it>"
 MISSED_ISSUE_PLACEHOLDER = "<what concrete issue was missed and where>"
-
-_PLACEHOLDER_RE = re.compile(r"<[^>\n]+>")
 
 
 @dataclass(frozen=True)
@@ -21,7 +18,10 @@ class FeedbackCommandTemplate:
 
 
 def contains_placeholder(value: str) -> bool:
-    return bool(_PLACEHOLDER_RE.search(value))
+    return (
+        FALSE_POSITIVE_PLACEHOLDER in value
+        or MISSED_ISSUE_PLACEHOLDER in value
+    )
 
 
 def false_positive_command(local_reference: str) -> str:
@@ -60,11 +60,12 @@ def feedback_templates(
 
 
 def usage_lines() -> tuple[str, ...]:
+    finding, missed = feedback_templates("F2")
     return (
         "Use `/review` alone to request a review, or:",
         "",
-        "- `/review false-positive F2 <reason>`",
-        "- `/review feedback missed <description or issue link>`",
+        f"- `{finding.command}`",
+        f"- `{missed.command}`",
         "",
-        "Post feedback as a new PR Conversation comment. Do not edit an old command.",
+        "Post feedback as a new top-level PR comment. Do not edit an old command.",
     )
