@@ -145,6 +145,12 @@ QUALITY_POLICIES: Final[dict[str, SignalPolicy]] = {
         "Capture the safer fix pattern and update remediation guidance only "
         "after a replay proves the old suggestion would recur.",
     ),
+    "scope_confusion": SignalPolicy(
+        "medium",
+        "developer_experience",
+        "Improve diff-scope wording or review selection only if inherited "
+        "branch noise repeatedly confuses authors.",
+    ),
     "unclear": SignalPolicy(
         "medium",
         "developer_experience",

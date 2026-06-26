@@ -231,7 +231,9 @@ angle brackets, and post it as a new top-level PR comment; it does not need
 to reply to the bot comment. Do not advertise feedback commands that are not
 deployed. Feedback is recorded for future reviews and private
 reviewer-improvement analysis; do not claim it automatically teaches or rewrites
-the reviewer.
+the reviewer. Scope feedback must use the deployed
+`/review feedback scope F1 because <why this finding is in the diff but outside the intended PR scope>`
+form. Scope feedback is review-quality feedback, not a false-positive decision.
 
 If the final review would exceed the delivery budget, never silently truncate or
 hide findings. Keep each finding concise and, when needed, split the output into

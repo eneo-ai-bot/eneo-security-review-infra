@@ -531,7 +531,8 @@ from review-quality feedback. Finding commands use local references from the
 latest generated review,
 for example `/review false-positive F2 because <what code disproves it>`.
 Review-quality commands such as
-`/review feedback missed because <what concrete issue was missed and where>`
+`/review feedback missed because <what concrete issue was missed and where>` or
+`/review feedback scope F2 because <why this finding is in the diff but outside the intended PR scope>`
 feed metrics and replay cases, not automatic suppressions. Post feedback as a
 new top-level PR comment; do not
 edit an old command or reply in an inline diff thread. The feedback path requires

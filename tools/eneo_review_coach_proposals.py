@@ -44,8 +44,9 @@ _EVENT_TYPE_PRIORITY: Final[dict[str, int]] = {
     "accepted_risk": 10,
     "resolved": 11,
     "unclear": 12,
-    "too_verbose": 13,
-    "useful": 14,
+    "scope_confusion": 13,
+    "too_verbose": 14,
+    "useful": 15,
 }
 
 _ROUTE_PRIORITY: Final[dict[str, int]] = {

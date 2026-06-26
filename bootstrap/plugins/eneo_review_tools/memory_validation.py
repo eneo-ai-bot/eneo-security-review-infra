@@ -63,6 +63,7 @@ REVIEW_FEEDBACK_CATEGORIES = {
     "severity_too_low",
     "remediation_impractical",
     "missed_issue",
+    "scope_confusion",
 }
 MIN_CONFIDENCE = 0.85
 MIN_PUBLICATION_SCORE = min(SEVERITY_SCORE_GATES.values())

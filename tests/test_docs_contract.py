@@ -75,6 +75,7 @@ class DocsContractTests(unittest.TestCase):
                 self.assertNotIn("Verification:", body)
                 self.assertIn("Re-check every finding against the current PR head", body)
                 self.assertIn("/review false-positive F1 because", body)
+                self.assertIn("/review feedback scope F1 because", body)
                 self.assertIn("/review feedback missed because", body)
                 self.assertNotIn("@review false-positive", body)
                 self.assertNotIn("/review intentional", body)

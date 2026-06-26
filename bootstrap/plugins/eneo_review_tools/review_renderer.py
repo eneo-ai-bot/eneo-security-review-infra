@@ -544,6 +544,10 @@ def render_feedback_help(findings: Sequence[PublishedFinding]) -> str:
                     "It does not need to be a reply to the bot comment. Do not "
                     "edit an old feedback command after posting it."
                 ),
+                (
+                    "Scope feedback records review-quality feedback; it does "
+                    "not mark the finding incorrect."
+                ),
                 "",
             ]
         )

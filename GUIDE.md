@@ -243,11 +243,19 @@ feedback is recorded.
 
 It does not need to be a reply to the bot comment. Do not edit an old feedback
 command after posting it.
+Scope feedback records review-quality feedback; it does not mark the finding
+incorrect.
 
 **The finding is incorrect**
 
 ```text
 /review false-positive F1 because <what code, guard, or invariant disproves it>
+```
+
+**The finding is in the diff but outside the intended PR scope**
+
+```text
+/review feedback scope F1 because <why this finding is in the diff but outside the intended PR scope>
 ```
 
 **The review missed an important issue**
@@ -649,15 +657,19 @@ review-quality feedback separate:
 ```text
 /review false-positive F2 because <what code disproves it>
 
+/review feedback scope F2 because <why this finding is in the diff but outside the intended PR scope>
+
 /review feedback missed because <what concrete issue was missed and where>
 ```
 
 `false-positive` is a durable suppressive decision and requires an allowlisted
-maintainer. `feedback missed` records review-quality feedback for metrics,
-replay cases, and private reviewer-improvement analysis. Post feedback as a new
-top-level PR comment; it does not need to be a reply to the bot
-comment. Do not edit an old command after posting it, reply in an inline diff
-thread, or quote the whole bot review. The bridge treats one source comment ID as
+maintainer. `feedback scope` records author-intent or stacked-branch scope
+confusion for review UX improvements without suppressing the finding.
+`feedback missed` records review-quality feedback for metrics, replay cases, and
+private reviewer-improvement analysis. Post feedback as a new top-level PR
+comment; it does not need to be a reply to the bot comment. Do not edit an old
+command after posting it, reply in an inline diff thread, or quote the whole bot
+review. The bridge treats one source comment ID as
 one immutable feedback event.
 
 The deterministic bridge refetches the authoritative GitHub comment, verifies

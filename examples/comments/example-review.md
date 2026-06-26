@@ -88,11 +88,19 @@ feedback is recorded.
 
 It does not need to be a reply to the bot comment. Do not edit an old feedback
 command after posting it.
+Scope feedback records review-quality feedback; it does not mark the finding
+incorrect.
 
 **The finding is incorrect**
 
 ```text
 /review false-positive F1 because <what code, guard, or invariant disproves it>
+```
+
+**The finding is in the diff but outside the intended PR scope**
+
+```text
+/review feedback scope F1 because <why this finding is in the diff but outside the intended PR scope>
 ```
 
 **The review missed an important issue**

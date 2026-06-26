@@ -389,7 +389,12 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("Copyable fix brief for a coding agent", markdown)
         self.assertIn("Give feedback on this review", markdown)
         self.assertIn("Post one command as a new top-level PR comment", markdown)
+        self.assertIn("Scope feedback records review-quality feedback", markdown)
         self.assertIn("```text\n/review false-positive F1 because <what code, guard, or invariant disproves it>\n```", markdown)
+        self.assertIn(
+            "```text\n/review feedback scope F1 because <why this finding is in the diff but outside the intended PR scope>\n```",
+            markdown,
+        )
         self.assertIn("```text\n/review feedback missed because <what concrete issue was missed and where>\n```", markdown)
         self.assertNotIn("@review false-positive", markdown)
         self.assertNotIn("/review intentional", markdown)
@@ -1076,6 +1081,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertNotIn("Copyable fix brief for a coding agent", result["markdown"])
         self.assertIn("Give feedback on this review", result["markdown"])
         self.assertIn("/review feedback missed because <what concrete issue was missed and where>", result["markdown"])
+        self.assertNotIn("/review feedback scope", result["markdown"])
         self.assertNotIn("/review false-positive", result["markdown"])
 
     def test_finalize_no_findings_without_coverage_ledger_is_not_clean(self):
@@ -1277,7 +1283,7 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         self.assertNotIn("<!-- hidden", rendered_prose)
         self.assertNotIn("```fence", rendered_prose)
-        self.assertEqual(result["markdown"].count("```"), 6)
+        self.assertEqual(result["markdown"].count("```"), 8)
         brief = result["markdown"].split("```text\nTask:", 1)[1].split("\n```", 1)[0]
         self.assertIn("List<T>", brief)
         self.assertIn("a && b", brief)

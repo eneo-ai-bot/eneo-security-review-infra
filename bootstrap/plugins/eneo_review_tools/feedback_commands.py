@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DecisionFeedbackValue = Literal["false_positive", "intentional_by_design"]
-ReviewFeedbackCategory = Literal["missed_issue"]
+ReviewFeedbackCategory = Literal["missed_issue", "scope_confusion"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,7 @@ class ReviewQualityFeedbackCommand:
     kind: Literal["review_quality"]
     category: ReviewFeedbackCategory
     reason: str
+    local_reference: str = ""
 
 
 FeedbackCommand = FindingFeedbackCommand | ReviewQualityFeedbackCommand
@@ -133,6 +134,16 @@ def parse_review_feedback_command(body: str) -> FeedbackCommand | None:
     if normalized_verb == "feedback":
         category, separator, reason = rest.partition(" ")
         category = category.strip().lower().rstrip(":")
+        if category == "scope":
+            reference, reference_separator, scope_reason = reason.strip().partition(" ")
+            if not separator or not reference_separator:
+                raise ReviewMemoryError("scope feedback requires a finding reference and reason")
+            return ReviewQualityFeedbackCommand(
+                kind="review_quality",
+                category="scope_confusion",
+                local_reference=_local_reference(reference),
+                reason=_reason(scope_reason),
+            )
         if category != "missed":
             raise ReviewMemoryError("unknown review feedback category")
         if not separator:

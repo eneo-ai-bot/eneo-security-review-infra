@@ -263,6 +263,25 @@ def _resolve_current_finding_target(
     )
 
 
+def _finding_reference_is_current(
+    connection: sqlite3.Connection,
+    *,
+    publication_id: int,
+    local_reference: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM publication_findings
+        WHERE publication_id = ?
+          AND local_reference = ?
+          AND status = 'current'
+        """,
+        (publication_id, local_reference),
+    ).fetchone()
+    return row is not None
+
+
 def _finding_title(connection: sqlite3.Connection, fingerprint: str) -> str:
     row = connection.execute(
         "SELECT title FROM findings WHERE fingerprint = ?", (fingerprint,)
@@ -337,13 +356,14 @@ def _record_quality_feedback(
             repository, pr_number, publication_id, head_sha, local_reference,
             category, reason, actor_user_id, actor_login, author_association,
             source_comment_id, source_comment_url, created_at
-        ) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             publication.repository,
             publication.pr_number,
             publication.publication_id,
             publication.head_sha,
+            command.local_reference,
             command.category,
             command.reason,
             actor.actor_user_id,
@@ -431,6 +451,20 @@ def record_review_feedback_comment(
             return FeedbackResult(status="no_mapping", event_id=event_id)
 
         if isinstance(command, ReviewQualityFeedbackCommand):
+            if command.local_reference and not _finding_reference_is_current(
+                connection,
+                publication_id=publication.publication_id,
+                local_reference=command.local_reference,
+            ):
+                _set_feedback_outcome(
+                    connection, event_id=event_id, outcome="not_current"
+                )
+                connection.commit()
+                return FeedbackResult(
+                    status="not_current",
+                    event_id=event_id,
+                    local_reference=command.local_reference,
+                )
             feedback_id = _record_quality_feedback(
                 connection,
                 publication=publication,

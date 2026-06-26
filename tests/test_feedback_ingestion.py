@@ -271,6 +271,10 @@ class FeedbackIngestionTests(unittest.TestCase):
             memory_db.parse_review_feedback_command("/review false-positive F1 because")
         with self.assertRaisesRegex(memory_db.ReviewMemoryError, "reason is required"):
             memory_db.parse_review_feedback_command("/review feedback missed because")
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "scope feedback"):
+            memory_db.parse_review_feedback_command("/review feedback scope because")
+        with self.assertRaisesRegex(memory_db.ReviewMemoryError, "local_reference"):
+            memory_db.parse_review_feedback_command("/review feedback scope Fx because branch noise")
 
         self.assertIsNone(memory_db.parse_review_feedback_command("@review"))
 
@@ -281,16 +285,24 @@ class FeedbackIngestionTests(unittest.TestCase):
         missed = memory_db.parse_review_feedback_command(
             "/review feedback missed because backend/api/documents.py lacks rollback coverage."
         )
+        scoped = memory_db.parse_review_feedback_command(
+            "/review feedback scope F1 because This change is inherited branch noise."
+        )
 
         self.assertIsNotNone(finding)
         self.assertIsNotNone(missed)
+        self.assertIsNotNone(scoped)
         assert finding is not None
         assert missed is not None
+        assert scoped is not None
         self.assertEqual(finding.reason, "The repository scopes tenant_id.")
         self.assertEqual(
             missed.reason,
             "backend/api/documents.py lacks rollback coverage.",
         )
+        self.assertEqual(scoped.reason, "This change is inherited branch noise.")
+        self.assertEqual(scoped.local_reference, "F1")
+        self.assertEqual(scoped.category, "scope_confusion")
 
     def test_rendered_feedback_templates_match_parser_contract(self) -> None:
         for template in memory_db.feedback_templates("F2"):
@@ -305,6 +317,10 @@ class FeedbackIngestionTests(unittest.TestCase):
                 command = command.replace(
                     memory_db.MISSED_ISSUE_PLACEHOLDER,
                     "the review missed backend/api/documents.py rollback behavior",
+                )
+                command = command.replace(
+                    memory_db.SCOPE_CONFUSION_PLACEHOLDER,
+                    "the finding is inherited from a stacked branch",
                 )
                 parsed = memory_db.parse_review_feedback_command(command)
                 self.assertIsNotNone(parsed)
@@ -492,6 +508,41 @@ class FeedbackIngestionTests(unittest.TestCase):
         self.assertEqual(row["publication_id"], publication["publication_id"])
         self.assertEqual(row["head_sha"], "a" * 40)
         self.assertEqual(row["reason"], "The review missed rollback risk.")
+
+    def test_feedback_scope_records_referenced_quality_feedback(self) -> None:
+        self.record()
+        publication = self.finalize()
+
+        result = self.feedback(
+            "@review feedback scope F1 because The finding is inherited branch noise."
+        )
+
+        self.assertEqual(result.status, "recorded")
+        row = self.connection.execute("SELECT * FROM review_quality_feedback").fetchone()
+        self.assertEqual(row["category"], "scope_confusion")
+        self.assertEqual(row["local_reference"], "F1")
+        self.assertEqual(row["publication_id"], publication["publication_id"])
+        self.assertEqual(row["reason"], "The finding is inherited branch noise.")
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0],
+            0,
+        )
+
+    def test_feedback_scope_requires_current_reference(self) -> None:
+        self.record()
+        self.finalize()
+
+        result = self.feedback(
+            "@review feedback scope F2 because This reference is stale."
+        )
+
+        self.assertEqual(result.status, "not_current")
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM review_quality_feedback"
+            ).fetchone()[0],
+            0,
+        )
 
     def finalize_after_recording_empty_review(self) -> dict[str, object]:
         self.record(findings=[])
