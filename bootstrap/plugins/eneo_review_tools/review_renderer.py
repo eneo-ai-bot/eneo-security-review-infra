@@ -241,6 +241,17 @@ def ref_clause(items: Sequence[str], singular: str, plural: str) -> str:
     return f"{joined_refs(ordered)} {suffix}"
 
 
+def count_label(count: int, singular: str, plural: str) -> str:
+    label = singular if count == 1 else plural
+    return f"{count} {label}"
+
+
+def joined_labels(items: Sequence[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    return f"{items[0]} and {items[1]}"
+
+
 def lifecycle_summary(
     *,
     findings: Sequence[PublishedFinding],
@@ -314,13 +325,38 @@ def coverage_summary_line(coverage: ReviewCoverageSummary | None) -> str:
             "registered for this run. This review is not a clean result."
         )
     if coverage["state"] == "complete":
-        return (
-            f"<sub>Review context: textual diff content was returned for "
-            f"{coverage['changed_paths_with_diff']} of {coverage['changed_paths']} "
-            f"changed paths. Additional source context was read from "
-            f"{coverage['changed_paths_with_source_reads']} changed paths and "
-            f"{coverage['supporting_context_paths_read']} supporting files.</sub>"
+        changed_paths = count_label(
+            coverage["changed_paths"],
+            "registered changed path",
+            "registered changed paths",
         )
+        line = (
+            f"<sub>Review context: textual diff content was available for all "
+            f"{changed_paths}."
+        )
+        source_reads: list[str] = []
+        if coverage["changed_paths_with_source_reads"]:
+            source_reads.append(
+                count_label(
+                    coverage["changed_paths_with_source_reads"],
+                    "changed path",
+                    "changed paths",
+                )
+            )
+        if coverage["supporting_context_paths_read"]:
+            source_reads.append(
+                count_label(
+                    coverage["supporting_context_paths_read"],
+                    "supporting file",
+                    "supporting files",
+                )
+            )
+        if source_reads:
+            line += (
+                f" Additional source context was read from "
+                f"{joined_labels(source_reads)}."
+            )
+        return f"{line}</sub>"
     representative = coverage["unavailable_paths"] or coverage["truncated_paths"]
     suffix = ""
     if representative:
