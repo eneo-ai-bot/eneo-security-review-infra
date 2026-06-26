@@ -1,694 +1,138 @@
-# Eneo Hermes PR reviewer
+# Hermes GitHub PR review agent
 
-This repository contains the deployable Eneo PR reviewer: a locked-down Hermes
-Agent gateway, an Eneo-specific review contract, bounded GitHub read tools, and a
-SQLite registry for findings and human feedback.
+This repository packages a locked-down Hermes + Codex reviewer for GitHub pull
+requests. A trusted developer comments `/review`, GitHub Actions sends a signed
+webhook, Hermes reviews the current PR snapshot through bounded read tools, and
+the deterministic publisher posts a structured PR comment.
 
-A trusted maintainer writes exactly `/review` on an open pull request. GitHub
-Actions validates the requester and sends a signed webhook to Hermes. Hermes uses
-Codex through ChatGPT OAuth, reads only bounded PR context through the bundled
-plugin, runs a two-pass evidence review, records every surviving finding in
-SQLite, renders the final comment through the plugin finalizer, removes matching
-human-approved suppressions, stores the exact rendered Markdown, and publishes
-one canonical structured PR comment through the deterministic publisher tool.
+The reusable part is the review engine: webhook routing, bounded GitHub reads,
+SQLite finding memory, human feedback, deterministic publication, and operational
+tooling. This repository currently ships the Eneo review profile. The profile is
+where organization-specific policy lives: `bootstrap/SOUL.md`,
+`bootstrap/workspace/AGENTS.md`, and `bootstrap/skills/eneo-pr-review/SKILL.md`.
 
-The comment includes a short severity-count summary, every active finding as an
-expanded section with a local reference such as `F1`, hidden fingerprint metadata
-for routing, and one copyable all-findings fix brief for a coding agent. The
-reviewer does not get a shell, file-write tool, general GitHub write tool, web
-browser, delegation, or code execution.
+Some runtime names still use the historical `ENEO_*` and `eneo_*` prefixes. Treat
+those as implementation names for this deployment, not as proof that the engine
+can only review Eneo repositories. Generalizing the namespace is a separate
+breaking-change slice.
 
-## What is included
+## What It Does
 
-- A Dokploy-ready Compose service and derived Hermes image.
-- Codex subscription login through `hermes model`; no OpenAI API key is required.
-- A maintainer-only `/review` GitHub Actions trigger, with `@review` kept as a
-  compatibility alias.
-- Deterministic GitHub comment delivery through `eneo_review_deliver`.
-- Eneo-specific `SOUL.md`, `AGENTS.md`, and a two-pass review skill.
-- Ponytail v4.7.0 to prefer the smallest correct remediation without weakening
-  validation, security, reliability, data protection, or accessibility.
-- A native Hermes plugin that reads bounded GitHub PR context, stores finding
-  history in SQLite, and renders the final review comment.
-- Human-only decisions for false positives, accepted risks, duplicates,
-  resolutions, and reopenings.
-- Private coach tooling that exports bounded learning evidence and selects
-  deterministic, human-reviewable reviewer-improvement proposals.
-- An optional, disabled later-design note for `code-review-graph`.
+- Reviews the exact base/head snapshot of an open GitHub PR.
+- Reads PR metadata, diffs, and selected files through bounded plugin tools.
+- Publishes every evidence-backed finding that survives the skeptical review
+  gate; there is no fixed cap such as three findings.
+- Re-checks previous unresolved findings on repeated reviews.
+- Stores findings, review runs, publication state, and human feedback in SQLite.
+- Can show deterministic `/review ...` feedback commands so allowlisted
+  developers can report false positives, scope confusion, and missed issues.
+- Keeps comment delivery deterministic through `eneo_review_deliver`, not through
+  free-form model output. Large reviews are split into deterministic comment
+  parts instead of hiding findings.
 
-## Review flow
+## What It Is Not
 
-```text
-trusted maintainer comments /review
-        |
-        v
-GitHub Actions checks username + repository association
-        |
-        v
-HMAC-signed minimal webhook payload
-        |
-        v
-Hermes + Codex
-  pass 1: candidate review
-  pass 2: skeptical falsification gate
-        |
-        v
-SQLite finding/suppression check
-        |
-        v
-deterministic comment finalizer
-        |
-        v
-deterministic delivery verifies base/head + stored body
-        |
-        v
-one current review round on the GitHub PR timeline
+- It is not a required merge gate by default. Treat early deployments as advisory
+  calibration.
+- It is not CodeQL, Dependabot, GitHub Dependency Review, or a CVE scanner. See
+  [docs/SECURITY.md](docs/SECURITY.md) for the dependency-scanning boundary.
+- It does not perform a complete CVE/GHSA scan of direct or transitive
+  dependencies.
+- It may comment on dependency risk when a PR changes dependency manifests or
+  lockfiles, but deterministic dependency vulnerability scanning belongs in CI.
+- It does not execute contributor code on the VPS.
+- It does not give the model a shell, repository write tool, browser, delegation,
+  or arbitrary GitHub write access.
+
+## Review Flow
+
+```mermaid
+flowchart TD
+    A["Trusted developer comments /review"] --> B["GitHub Actions allowlist + association gate"]
+    B --> C["HMAC-signed webhook"]
+    C --> D["Hermes + Codex review run"]
+    D --> E["Bounded GitHub PR tools"]
+    D --> F["SQLite review memory"]
+    D --> G["Deterministic renderer + publisher"]
+    G --> H["Structured GitHub PR review comment"]
+    H --> I["Developer feedback commands"]
+    I --> F
 ```
 
-The model does not receive a general shell, repository write tool, or arbitrary
-GitHub mutation tool. The final Hermes response is logged only; the
-`eneo_review_deliver` tool renders the stored review body, loads the PR target
-from SQLite, verifies the exact base/head SHA, creates a new review-round
-comment for a changed snapshot, and records the run outcome. Retrying the same
-publication key may update its own comments; a new review round never falls back
-to overwriting a previous round.
-If the rendered review is too large for one GitHub comment, the publisher splits
-it into deterministic continuation comments instead of truncating or hiding
-verified findings.
+The model proposes and challenges findings. Plugin code owns the durable state,
+publication, feedback parsing, snapshot checks, and GitHub writes.
 
-## 1. Create the GitHub reviewer identity
+## Engine And Profile
 
-Create a dedicated GitHub machine user or bot account and grant it access only to
-`eneo-ai/eneo`. Create a read-only fine-grained personal access token restricted
-to that repository with:
+| Area | Owner | Notes |
+| --- | --- | --- |
+| Webhook transport | `compose.yaml`, `examples/github/ai-review-request.yml` | Authenticates review and feedback requests before Hermes runs. |
+| GitHub reads | `bootstrap/plugins/eneo_review_tools/` | Bounded PR metadata, diff, and file reads. |
+| Review memory | `review_memory_data` SQLite volume | Findings, decisions, publications, feedback, coverage, and run phases. |
+| Publication | `eneo_review_deliver` | Verifies snapshot and writes deterministic PR comments. |
+| Reviewer identity | `bootstrap/SOUL.md` | Tone, evidence posture, and identity. |
+| Review contract | `bootstrap/workspace/AGENTS.md` | Visible comment contract and evidence rules. |
+| Review procedure | `bootstrap/skills/eneo-pr-review/SKILL.md` | Two-pass PR review procedure. |
+| Example output | `examples/comments/example-review.md` | Single example of the rendered review shape. |
 
-- **Contents: read**
-- **Pull requests: read**
-- **Metadata: read**
+To adapt the reviewer for another team, start with the three profile files and
+the GitHub workflow allowlist. Do not fork the memory or publisher logic unless
+your runtime contract actually changes.
 
-Store that token as `GITHUB_READ_TOKEN`.
+## Developer Workflow
 
-Create a second fine-grained token for deterministic review publication:
-
-- **Pull requests: read**
-- **Issues: read and write**
-- **Metadata: read**
-
-Store that token as `ENEO_REVIEW_PUBLISH_GH_TOKEN`. It is used only by the
-publisher tool to create or update the canonical PR review comment.
-The publisher uses `GITHUB_READ_TOKEN` first for PR metadata and comment
-discovery, then uses `ENEO_REVIEW_PUBLISH_GH_TOKEN` for comment create, update,
-and delete operations. Keeping the read and write tokens separate makes GitHub
-403 failures easier to diagnose without giving the reviewer write access to code.
-
-Create a second fine-grained token for the deterministic feedback sidecar:
-
-- **Pull requests: read**
-- **Issues: read and write**
-- **Metadata: read**
-
-Store that token as `ENEO_FEEDBACK_GH_TOKEN`. It does not need Contents read and
-it should not be reused by the main reviewer.
-
-## 2. Deploy with Dokploy
-
-Put this starter directory in a private infrastructure repository. In Dokploy,
-create a Docker Compose application using `compose.yaml`.
-
-Copy `.env.example` to `.env` and set at least:
-
-```dotenv
-WEBHOOK_SECRET=<output of: openssl rand -hex 32>
-ENEO_FEEDBACK_WEBHOOK_SECRET=<different output of: openssl rand -hex 32>
-GITHUB_READ_TOKEN=<fine-grained read token>
-ENEO_REVIEW_PUBLISH_GH_TOKEN=<fine-grained publisher token>
-ENEO_FEEDBACK_GH_TOKEN=<fine-grained feedback token>
-ENEO_ALLOWED_REPOSITORIES=eneo-ai/eneo
-ENEO_FEEDBACK_ALLOWED_ACTOR_IDS=<comma-separated numeric GitHub user ids>
-ENEO_REVIEW_FEEDBACK_ENABLED=true
-```
-
-Keep these defaults:
-
-```dotenv
-WEBHOOK_ENABLED=true
-WEBHOOK_PORT=8644
-GH_PROMPT_DISABLED=1
-ENEO_REVIEW_PUBLISH_MAX_BYTES=60000
-HERMES_DASHBOARD=0
-API_SERVER_ENABLED=false
-```
-
-`ENEO_REVIEW_PUBLISH_MAX_BYTES` controls the maximum size of each GitHub comment,
-not the number of findings reviewed or published. Lowering it does not suppress
-findings; it only makes the publisher use more continuation comments.
-
-Attach an HTTPS domain such as `review-bot.example.org` to service
-`hermes-review`, container port `8644`. Attach a second HTTPS route such as
-`review-feedback.example.org` to service `hermes-review-feedback`, container
-port `8645`. Only these webhook services should be reachable. The dashboard and
-OpenAI-compatible API are disabled. Keep edge rate limiting available on the
-feedback route in Dokploy/Traefik; the sidecar verifies HMAC before GitHub or DB
-work, but abuse throttling belongs at the HTTP edge.
-
-The compose file intentionally passes an explicit environment allowlist to each
-container instead of forwarding every `.env` key. Add any future required runtime
-variable to the correct service's `environment:` block deliberately.
-
-The named `hermes_review_data` volume is mounted at `/opt/data` only in the main
-reviewer. It contains Hermes configuration, Codex OAuth state, sessions, skills,
-and plugins. The SQLite review database lives in the separate
-`review_memory_data` volume, mounted at `/opt/data/review-memory` in the reviewer
-and `/review-memory` in the feedback sidecar. Never run two Hermes gateways
-against the same `hermes_review_data` volume.
-
-The `review-memory-init` one-shot service runs before the reviewer and feedback
-sidecar on each deploy. It refreshes the managed profile, skills, and plugin
-under `/opt/data`, then runs the idempotent review-memory schema migration
-against `/opt/data/review-memory/review_memory.sqlite3`. Seeing the init
-container as `Exited (0)` is expected; use its logs for startup failures and use
-the running `hermes-review` container for shell commands. Managed skill and
-plugin directories are replaced, not overlaid, so stale files or Python
-`__pycache__` bytecode in the persistent volume cannot keep an old schema owner
-alive after deploy.
-
-If upgrading from an older deployment that stored the database under
-`/opt/data/review-memory` inside `hermes_review_data`, do not copy the SQLite
-file directly while services are running. Stop the reviewer and feedback
-services, mount the old path and new volume into a one-shot shell, then run:
-
-```bash
-eneo-review-memory migrate-volume \
-  --source /legacy/review_memory.sqlite3 \
-  --destination /review-memory/review_memory.sqlite3 \
-  --owner-uid 10000 \
-  --owner-gid 10000
-```
-
-The command checkpoints WAL, uses SQLite's backup API, verifies integrity and
-foreign keys, compares table counts, and leaves the source untouched unless the
-new destination was written successfully.
-
-Deploy the application.
-
-## 3. Connect Codex
-
-Open a terminal in the `hermes-review` container and run:
-
-```bash
-hermes plugins list
-hermes model
-```
-
-Choose **OpenAI Codex** and complete the ChatGPT device-code login with the
-subscription account intended for this reviewer. Restart the Dokploy service,
-then verify:
-
-```bash
-curl -fsS http://127.0.0.1:8644/health
-hermes doctor
-hermes plugins list
-```
-
-In the `hermes-review-feedback` container, verify the sidecar readiness check:
-
-```bash
-curl -fsS http://127.0.0.1:8645/ready
-eneo-review-feedback-bridge verify-config
-```
-
-The review container does not need a generic `GH_TOKEN`; comment writes go
-through `ENEO_REVIEW_PUBLISH_GH_TOKEN`.
-
-Manual recovery only: if a deploy was interrupted or the persistent profile is
-suspect, run this in the `hermes-review` container and restart the service:
-
-```bash
-/opt/eneo-bootstrap/install.sh --force-agents
-eneo-review-memory init
-```
-
-If GitHub shows the eyes reaction on `/review` but no review comment appears,
-inspect the durable run and publication ledgers in the `hermes-review`
-container:
-
-```bash
-eneo-review-memory runs --repo eneo-ai/eneo --limit 10
-eneo-review-memory publications --repo eneo-ai/eneo --pr 123
-eneo-review-memory coverage --run-id 123 --json
-```
-
-`generated` with no `posting` timestamp means an old review skill did not call
-the delivery tool. `publish_failed` means GitHub publication was attempted and
-failed; read `failure=` for the root cause. Endpoint-specific failures such as
-`github_403_get_pull_request`, `github_403_list_issue_comments`, or
-`github_403_create_issue_comment` identify which GitHub token permission or org
-approval path to fix. `body_too_large` means the review could not fit within the
-configured comment budget, and `stale` means the PR base or head changed before
-posting. The coverage command shows the objective changed-path ledger for one
-run: how many changed paths were registered, how many had diff context exposed
-to the reviewer, whether any diff was truncated or unavailable, and how many
-explicit source ranges were read. It is telemetry, not a model claim that the PR
-was deeply reviewed.
-The runs command includes `phase`, `heartbeat`, and `failure` detail. A fresh
-run normally moves through `accepted`, `fetching_pr`, `collecting_diff`,
-`reviewing`, `rendering`, `publishing`, and then `posted`; failed runs end at
-`failed` with a stable failure code when one is known. Different PRs can run at
-the same time. A second `/review` on the same PR is treated as a duplicate while
-an active run exists, so it does not silently start overlapping same-PR work.
-If a container crash leaves a run `running`, mark only stale runs failed:
-
-```bash
-eneo-review-memory runs --mark-stalled --older-than-minutes 10 --repo eneo-ai/eneo --pr 123
-```
-
-## 4. Install the GitHub trigger
-
-Copy:
-
-```text
-examples/github/ai-review-request.yml
-```
-
-to the public Eneo repository as:
-
-```text
-.github/workflows/ai-review-request.yml
-```
-
-Create these Actions secrets:
-
-```text
-HERMES_REVIEW_URL=https://review-bot.example.org/webhooks/eneo-review
-HERMES_WEBHOOK_SECRET=<same value as WEBHOOK_SECRET>
-HERMES_REVIEW_FEEDBACK_URL=https://review-feedback.example.org/webhooks/eneo-review-feedback
-HERMES_REVIEW_FEEDBACK_SECRET=<same value as ENEO_FEEDBACK_WEBHOOK_SECRET>
-```
-
-Create this Actions variable:
-
-```text
-AI_REVIEW_ALLOWED_USERS=alice,bob,security-maintainer
-```
-
-The value may use commas, spaces, or newlines. An empty variable denies all
-requests. The workflow also requires GitHub's trusted association to be
-`OWNER`, `MEMBER`, or `COLLABORATOR`.
-
-Protect the workflow with CODEOWNERS or a ruleset, for example:
-
-```text
-/.github/workflows/ai-review-request.yml @eneo-ai/security-maintainers
-```
-
-The workflow has `permissions: {}`, does not check out the pull request, and
-sends only repository name, PR number, requester, and request ID to Hermes. It
-must exist on the repository's default branch (`develop` for Eneo) before an
-`issue_comment` event can start it. The request allows up to 15 minutes for the
-agent review and GitHub delivery; the workflow job itself has a 20-minute cap.
-Retries reuse the original comment ID so Hermes' idempotency cache does not start
-a duplicate review.
-
-## Prompt-injection posture
-
-PR code, comments, commit messages, docs, and review feedback are treated as
-untrusted data. The review skill explicitly forbids following instructions found
-inside repository content, and the reviewer tools accept structured parameters
-instead of free-form shell commands.
-
-The deterministic feedback bridge is intentionally outside the LLM path. It
-refetches the GitHub comment, parses only supported `/review ...` commands,
-authorizes the numeric GitHub actor id, writes SQLite through the memory owner,
-and posts only a reaction or short deterministic explanation. Human feedback and
-coach exports can inform future reviewer changes, but they do not automatically
-rewrite prompts, skills, suppressions, or policy.
-
-## 5. Run a review
-
-On an open, non-draft pull request, an allowlisted maintainer comments exactly:
+Request a review with a new top-level PR comment:
 
 ```text
 /review
 ```
 
-Hermes reviews the current head and posts one structured PR comment. It
-publishes every unsuppressed, evidence-backed, independent root-cause finding
-that survives the skeptical gate. Medium and Low findings remain visible and
-expanded; lower severity controls ordering and priority, not visibility. When
-findings exist, one collapsed **Copyable fix brief for a coding agent** contains
-every published finding in a single fenced code block that can be copied into
-Codex or Claude Code.
+After fixing findings, push a commit and request another review. A changed PR
+snapshot creates a new review round. The previous round is kept as historical
+context after the new one posts successfully.
 
-After fixing findings, push the fix commit and comment `/review` again. The
-rerun re-checks previous unresolved findings, reviews the new fix delta, and
-performs a compact safety sweep of the current PR. A changed base/head snapshot
-creates a new chronological review round such as `Review 2`; the previous round
-is edited only after the new one posts successfully, marked superseded, and
-collapsed as historical context. If the base/head snapshot and reviewer policy
-are already current, the run is not started again.
-
-Prior current findings stay active when the latest run does not explicitly
-classify them; the review marks those references as needing recheck instead of
-treating absence as resolution. When the reviewer can verify a prior finding, it
-classifies the stable `F` reference as resolved, invalidated, suppressed by human
-decision, still present, partially resolved, or not checked. If publication
-fails, the previous posted review remains authoritative.
-
-The reviewer covers:
-
-- tenant isolation, authentication, OIDC/JWT, RBAC, secrets, files, retrieval,
-  webhooks, MCP/tool boundaries, and provider credentials;
-- correctness, transactions, concurrency, idempotency, background jobs, error
-  paths, and data integrity;
-- FastAPI, OpenAPI, Pydantic, strict Python typing, TypeScript contracts,
-  validation, and compatibility;
-- tests that prove the actual failure mode;
-- maintainability, ownership boundaries, duplicated policy, hidden coupling,
-  misleading abstractions, and concrete AI-generated overbuilding;
-- query behavior, performance, Alembic migrations, locking, rollback, and data
-  loss.
-
-It omits style comments, vague possibilities, generic best-practice lectures,
-and findings that do not survive the skeptical second pass.
-
-A direct smoke request is available:
-
-```bash
-python3 scripts/smoke_webhook.py \
-  --url https://review-bot.example.org/webhooks/eneo-review \
-  --secret "$WEBHOOK_SECRET" \
-  --repo eneo-ai/eneo \
-  --pr 123
-```
-
-This test will post a real comment when the PR and credentials are valid.
-
-## 6. Generate reviewer-improvement proposals
-
-The reviewer can collect human decisions and review-quality feedback without
-turning every signal into policy. A private operator can export that evidence
-from the persistent `/opt/data` volume and produce a deterministic proposal
-bundle:
-
-```bash
-eneo-review-memory export \
-  --output /opt/data/review-memory/export.json
-
-eneo-review-memory coach-export \
-  --export /opt/data/review-memory/export.json \
-  --repo eneo-ai/eneo \
-  --output /opt/data/review-memory/coach-export.json
-
-eneo-review-memory coach-propose \
-  --events /opt/data/review-memory/coach-export.json \
-  --output-dir /opt/data/review-memory/coach-proposal
-```
-
-`coach-propose` writes `proposal.json` and `SUMMARY.md` with mode `0600`. It
-groups only promotion-eligible coach events, requires repeated independent
-episodes for normal reviewer changes, and keeps isolated accepted-risk decisions
-as governance observations. It does not call Claude/Codex, change reviewer
-policy, or open PRs; it creates the bounded evidence packet a human or later
-coach can use to decide whether a replay, skill, ADR, or plugin change is
-actually warranted.
-
-Review-quality feedback is useful only when it is tied to the exact generated
-review publication and head SHA. Unprovenanced feedback is listed as not
-promoted rather than treated as policy evidence. These artifacts may still
-contain bounded maintainer-entered reasons or repository text, so keep them
-private unless they have been scrubbed before committing or sharing.
-
-## 7. How the two-pass review works
-
-The first pass creates every concrete candidate it can tie to the diff. The
-second pass tries to reject each candidate by checking nearby guards, callers,
-callees, base behavior, framework guarantees, transactions, and relevant tests.
-
-A finding is publishable only when all of the following hold:
-
-- it is introduced or materially worsened by the diff;
-- it has an exact changed file and line;
-- it has a concrete failure or exploit path;
-- benign explanations were actively checked;
-- confidence is at least `0.85`;
-- the internal evidence score is at least `8/10` for Critical/High or `7/10`
-  for Medium/Low;
-- the proposed remediation is the smallest change that actually holds.
-
-Medium and Low findings are reserved for concrete, actionable feedback. They are
-published when they survive the same evidence gate as higher-severity findings,
-and their details stay expanded in the visible review. Compact writing and
-deterministic ordering keep the comment scannable; visibility is not the
-severity control.
-
-This is a lightweight council pattern inside one Codex run: proposer first,
-skeptic second, editor last. The passes share the same PR context and the second
-pass must actively look for guards, framework guarantees, and tests that defeat
-the first-pass claim. It gives most of the false-positive benefit without three
-models independently generating three walls of text.
-
-## 7. Durable finding and false-positive memory
-
-The curated database is:
+Give feedback with a new top-level PR comment:
 
 ```text
-/opt/data/review-memory/review_memory.sqlite3
+/review false-positive F2 because <what code, guard, or invariant disproves it>
+/review feedback scope F2 because <why this finding is in the diff but outside the intended PR scope>
+/review feedback missed because <what concrete issue was missed and where>
 ```
 
-Each published finding receives a stable fingerprint based on repository, rule,
-path, symbol, and semantic anchor. The line number is deliberately excluded so a
-line move does not create a new identity.
+`false-positive` is a finding decision. `feedback scope` and `feedback missed`
+are review-quality signals; they do not suppress findings automatically.
 
-List findings:
+## Operations
+
+Use [docs/OPERATIONS.md](docs/OPERATIONS.md) for deployment, configuration,
+GitHub token permissions, Dokploy setup, Codex login, runbook commands, backups,
+updates, and private coach exports.
+
+Common status commands in the `hermes-review` container:
 
 ```bash
-eneo-review-memory list --repo eneo-ai/eneo
+eneo-review-memory runs --repo <org>/<repo> --limit 10
+eneo-review-memory publications --repo <org>/<repo> --pr <number>
+eneo-review-memory coverage --run-id <id> --json
 ```
 
-Inspect one using its 12-character fingerprint prefix. Fingerprints are operator
-metadata; the developer-facing review body should use local references such as
-`F1` and `F2` once publication mapping lands.
+## Security
 
-```bash
-eneo-review-memory show a1b2c3d4e5f6
-```
+Use [docs/SECURITY.md](docs/SECURITY.md) for the trust model, prompt-injection
+posture, token boundaries, dependency-scanning scope, and data-handling notes.
 
-Mark a verified false positive:
+The short version: the reviewer is useful because it has narrow tools and
+durable audit state. Keep deterministic scanners, tests, type checks, migration
+checks, and human ownership as separate controls.
 
-```bash
-eneo-review-memory decide a1b2c3d4e5f6 false_positive \
-  --latest \
-  --actor "github:alice" \
-  --reason "The tenant-scoped repository binds tenant_id before this query." \
-  --expires-days 180
-```
+## Validation
 
-Prefer an exact observation id or PR-local reference when available:
-
-```bash
-eneo-review-memory decide a1b2c3d4e5f6 false_positive \
-  --observation-id 418 \
-  --actor "github:alice" \
-  --reason "The tenant-scoped repository binds tenant_id before this query." \
-  --expires-days 180
-
-eneo-review-memory decide a1b2c3d4e5f6 resolved \
-  --repo eneo-ai/eneo \
-  --pr 240 \
-  --local-reference F2 \
-  --actor "github:alice" \
-  --reason "Fixed in the latest commit."
-```
-
-Other decisions:
-
-```bash
-eneo-review-memory decide <fingerprint> accepted_risk \
-  --latest \
-  --actor "github:alice" \
-  --reason "Approved during the migration window." \
-  --expires-days 30
-
-eneo-review-memory decide <fingerprint> duplicate \
-  --latest \
-  --actor "github:alice" \
-  --reason "Tracked by finding 0123456789ab." \
-  --expires-days 180
-
-eneo-review-memory decide <fingerprint> resolved \
-  --latest \
-  --actor "github:alice" \
-  --reason "Fixed in PR #456."
-
-eneo-review-memory decide <fingerprint> reopen \
-  --latest \
-  --actor "github:alice" \
-  --reason "The trusted guard changed."
-```
-
-The deterministic bridge for PR-comment feedback separates finding decisions
-from review-quality feedback. Finding commands use local references from the
-latest generated review,
-for example `/review false-positive F2 because <what code disproves it>`.
-Review-quality commands such as
-`/review feedback missed because <what concrete issue was missed and where>` or
-`/review feedback scope F2 because <why this finding is in the diff but outside the intended PR scope>`
-feed metrics and replay cases, not automatic suppressions. Post feedback as a
-new top-level PR comment; do not
-edit an old command or reply in an inline diff thread. The feedback path requires
-an allowlisted numeric GitHub actor id from `ENEO_FEEDBACK_ALLOWED_ACTOR_IDS`.
-Successful feedback receives a `+1` reaction. Invalid, stale, or unsupported
-commands receive a `confused` reaction and one short deterministic explanation.
-Intentional-design and accepted-risk decisions remain CLI/governance-only until
-there is deterministic ADR validation for PR comments.
-
-Only allowlisted human feedback or a human CLI command can create a suppression.
-The model may record a finding, but it cannot mark itself correct, dismiss
-itself, or alter prior human decisions.
-
-Suppressions are conservative. The decision is tied to the trusted GitHub blob
-hash that a human reviewed and expires by default after 180 days. If that file
-changes, automatic suppression is removed and the issue must be revalidated.
-The old reason still appears to the reviewer as a historical hint, which usually
-lets the skeptical pass reject an unchanged false positive without silently
-hiding a new regression.
-
-Export the registry:
-
-```bash
-eneo-review-memory export \
-  --output /opt/data/review-memory/export.json
-```
-
-Back up the `/opt/data` volume securely. It contains OAuth credentials and may
-contain sensitive unpublished findings.
-
-Generate a private learning-candidate report from an export:
-
-```bash
-eneo-review-memory learning-report \
-  --export /opt/data/review-memory/export.json \
-  --repo eneo-ai/eneo \
-  --output /opt/data/review-memory/learning-candidates.md
-```
-
-Generate the bounded untrusted JSON bundle for a private coach workflow:
-
-```bash
-eneo-review-memory coach-export \
-  --export /opt/data/review-memory/export.json \
-  --repo eneo-ai/eneo \
-  --after-decision-id 0 \
-  --after-feedback-id 0 \
-  --output /opt/data/review-memory/coach-export.json
-```
-
-Validate replay fixtures:
-
-```bash
-eneo-review-memory validate-replay review-learning/replay
-```
-
-This is operator tooling, not live reviewer memory. The public webhook reviewer
-does not read `review-learning/`, and the route disables local file access,
-general skill writes, memory writes, web, shell, code execution, session search,
-and delegation. The report surfaces explicit human decisions and any populated
-review-quality feedback rows for a private coach workflow. Empty review-quality
-sections mean no allowlisted feedback command has been ingested yet. Do not infer
-learning from silence, thumbs-up, merges, or a later code change without a linked
-decision or test.
-New decisions are tied to the exact finding observation that the human judged.
-The learning report derives PR, head SHA, path, and local `F` reference from that
-observation instead of the mutable latest finding row. Legacy decisions without
-observation provenance remain visible but are marked incomplete and
-non-promotable.
-Scrub reports before moving useful candidates into `review-learning/reports/` as
-versioned artifacts.
-
-## 8. Tune the review policy
-
-Canonical policy lives in:
-
-```text
-bootstrap/SOUL.md
-bootstrap/workspace/AGENTS.md
-bootstrap/skills/eneo-pr-review/SKILL.md
-```
-
-Keep `SOUL.md` focused on reviewer identity, evidence, tone, and brevity.
-Keep `AGENTS.md` focused on Eneo invariants and the visible comment contract.
-Keep the skill focused on the exact two-pass procedure.
-
-Learning candidates graduate only through normal version-controlled changes:
-exact decisions remain in SQLite, architectural context becomes an ADR, visible
-comment shape belongs in `AGENTS.md`, review procedure belongs in the skill,
-mechanical enforcement belongs in plugin code and tests, and replay behavior
-belongs under `review-learning/replay/`. Do not add a second production policy
-file for unapproved lessons.
-
-After editing the version-controlled source, rebuild and redeploy. The
-`review-memory-init` one-shot service refreshes the managed profile and plugin
-inside the persistent volume before the gateway starts. Prefer editing the
-source and redeploying rather than allowing policy drift inside the volume.
-
-## 9. Indexing recommendation
-
-Do not add CocoIndex, Cognee, CodeGraphContext, or any vector store to phase one.
-The PR diff and bounded file reads are faster to operate and easier to trust.
-
-When measurements show repeated misses involving callers, dependants, or tests,
-start with `code-review-graph` in read-only shadow mode. It is the narrowest fit:
-local SQLite storage, Tree-sitter relationships, Python and Svelte/TypeScript
-support, incremental updates, and MCP tool filtering. Keep embeddings off and
-expose only query tools. The project itself documents limited flow-detection
-recall and conservative impact results, so graph output must remain a context
-selector rather than evidence. See:
-
-```text
-examples/optional/code-review-graph.md
-```
-
-The code graph is disposable derived context. It must never become the source of
-truth for false-positive decisions, and a graph edge or risk score is not enough
-to publish a finding.
-
-## 10. Rollout and measurements
-
-Treat the first 20 to 30 reviews as advisory calibration. Track:
-
-```text
-reviews requested
-reviews completed or incomplete
-findings published
-findings accepted and fixed
-findings rejected as false positive
-review-quality feedback
-missed issues reported
-findings repeated after a prior decision
-median visible comment length
-```
-
-A good early target is that developers act on at least half of published
-findings. If the acceptance rate is lower, tighten the evidence gate and review
-severity calibration before adding more models or more context systems.
-
-Do not make this a required merge check until the team has reviewed its behavior.
-It is an AI code and security review, not a replacement for CodeQL, dependency
-review, tests, type checking, migration checks, or human ownership.
-
-## Updating and validation
-
-`HERMES_IMAGE` is pinned to a reviewed immutable digest in `.env.example`,
-`compose.yaml`, and `Dockerfile`. After an update, redeploy and request a
-review on a controlled PR. The deploy-time init service refreshes `/opt/data`
-and migrates the SQLite schema automatically.
-
-Run the bundle checks locally:
+Run the bundle check before shipping changes:
 
 ```bash
 ./scripts/check_bundle.sh
 ```
 
-The supplied code is validated with Python compilation, YAML parsing, and unit
-tests. It cannot live-test your Dokploy routing, GitHub bot token, ChatGPT OAuth,
-or repository policies from this bundle.
+The bundle validates Python imports, strict type checks, unit tests, replay
+fixtures, and YAML. It cannot live-test your Dokploy routes, GitHub token
+approval, ChatGPT OAuth state, or repository rules.
