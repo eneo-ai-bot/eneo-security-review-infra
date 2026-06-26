@@ -603,7 +603,7 @@ def _historical_content_blocks(
 
 
 def _historical_label(review_number: int | None) -> str:
-    return f"Review #{review_number}" if review_number is not None else "Previous review"
+    return f"Review {review_number}" if review_number is not None else "Previous review"
 
 
 def _truncate_block_to_budget(block: str, max_bytes: int) -> tuple[str, bool]:

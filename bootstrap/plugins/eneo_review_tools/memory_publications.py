@@ -143,28 +143,16 @@ def _subject_row(
     return dict(row) if row else None
 
 
-def _observations_for_subject(
-    connection: sqlite3.Connection,
-    subject_id: int,
-    *,
-    review_run_id: int | None,
+def _observations_for_run(
+    connection: sqlite3.Connection, review_run_id: int
 ) -> list[dict[str, Any]]:
-    if review_run_id is not None:
-        rows = connection.execute(
-            """
-            SELECT * FROM finding_observations
-            WHERE review_run_id = ?
-            ORDER BY id
-            """,
-            (review_run_id,),
-        ).fetchall()
-        return [dict(row) for row in rows]
     rows = connection.execute(
         """
         SELECT * FROM finding_observations
-        WHERE review_subject_id = ?
+        WHERE review_run_id = ?
+        ORDER BY id
         """,
-        (subject_id,),
+        (review_run_id,),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -681,10 +669,10 @@ def finalize_review(
         raise ReviewMemoryError(
             "head_sha must be an exact 40 to 64 character hexadecimal commit SHA"
         )
-    if isinstance(review_run_id, bool):
+    if review_run_id is None or isinstance(review_run_id, bool):
         raise ReviewMemoryError("review_run_id must be a positive integer")
-    review_run_id = int(review_run_id) if review_run_id is not None else None
-    if review_run_id is not None and review_run_id < 1:
+    review_run_id = int(review_run_id)
+    if review_run_id < 1:
         raise ReviewMemoryError("review_run_id must be a positive integer")
     policy = current_policy_revision(policy_revision)
     moment = now or utc_now()
@@ -694,23 +682,22 @@ def finalize_review(
         if existing_publication:
             connection.commit()
             return _publication_result(connection, existing_publication)
-        if review_run_id is not None:
-            run = connection.execute(
-                """
-                SELECT repository, pr_number, head_sha
-                FROM review_runs
-                WHERE id = ?
-                """,
-                (review_run_id,),
-            ).fetchone()
-            if not run:
-                raise ReviewMemoryError("review_run_id does not match a recorded review run")
-            if (
-                str(run["repository"]) != repository
-                or int(run["pr_number"]) != pr_number
-                or str(run["head_sha"]).lower() != head_sha
-            ):
-                raise ReviewMemoryError("review_run_id does not match this review subject")
+        run = connection.execute(
+            """
+            SELECT repository, pr_number, head_sha
+            FROM review_runs
+            WHERE id = ?
+            """,
+            (review_run_id,),
+        ).fetchone()
+        if not run:
+            raise ReviewMemoryError("review_run_id does not match a recorded review run")
+        if (
+            str(run["repository"]) != repository
+            or int(run["pr_number"]) != pr_number
+            or str(run["head_sha"]).lower() != head_sha
+        ):
+            raise ReviewMemoryError("review_run_id does not match this review subject")
         subject = _subject_row(connection, repository, pr_number, head_sha, policy)
         if not subject:
             raise ReviewMemoryError(
@@ -718,11 +705,7 @@ def finalize_review(
             )
         base_sha = str(subject.get("base_sha") or "")
 
-        observed = _observations_for_subject(
-            connection,
-            int(subject["id"]),
-            review_run_id=review_run_id,
-        )
+        observed = _observations_for_run(connection, review_run_id)
         current: list[PublishedFinding] = []
         for item in observed:
             fingerprint = str(item["fingerprint"])

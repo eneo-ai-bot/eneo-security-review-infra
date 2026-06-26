@@ -385,7 +385,8 @@ def print_coverage(summary: JsonObject | None) -> None:
     print(f"review context coverage: {summary['state']}")
     print(f"  changed paths: {summary['changed_paths']}")
     print(f"  diff exposed:  {summary['diff_exposed']}")
-    print(f"  context reads: {summary['context_reads']}")
+    print(f"  context paths: {summary['context_paths_read']}")
+    print(f"  context ranges: {summary['context_ranges_read']}")
     print(f"  unavailable:   {summary['unavailable']}")
     print(f"  truncated:     {summary['diff_truncated']}")
     unavailable_paths = cast(Sequence[object], summary.get("unavailable_paths", ()))
@@ -400,7 +401,7 @@ def print_coverage(summary: JsonObject | None) -> None:
 def print_run_stats(stats: JsonObject) -> None:
     repo = stats.get("repository") or "(all repositories)"
     print(f"Eneo review runs - {repo}  (last {stats['window_days']}d, as of {stats['generated_at']})")
-    print("  (best-effort telemetry recorded by the reviewer; treat counts as approximate)")
+    print("  (run lifecycle state recorded by the reviewer; treat counts as approximate)")
     print(f"  total: {stats['total']}")
     by_status = _nested(stats, "by_status")
     print("  by status:  " + ", ".join(f"{k}={v}" for k, v in by_status.items()))

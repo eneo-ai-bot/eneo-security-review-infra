@@ -81,35 +81,63 @@ class RunToolTests(unittest.TestCase):
     def call(self, handler, args):
         return json.loads(handler(args))
 
-    def start(self, pr=498, sha="a" * 40, *, force=False):
-        return self.call(
-            tools.review_run_start,
-            {
-                "repository": "eneo-ai/eneo",
-                "pr_number": pr,
-                "head_sha": sha,
-                "force": force,
-            },
-        )
+    def begin(
+        self,
+        *,
+        pr: int = 498,
+        base_sha: str = "b" * 40,
+        head_sha: str = "a" * 40,
+        changed_files: list[dict] | None = None,
+        extra: dict | None = None,
+    ):
+        args = {"repository": "eneo-ai/eneo", "pr_number": pr}
+        if extra:
+            args.update(extra)
+        with (
+            patch.object(
+                tools,
+                "_pr",
+                return_value=self.pull_with_repositories(
+                    base_sha=base_sha,
+                    head_sha=head_sha,
+                ),
+            ),
+            patch.object(
+                tools,
+                "_changed_files",
+                return_value=changed_files
+                if changed_files is not None
+                else [
+                    {
+                        "path": "backend/api.py",
+                        "status": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                        "changes": 3,
+                        "patch_available": True,
+                        "context_hash": "d" * 40,
+                        "context_hash_source": "blob",
+                    }
+                ],
+            ),
+        ):
+            return self.call(tools.review_begin, args)
 
-    def test_start_then_complete(self):
-        start = self.start()
+    def test_begin_starts_run_and_registers_changed_paths(self):
+        start = self.begin()
         self.assertEqual(start["status"], "running")
-        self.assertEqual(start["phase"], "accepted")
+        self.assertEqual(start["phase"], "collecting_diff")
         self.assertIn("run_id", start)
-        done = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 498, "run_id": start["run_id"],
-             "status": "generated", "findings_count": 2, "posted_comment_id": 123},
-        )
-        self.assertTrue(done["updated"])
-        self.assertEqual(done["status"], "generated")
         with closing(memory_db.connect()) as connection:
-            self.assertEqual(memory_db.list_runs(connection)[0]["findings_count"], 2)
+            runs = memory_db.list_runs(connection)
+            coverage = memory_db.coverage_summary(connection, run_id=start["run_id"])
+        self.assertEqual(runs[0]["phase"], "collecting_diff")
+        self.assertIsNotNone(coverage)
+        self.assertEqual(coverage["changed_paths"], 1)
 
     def test_duplicate_start_does_not_create_second_same_pr_run(self):
-        a = self.start(pr=7, sha="a" * 40)
-        b = self.start(pr=7, sha="b" * 40)
+        a = self.begin(pr=7, head_sha="a" * 40)
+        b = self.begin(pr=7, head_sha="b" * 40)
 
         self.assertEqual(b["status"], "duplicate")
         self.assertNotIn("run_id", b)
@@ -119,8 +147,8 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
 
     def test_model_supplied_force_does_not_override_duplicate_guard(self):
-        a = self.start(pr=7, sha="a" * 40)
-        b = self.start(pr=7, sha="b" * 40, force=True)
+        a = self.begin(pr=7, head_sha="a" * 40)
+        b = self.begin(pr=7, head_sha="b" * 40, extra={"force": True})
 
         self.assertEqual(b["status"], "duplicate")
         with closing(memory_db.connect()) as connection:
@@ -128,71 +156,24 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(runs[a["run_id"]]["status"], "running")
         self.assertEqual(len(runs), 1)
 
-    def test_missing_run_id_rejected(self):
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 1, "status": "generated"},
-        )
-        self.assertIn("error", result)
-        self.assertIn("run_id", result["error"])
-
-    def test_unknown_run_id_is_noop(self):
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 1, "run_id": 999, "status": "generated", "posted_comment_id": 123},
-        )
-        self.assertFalse(result["updated"])
-
     def test_non_allowlisted_repo_rejected(self):
         result = self.call(
-            tools.review_run_start,
-            {"repository": "evil/repo", "pr_number": 1, "head_sha": "a" * 40},
+            tools.review_begin,
+            {"repository": "evil/repo", "pr_number": 1},
         )
         self.assertIn("error", result)
         self.assertIn("allowlisted", result["error"])
 
-    def test_bad_head_sha_rejected(self):
-        result = self.call(
-            tools.review_run_start,
-            {"repository": "eneo-ai/eneo", "pr_number": 1, "head_sha": "not-a-sha"},
-        )
+    def test_draft_pr_rejected(self):
+        pull = self.pull_with_repositories()
+        pull["draft"] = True
+        with patch.object(tools, "_pr", return_value=pull):
+            result = self.call(
+                tools.review_begin,
+                {"repository": "eneo-ai/eneo", "pr_number": 1},
+            )
         self.assertIn("error", result)
-        self.assertIn("head_sha", result["error"])
-
-    def test_bad_findings_count_is_input_error(self):
-        start = self.start(pr=3)
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 3, "run_id": start["run_id"],
-             "status": "generated", "findings_count": "lots"},
-        )
-        self.assertIn("error", result)
-
-    def test_done_status_aliases_to_generated_for_older_prompts(self):
-        start = self.start(pr=5)
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 5, "run_id": start["run_id"], "status": "done", "posted_comment_id": 123},
-        )
-        self.assertTrue(result["updated"])
-        self.assertEqual(result["status"], "generated")
-
-    def test_generated_completion_requires_posted_comment(self):
-        start = self.start(pr=6)
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 6, "run_id": start["run_id"], "status": "generated"},
-        )
-        self.assertIn("error", result)
-        self.assertIn("posted_comment_id is required", result["error"])
-
-    def test_bad_status_rejected(self):
-        start = self.start(pr=4)
-        result = self.call(
-            tools.review_run_complete,
-            {"repository": "eneo-ai/eneo", "pr_number": 4, "run_id": start["run_id"], "status": "suppressed"},
-        )
-        self.assertIn("error", result)
+        self.assertIn("draft", result["error"])
 
     def finding(self):
         return {
@@ -246,21 +227,22 @@ class RunToolTests(unittest.TestCase):
     def prepare_recorded_review(self, *, pr=9, base_sha="b" * 40, head_sha="a" * 40):
         finding = self.finding()
         with closing(memory_db.connect()) as connection:
-            memory_db.record_findings(
-                connection,
-                "eneo-ai/eneo",
-                pr,
-                head_sha,
-                [finding],
-                base_sha=base_sha,
-                context_hashes={finding["path"]: "d" * 40},
-            )
             run = memory_db.start_run(
                 connection,
                 "eneo-ai/eneo",
                 pr,
                 base_sha=base_sha,
                 head_sha=head_sha,
+            )
+            memory_db.record_findings(
+                connection,
+                "eneo-ai/eneo",
+                pr,
+                head_sha,
+                [finding],
+                review_run_id=int(run["id"]),
+                base_sha=base_sha,
+                context_hashes={finding["path"]: "d" * 40},
             )
         return int(run["id"])
 
@@ -319,8 +301,6 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(publication["failure_code"], "base_sha_changed")
 
     def test_read_tools_record_review_context_coverage(self):
-        start = self.start(pr=12)
-        run_id = int(start["run_id"])
         changed_files = [
             {
                 "path": "backend/api.py",
@@ -340,13 +320,13 @@ class RunToolTests(unittest.TestCase):
             patch.object(tools, "_changed_files", return_value=changed_files),
         ):
             overview = self.call(
-                tools.pr_overview,
+                tools.review_begin,
                 {
                     "repository": "eneo-ai/eneo",
                     "pr_number": 12,
-                    "run_id": run_id,
                 },
             )
+        run_id = int(overview["run_id"])
         self.assertEqual(overview["files"][0]["path"], "backend/api.py")
 
         with closing(memory_db.connect()) as connection:
@@ -380,7 +360,8 @@ class RunToolTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertEqual(summary["state"], "complete")
         self.assertEqual(summary["diff_exposed"], 1)
-        self.assertEqual(summary["context_reads"], 0)
+        self.assertEqual(summary["context_paths_read"], 0)
+        self.assertEqual(summary["context_ranges_read"], 0)
 
         with (
             patch.object(tools, "_pr", return_value=pull),
@@ -405,7 +386,8 @@ class RunToolTests(unittest.TestCase):
         with closing(memory_db.connect()) as connection:
             summary = memory_db.coverage_summary(connection, run_id=run_id)
         self.assertIsNotNone(summary)
-        self.assertEqual(summary["context_reads"], 1)
+        self.assertEqual(summary["context_paths_read"], 1)
+        self.assertEqual(summary["context_ranges_read"], 1)
 
 
 if __name__ == "__main__":

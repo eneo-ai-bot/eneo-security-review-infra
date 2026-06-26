@@ -342,7 +342,7 @@ Codex or Claude Code.
 After fixing findings, push the fix commit and comment `/review` again. The
 rerun re-checks previous unresolved findings, reviews the new fix delta, and
 performs a compact safety sweep of the current PR. A changed base/head snapshot
-creates a new chronological review round such as `Review #2`; the previous round
+creates a new chronological review round such as `Review 2`; the previous round
 is edited only after the new one posts successfully, marked superseded, and
 collapsed as historical context. If the base/head snapshot and reviewer policy
 are already current, the run is not started again.

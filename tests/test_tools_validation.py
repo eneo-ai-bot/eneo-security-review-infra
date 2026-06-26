@@ -7,13 +7,14 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from eneo_review_tools import memory_db, schemas, tools  # noqa: E402
+from eneo_review_tools import memory_db, review_publisher, schemas, tools  # noqa: E402
 import eneo_review_tools  # noqa: E402
 
 
@@ -44,6 +45,43 @@ class _FakeRegistry:
             "schema": schema,
             "handler": handler,
         }
+
+
+class _FakeGitHub:
+    def current_user_login(self):
+        return "eneo-ai-bot"
+
+    def get_pull_request(self, repository, pr_number):
+        del repository, pr_number
+        return review_publisher.PullRequestState(
+            state="open",
+            draft=False,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+
+    def list_issue_comments(self, repository, issue_number):
+        del repository, issue_number
+        return []
+
+    def update_issue_comment(self, repository, comment_id, body):
+        del repository, body
+        return review_publisher.IssueComment(
+            comment_id=comment_id,
+            body="updated",
+            author_login="eneo-ai-bot",
+        )
+
+    def create_issue_comment(self, repository, issue_number, body):
+        del repository, issue_number
+        return review_publisher.IssueComment(
+            comment_id=123,
+            body=body,
+            author_login="eneo-ai-bot",
+        )
+
+    def delete_issue_comment(self, repository, comment_id):
+        del repository, comment_id
 
 
 class ToolValidationTests(unittest.TestCase):
@@ -92,7 +130,9 @@ class ToolValidationTests(unittest.TestCase):
 
     def test_empty_allowlist_denies_by_default(self):
         with patch.dict(os.environ, {"ENEO_ALLOWED_REPOSITORIES": ""}, clear=False):
-            result = json.loads(tools.pr_overview({"repository": "eneo/platform", "pr_number": 1}))
+            result = json.loads(
+                tools.review_begin({"repository": "eneo/platform", "pr_number": 1})
+            )
         self.assertIn("deny by default", result["error"])
 
     def test_schema_severities_come_from_memory_owner(self):
@@ -102,13 +142,6 @@ class ToolValidationTests(unittest.TestCase):
         self.assertEqual(severity_schema["enum"], sorted(memory_db.SEVERITIES))
 
     def test_schema_prior_verdicts_come_from_memory_owner(self):
-        verdict_schema = schemas.ENEO_REVIEW_FINALIZE["parameters"]["properties"][
-            "previous_verdicts"
-        ]["items"]["properties"]["verdict"]
-        self.assertEqual(
-            verdict_schema["enum"],
-            list(memory_db.PRIOR_FINDING_VERDICTS),
-        )
         deliver_verdict_schema = schemas.ENEO_REVIEW_DELIVER["parameters"]["properties"][
             "previous_verdicts"
         ]["items"]["properties"]["verdict"]
@@ -125,16 +158,12 @@ class ToolValidationTests(unittest.TestCase):
         self.assertEqual(
             set(registry.tools),
             {
-                "eneo_pr_overview",
+                "eneo_review_begin",
                 "eneo_pr_diff",
                 "eneo_pr_file",
                 "eneo_review_memory_context",
                 "eneo_review_memory_record",
-                "eneo_review_run_start",
-                "eneo_review_finalize",
-                "eneo_review_publish",
                 "eneo_review_deliver",
-                "eneo_review_run_complete",
             },
         )
         for item in registry.tools.values():
@@ -299,7 +328,7 @@ class ToolValidationTests(unittest.TestCase):
             )
         self.assertEqual(result["recorded"][0]["context_hash"], "a" * 40)
 
-    def test_finalize_rejects_stale_head_sha(self):
+    def test_deliver_rejects_stale_head_sha(self):
         pull = {
             "state": "open",
             "draft": False,
@@ -311,18 +340,89 @@ class ToolValidationTests(unittest.TestCase):
             patch.dict(os.environ, self.env, clear=False),
             patch.object(tools, "_pr", return_value=pull),
         ):
+            run_id = self.start_run(head_sha="b" * 40)
             result = json.loads(
-                tools.review_finalize(
+                tools.review_deliver(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "b" * 40,
+                        "run_id": run_id,
                     }
                 )
             )
         self.assertIn("does not match", result["error"])
 
-    def test_finalize_returns_markdown_from_recorded_findings(self):
+    def test_pr_diff_rejects_changed_base_snapshot_before_network(self):
+        initial = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
+            "changed_files": 1,
+        }
+        moved_base = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "base": {"sha": "c" * 40},
+            "changed_files": 1,
+        }
+        with patch.dict(os.environ, self.env, clear=False):
+            with patch.object(tools, "_pr", return_value=initial):
+                run_id = self.start_run()
+            with (
+                patch.object(tools, "_pr", return_value=moved_base),
+                patch.object(tools, "_request") as requester,
+            ):
+                result = json.loads(
+                    tools.pr_diff(
+                        {
+                            "repository": "eneo/platform",
+                            "pr_number": 1,
+                            "run_id": run_id,
+                        }
+                    )
+                )
+        self.assertIn("base SHA changed", result["error"])
+        requester.assert_not_called()
+
+    def test_pr_file_rejects_changed_head_snapshot_before_reading_file(self):
+        initial = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40, "repo": {"full_name": "eneo/platform"}},
+            "base": {"sha": "b" * 40, "repo": {"full_name": "eneo/platform"}},
+            "changed_files": 1,
+        }
+        moved_head = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "c" * 40, "repo": {"full_name": "eneo/platform"}},
+            "base": {"sha": "b" * 40, "repo": {"full_name": "eneo/platform"}},
+            "changed_files": 1,
+        }
+        with patch.dict(os.environ, self.env, clear=False):
+            with patch.object(tools, "_pr", return_value=initial):
+                run_id = self.start_run()
+            with (
+                patch.object(tools, "_pr", return_value=moved_head),
+                patch.object(tools, "_file_at_revision") as reader,
+            ):
+                result = json.loads(
+                    tools.pr_file(
+                        {
+                            "repository": "eneo/platform",
+                            "pr_number": 1,
+                            "path": "backend/changed.py",
+                            "run_id": run_id,
+                        }
+                    )
+                )
+        self.assertIn("head SHA changed", result["error"])
+        reader.assert_not_called()
+
+    def test_deliver_finalizes_and_publishes_recorded_findings(self):
         pull = {
             "state": "open",
             "draft": False,
@@ -344,46 +444,50 @@ class ToolValidationTests(unittest.TestCase):
                     }
                 ],
             ),
+            patch.object(review_publisher, "_default_gateway", return_value=_FakeGitHub()),
         ):
-            start_result = json.loads(
-                tools.review_run_start(
-                    {
-                        "repository": "eneo/platform",
-                        "pr_number": 1,
-                        "base_sha": "b" * 40,
-                        "head_sha": "a" * 40,
-                    }
-                )
-            )
+            run_id = self.start_run()
             record_result = json.loads(
                 tools.review_memory_record(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
-                        "run_id": start_result["run_id"],
+                        "run_id": run_id,
                         "findings": [self.finding],
                     }
                 )
             )
-            finalize_result = json.loads(
-                tools.review_finalize(
+            deliver_result = json.loads(
+                tools.review_deliver(
                     {
                         "repository": "eneo/platform",
                         "pr_number": 1,
                         "head_sha": "a" * 40,
-                        "run_id": start_result["run_id"],
+                        "run_id": run_id,
                     }
                 )
             )
 
-        self.assertEqual(finalize_result["findings_count"], 1)
+        self.assertEqual(deliver_result["findings_count"], 1)
+        self.assertTrue(deliver_result["published"])
+        with closing(memory_db.connect_existing(self.db)) as connection:
+            publication = memory_db.list_publications(
+                connection, repository="eneo/platform", pr_number=1
+            )[0]
+            rendered = connection.execute(
+                "SELECT rendered_markdown FROM review_publications WHERE id = ?",
+                (publication["id"],),
+            ).fetchone()["rendered_markdown"]
         self.assertIn(
             "### F1 · Critical (P0): Tenant scope omitted",
-            finalize_result["markdown"],
+            rendered,
         )
-        self.assertIn("Copyable fix brief for a coding agent", finalize_result["markdown"])
-        self.assertNotIn(record_result["recorded"][0]["fingerprint"], finalize_result["markdown"].split("<!--", 1)[0])
+        self.assertIn("Copyable fix brief for a coding agent", rendered)
+        self.assertNotIn(
+            record_result["recorded"][0]["fingerprint"],
+            rendered.split("<!--", 1)[0],
+        )
 
     def test_pr_file_reads_head_from_fork_repository(self):
         pull = {
@@ -402,6 +506,7 @@ class ToolValidationTests(unittest.TestCase):
             patch.object(tools, "_changed_files", return_value=[]),
             patch.object(tools, "_file_at_revision", return_value=b"line one\n") as reader,
         ):
+            run_id = self.start_run()
             result = json.loads(
                 tools.pr_file(
                     {
@@ -409,6 +514,7 @@ class ToolValidationTests(unittest.TestCase):
                         "pr_number": 1,
                         "path": "backend/app.py",
                         "side": "head",
+                        "run_id": run_id,
                     }
                 )
             )
@@ -464,8 +570,9 @@ class ToolValidationTests(unittest.TestCase):
             patch.object(tools, "_changed_files", return_value=files),
             patch.object(tools, "_file_at_revision") as reader,
         ):
+            run_id = self.start_run()
             result = json.loads(
-                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new.py", "side": "base"})
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new.py", "side": "base", "run_id": run_id})
             )
         self.assertIn("added file has no base side", result["error"])
         reader.assert_not_called()
@@ -478,8 +585,9 @@ class ToolValidationTests(unittest.TestCase):
             patch.object(tools, "_changed_files", return_value=files),
             patch.object(tools, "_file_at_revision") as reader,
         ):
+            run_id = self.start_run()
             result = json.loads(
-                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/gone.py", "side": "head"})
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/gone.py", "side": "head", "run_id": run_id})
             )
         self.assertIn("deleted file has no head side", result["error"])
         reader.assert_not_called()
@@ -492,8 +600,9 @@ class ToolValidationTests(unittest.TestCase):
             patch.object(tools, "_changed_files", return_value=files),
             patch.object(tools, "_file_at_revision", return_value=b"prior\n") as reader,
         ):
+            run_id = self.start_run()
             json.loads(
-                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new_name.py", "side": "base"})
+                tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new_name.py", "side": "base", "run_id": run_id})
             )
         reader.assert_called_once_with("eneo/platform", "backend/old_name.py", "b" * 40)
 

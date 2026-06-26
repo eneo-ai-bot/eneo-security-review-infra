@@ -16,6 +16,7 @@ class FeedbackIngestionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.connection = memory_db.connect(str(Path(self.temp.name) / "memory.sqlite3"))
+        self._runs: dict[tuple[int, str, str], int] = {}
         self.finding = {
             "rule_id": "tenant.missing-scope",
             "category": "security",
@@ -43,6 +44,7 @@ class FeedbackIngestionTests(unittest.TestCase):
         *,
         pr_number: int = 17,
         head_sha: str = "a" * 40,
+        base_sha: str = "b" * 40,
         context_hash: str = "d" * 40,
         findings: list[dict[str, object]] | None = None,
     ) -> list[dict[str, object]]:
@@ -53,14 +55,57 @@ class FeedbackIngestionTests(unittest.TestCase):
             pr_number,
             head_sha,
             payload,
+            review_run_id=self.run_for(
+                pr_number=pr_number,
+                head_sha=head_sha,
+                base_sha=base_sha,
+            ),
+            base_sha=base_sha,
             context_hashes={str(item["path"]): context_hash for item in payload},
         )
+
+    def run_for(
+        self,
+        *,
+        pr_number: int = 17,
+        head_sha: str = "a" * 40,
+        base_sha: str = "b" * 40,
+    ) -> int:
+        key = (pr_number, head_sha, base_sha)
+        run_id = self._runs.get(key)
+        if run_id is not None:
+            row = self.connection.execute(
+                "SELECT status FROM review_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row and row["status"] == "running":
+                return run_id
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            pr_number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+        )
+        if run["status"] == "duplicate":
+            run = memory_db.start_run(
+                self.connection,
+                "eneo/platform",
+                pr_number,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                force=True,
+            )
+        run_id = int(run["id"])
+        self._runs[key] = run_id
+        return run_id
 
     def finalize(
         self,
         *,
         pr_number: int = 17,
         head_sha: str = "a" * 40,
+        base_sha: str = "b" * 40,
         previous_verdicts: object = None,
     ) -> dict[str, object]:
         result = memory_db.finalize_review(
@@ -68,12 +113,28 @@ class FeedbackIngestionTests(unittest.TestCase):
             "eneo/platform",
             pr_number,
             head_sha,
+            review_run_id=self.run_for(
+                pr_number=pr_number,
+                head_sha=head_sha,
+                base_sha=base_sha,
+            ),
             previous_verdicts=previous_verdicts,
         )
+        run_id = int(result["review_run_id"])
         memory_db.mark_publication_posted(
             self.connection,
             publication_id=int(result["publication_id"]),
+            review_run_id=run_id,
             comment_id=500 + int(result["publication_id"]),
+        )
+        memory_db.complete_run(
+            self.connection,
+            run_id,
+            repository=str(result["repository"]),
+            pr_number=int(result["pr_number"]),
+            status="generated",
+            findings_count=int(result["findings_count"]),
+            posted_comment_id=500 + int(result["publication_id"]),
         )
         result["delivery_status"] = "posted"
         return result
@@ -123,6 +184,7 @@ class FeedbackIngestionTests(unittest.TestCase):
             "eneo/platform",
             17,
             "a" * 40,
+            review_run_id=self.run_for(),
         )
 
         first = self.feedback(
@@ -133,7 +195,7 @@ class FeedbackIngestionTests(unittest.TestCase):
         memory_db.mark_publication_failed(
             self.connection,
             publication_id=int(generated["publication_id"]),
-            review_run_id=None,
+            review_run_id=int(generated["review_run_id"]),
             failure_code="body_too_large",
         )
         second = self.feedback(

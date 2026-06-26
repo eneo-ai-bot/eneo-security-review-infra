@@ -243,7 +243,7 @@ class ReviewPublisherTests(unittest.TestCase):
 
         self.assertTrue(posted["published"])
         self.assertEqual(second["review_number"], 1)
-        self.assertIn("Review #1", github.created[0])
+        self.assertIn("Review 1", github.created[0])
 
     def test_publish_creates_new_round_and_marks_previous_historical(self) -> None:
         first_run, first = self.generate()
@@ -268,8 +268,8 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(len(github.created), 2)
         self.assertEqual(len(github.updated), 1)
         self.assertEqual(github.updated[0][0], first_publish["comment_id"])
-        self.assertIn("Review #1 · Superseded", github.updated[0][1])
-        self.assertIn("Superseded by [Review #2]", github.updated[0][1])
+        self.assertIn("Review 1 · Superseded", github.updated[0][1])
+        self.assertIn("Superseded by [Review 2]", github.updated[0][1])
         self.assertNotIn("Give feedback on this review", github.updated[0][1])
         previous = self.connection.execute(
             """
@@ -436,7 +436,7 @@ class ReviewPublisherTests(unittest.TestCase):
             self.assertLessEqual(len(body.encode("utf-8")), 1300)
             self.assertIn(f"part={index}/{result['parts']}", body)
         self.assertIn("Eneo AI code & security review - 1 of", github.created[0])
-        self.assertIn("· Review #1", github.created[0])
+        self.assertIn("· Review 1", github.created[0])
 
     def test_split_keeps_findings_and_details_whole(self) -> None:
         publication_key = "sha256:" + ("1" * 64)

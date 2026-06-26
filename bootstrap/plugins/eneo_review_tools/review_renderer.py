@@ -68,7 +68,8 @@ class ReviewCoverageSummary(TypedDict):
     state: Literal["complete", "incomplete", "unknown"]
     changed_paths: int
     diff_exposed: int
-    context_reads: int
+    context_paths_read: int
+    context_ranges_read: int
     changed_paths_with_diff: int
     changed_paths_with_source_reads: int
     supporting_context_paths_read: int
@@ -294,7 +295,7 @@ def lifecycle_summary(
 
     detail = " · ".join(clauses)
     if previous_review_number is not None:
-        source = f"Review #{previous_review_number}"
+        source = f"Review {previous_review_number}"
         if previous_head_sha:
             source = f"{source} at `{previous_head_sha[:8]}`"
         return f"**Compared with {source}:** {detail}\n\n{severity_summary(findings)}"
@@ -556,7 +557,7 @@ def render_review(
     current = ordered_findings(findings)
     heading = f"## {REVIEW_COMMENT_TITLE}"
     if review_number is not None:
-        heading = f"{heading} · Review #{review_number}"
+        heading = f"{heading} · Review {review_number}"
     header_lines = [
         heading,
         "",
@@ -654,7 +655,8 @@ def render_review(
                 f"coverage_state={coverage['state']}",
                 f"changed_paths={coverage['changed_paths']}",
                 f"diff_exposed={coverage['diff_exposed']}",
-                f"context_reads={coverage['context_reads']}",
+                f"context_paths_read={coverage['context_paths_read']}",
+                f"context_ranges_read={coverage['context_ranges_read']}",
                 f"changed_paths_with_source_reads={coverage['changed_paths_with_source_reads']}",
                 f"supporting_context_paths_read={coverage['supporting_context_paths_read']}",
                 f"changed_files_reported={coverage['changed_files_reported']}",

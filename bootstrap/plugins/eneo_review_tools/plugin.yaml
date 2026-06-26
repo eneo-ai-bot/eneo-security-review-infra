@@ -2,16 +2,12 @@ name: eneo-review-tools
 version: 2.0.0
 description: Bounded GitHub PR context plus human-curated SQLite finding memory for Eneo reviews
 provides_tools:
-  - eneo_pr_overview
+  - eneo_review_begin
   - eneo_pr_diff
   - eneo_pr_file
   - eneo_review_memory_context
   - eneo_review_memory_record
-  - eneo_review_run_start
-  - eneo_review_finalize
-  - eneo_review_publish
   - eneo_review_deliver
-  - eneo_review_run_complete
 requires_env:
   - name: ENEO_ALLOWED_REPOSITORIES
     description: Exact comma-separated GitHub repositories this plugin may read

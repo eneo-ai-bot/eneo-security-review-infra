@@ -405,12 +405,21 @@ class ReviewLearningReportTests(unittest.TestCase):
                     "smallest_fix": "Bind tenant_id from context.",
                     "introduced_by_diff": True,
                 }
+                first_run = memory_db.start_run(
+                    connection,
+                    "eneo-ai/eneo",
+                    17,
+                    base_sha="b" * 40,
+                    head_sha="a" * 40,
+                )
                 first = memory_db.record_findings(
                     connection,
                     "eneo-ai/eneo",
                     17,
                     "a" * 40,
                     [finding_payload],
+                    review_run_id=int(first_run["id"]),
+                    base_sha="b" * 40,
                     context_hashes={finding_payload["path"]: "d" * 40},
                 )[0]
                 memory_db.add_decision(
@@ -421,12 +430,21 @@ class ReviewLearningReportTests(unittest.TestCase):
                     "github:alice",
                     latest=True,
                 )
+                second_run = memory_db.start_run(
+                    connection,
+                    "eneo-ai/eneo",
+                    99,
+                    base_sha="a" * 40,
+                    head_sha="b" * 40,
+                )
                 memory_db.record_findings(
                     connection,
                     "eneo-ai/eneo",
                     99,
                     "b" * 40,
                     [finding_payload],
+                    review_run_id=int(second_run["id"]),
+                    base_sha="a" * 40,
                     context_hashes={finding_payload["path"]: "e" * 40},
                 )
 

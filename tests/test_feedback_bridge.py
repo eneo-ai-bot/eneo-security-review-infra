@@ -95,21 +95,45 @@ class FeedbackBridgeTests(unittest.TestCase):
             "introduced_by_diff": True,
         }
         with closing(memory_db.connect(self.db)) as connection:
+            run = memory_db.start_run(
+                connection,
+                "eneo/platform",
+                17,
+                base_sha="b" * 40,
+                head_sha="a" * 40,
+            )
+            run_id = int(run["id"])
             memory_db.record_findings(
                 connection,
                 "eneo/platform",
                 17,
                 "a" * 40,
                 [self.finding],
+                review_run_id=run_id,
+                base_sha="b" * 40,
                 context_hashes={self.finding["path"]: "d" * 40},
             )
             publication = memory_db.finalize_review(
-                connection, "eneo/platform", 17, "a" * 40
+                connection,
+                "eneo/platform",
+                17,
+                "a" * 40,
+                review_run_id=run_id,
             )
             memory_db.mark_publication_posted(
                 connection,
                 publication_id=int(publication["publication_id"]),
+                review_run_id=run_id,
                 comment_id=500,
+            )
+            memory_db.complete_run(
+                connection,
+                run_id,
+                repository="eneo/platform",
+                pr_number=17,
+                status="generated",
+                findings_count=int(publication["findings_count"]),
+                posted_comment_id=500,
             )
         self.config = feedback_bridge.BridgeConfig(
             secret="secret",

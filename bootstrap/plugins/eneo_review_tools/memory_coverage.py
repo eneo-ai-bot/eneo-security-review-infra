@@ -32,7 +32,8 @@ class CoverageSummary(TypedDict):
     state: CoverageState
     changed_paths: int
     diff_exposed: int
-    context_reads: int
+    context_paths_read: int
+    context_ranges_read: int
     changed_paths_with_diff: int
     changed_paths_with_source_reads: int
     supporting_context_paths_read: int
@@ -387,7 +388,8 @@ def coverage_summary(
             "state": "unknown",
             "changed_paths": 0,
             "diff_exposed": 0,
-            "context_reads": 0,
+            "context_paths_read": 0,
+            "context_ranges_read": 0,
             "changed_paths_with_diff": 0,
             "changed_paths_with_source_reads": 0,
             "supporting_context_paths_read": 0,
@@ -413,11 +415,16 @@ def coverage_summary(
     changed_paths_with_diff = sum(
         1 for row in changed_rows if str(row.get("diff_state") or "") == "complete"
     )
-    context_reads = sum(
+    context_paths_read = sum(
         1
         for row in rows
         if _load_ranges(str(row["head_ranges_read_json"]))
         or _load_ranges(str(row["base_ranges_read_json"]))
+    )
+    context_ranges_read = sum(
+        len(_load_ranges(str(row["head_ranges_read_json"])))
+        + len(_load_ranges(str(row["base_ranges_read_json"])))
+        for row in rows
     )
     changed_paths_with_source_reads = sum(
         1
@@ -477,7 +484,8 @@ def coverage_summary(
         "state": state,
         "changed_paths": expected_changed_paths,
         "diff_exposed": changed_paths_with_diff,
-        "context_reads": context_reads,
+        "context_paths_read": context_paths_read,
+        "context_ranges_read": context_ranges_read,
         "changed_paths_with_diff": changed_paths_with_diff,
         "changed_paths_with_source_reads": changed_paths_with_source_reads,
         "supporting_context_paths_read": supporting_context_paths_read,

@@ -917,16 +917,16 @@ def init_schema(connection: sqlite3.Connection) -> None:
             repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
             path TEXT NOT NULL,
-                change_status TEXT NOT NULL DEFAULT '',
-                is_changed_path INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1)),
-                domain TEXT NOT NULL DEFAULT '',
-                review_mode TEXT NOT NULL DEFAULT 'normal',
-                diff_requested INTEGER NOT NULL DEFAULT 0 CHECK (diff_requested IN (0, 1)),
-                diff_returned INTEGER NOT NULL DEFAULT 0 CHECK (diff_returned IN (0, 1)),
-                diff_truncated INTEGER NOT NULL DEFAULT 0 CHECK (diff_truncated IN (0, 1)),
-                diff_state TEXT NOT NULL DEFAULT 'unseen' CHECK (
-                    diff_state IN ('unseen', 'complete', 'truncated', 'unavailable')
-                ),
+            change_status TEXT NOT NULL DEFAULT '',
+            is_changed_path INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1)),
+            domain TEXT NOT NULL DEFAULT '',
+            review_mode TEXT NOT NULL DEFAULT 'normal',
+            diff_requested INTEGER NOT NULL DEFAULT 0 CHECK (diff_requested IN (0, 1)),
+            diff_returned INTEGER NOT NULL DEFAULT 0 CHECK (diff_returned IN (0, 1)),
+            diff_truncated INTEGER NOT NULL DEFAULT 0 CHECK (diff_truncated IN (0, 1)),
+            diff_state TEXT NOT NULL DEFAULT 'unseen' CHECK (
+                diff_state IN ('unseen', 'complete', 'truncated', 'unavailable')
+            ),
             head_ranges_read_json TEXT NOT NULL DEFAULT '[]',
             base_ranges_read_json TEXT NOT NULL DEFAULT '[]',
             unavailable_reason TEXT NOT NULL DEFAULT '',
@@ -1377,6 +1377,18 @@ def init_schema(connection: sqlite3.Connection) -> None:
         """
     )
     _migrate_finding_observations_run_scope(connection)
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_observations_repo_pr_path_seen
+            ON finding_observations(repository, pr_number, path, observed_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_observations_fingerprint_seen
+            ON finding_observations(fingerprint, observed_at DESC)
+        """
+    )
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_decisions_observation

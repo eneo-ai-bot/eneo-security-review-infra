@@ -24,10 +24,10 @@ def register(ctx: ToolRegistry) -> None:
     tools = import_module(f"{__name__}.tools")
 
     ctx.register_tool(
-        name="eneo_pr_overview",
+        name="eneo_review_begin",
         toolset="eneo_review",
-        schema=getattr(schemas, "ENEO_PR_OVERVIEW"),
-        handler=getattr(tools, "pr_overview"),
+        schema=getattr(schemas, "ENEO_REVIEW_BEGIN"),
+        handler=getattr(tools, "review_begin"),
     )
     ctx.register_tool(
         name="eneo_pr_diff",
@@ -54,32 +54,8 @@ def register(ctx: ToolRegistry) -> None:
         handler=getattr(tools, "review_memory_record"),
     )
     ctx.register_tool(
-        name="eneo_review_run_start",
-        toolset="eneo_review",
-        schema=getattr(schemas, "ENEO_REVIEW_RUN_START"),
-        handler=getattr(tools, "review_run_start"),
-    )
-    ctx.register_tool(
-        name="eneo_review_finalize",
-        toolset="eneo_review",
-        schema=getattr(schemas, "ENEO_REVIEW_FINALIZE"),
-        handler=getattr(tools, "review_finalize"),
-    )
-    ctx.register_tool(
-        name="eneo_review_publish",
-        toolset="eneo_review",
-        schema=getattr(schemas, "ENEO_REVIEW_PUBLISH"),
-        handler=getattr(tools, "review_publish"),
-    )
-    ctx.register_tool(
         name="eneo_review_deliver",
         toolset="eneo_review",
         schema=getattr(schemas, "ENEO_REVIEW_DELIVER"),
         handler=getattr(tools, "review_deliver"),
-    )
-    ctx.register_tool(
-        name="eneo_review_run_complete",
-        toolset="eneo_review",
-        schema=getattr(schemas, "ENEO_REVIEW_RUN_COMPLETE"),
-        handler=getattr(tools, "review_run_complete"),
     )

@@ -51,12 +51,30 @@ class ReviewStatsTests(unittest.TestCase):
         **over,
     ):
         finding = self._finding(**over)
+        run = memory_db.start_run(
+            self.connection,
+            repo,
+            1,
+            base_sha="b" * 40,
+            head_sha=head_sha,
+        )
+        if run["status"] == "duplicate":
+            run = memory_db.start_run(
+                self.connection,
+                repo,
+                1,
+                base_sha="b" * 40,
+                head_sha=head_sha,
+                force=True,
+            )
         return memory_db.record_findings(
             self.connection,
             repo,
             1,
             head_sha,
             [finding],
+            review_run_id=int(run["id"]),
+            base_sha="b" * 40,
             context_hashes={finding["path"]: context_hash},
         )[0]
 

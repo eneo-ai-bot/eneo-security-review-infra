@@ -1,4 +1,4 @@
-"""Review run telemetry lifecycle."""
+"""Review run lifecycle state."""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def _duplicate_response(row: dict[str, Any]) -> dict[str, Any]:
 
 def _already_reviewed_response(row: dict[str, Any]) -> dict[str, Any]:
     review_number = row.get("review_number")
-    review_label = f"Review #{review_number}" if review_number else "the current review"
+    review_label = f"Review {review_number}" if review_number else "the current review"
     return {
         "id": None,
         "repository": row["repository"],
@@ -155,8 +155,7 @@ def start_run(
     force: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Record the start of a review run. Operational telemetry only — this is a
-    separate table from findings/decisions and never affects suppression."""
+    """Record the start of one run-owned review lifecycle for a PR snapshot."""
     repository = normalize_repository(repository)
     if pr_number < 1:
         raise ReviewMemoryError("pr_number must be positive")
@@ -516,9 +515,8 @@ def run_is_stale(
     run: dict[str, Any], *, now: datetime | None = None, stale_after_minutes: int = 30
 ) -> bool:
     """A run still marked 'running' well past a normal review duration is almost
-    certainly crashed or abandoned — its run_complete was never recorded (these tools
-    are best-effort telemetry the model calls). This is a read-only interpretation for
-    display and metrics; it never mutates the row."""
+    certainly crashed or abandoned. This is a read-only interpretation for display
+    and metrics; it never mutates the row."""
     if run.get("status") != "running":
         return False
     heartbeat = parse_time(run.get("last_heartbeat_at")) or parse_time(run.get("started_at"))

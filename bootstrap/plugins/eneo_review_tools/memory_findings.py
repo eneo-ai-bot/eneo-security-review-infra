@@ -133,14 +133,12 @@ def _review_subject_id(
 def _review_run_for_observation(
     connection: sqlite3.Connection,
     *,
-    review_run_id: int | None,
+    review_run_id: int,
     repository: str,
     pr_number: int,
     head_sha: str,
     base_sha: str,
-) -> tuple[int | None, str]:
-    if review_run_id is None:
-        return None, base_sha
+) -> tuple[int, str]:
     if isinstance(review_run_id, bool) or int(review_run_id) < 1:
         raise ReviewMemoryError("review_run_id must be a positive integer")
     row = connection.execute(
@@ -368,7 +366,7 @@ def record_findings(
     head_sha: str,
     findings: object,
     *,
-    review_run_id: int | None = None,
+    review_run_id: int,
     base_sha: str = "",
     context_hashes: dict[str, str] | None = None,
     policy_revision: str | None = None,
@@ -469,26 +467,13 @@ def record_findings(
                         now,
                     ),
                 )
-            if review_run_id is None:
-                observation = connection.execute(
-                    """
-                    SELECT id FROM finding_observations
-                    WHERE review_run_id IS NULL
-                      AND review_subject_id = ?
-                      AND fingerprint = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (subject_id, item["fingerprint"]),
-                ).fetchone()
-            else:
-                observation = connection.execute(
-                    """
-                    SELECT id FROM finding_observations
-                    WHERE review_run_id = ? AND fingerprint = ?
-                    """,
-                    (review_run_id, item["fingerprint"]),
-                ).fetchone()
+            observation = connection.execute(
+                """
+                SELECT id FROM finding_observations
+                WHERE review_run_id = ? AND fingerprint = ?
+                """,
+                (review_run_id, item["fingerprint"]),
+            ).fetchone()
             inserted_observation = observation is None
             if inserted_observation:
                 cursor = connection.execute(
