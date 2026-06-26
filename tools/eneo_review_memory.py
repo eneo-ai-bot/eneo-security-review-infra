@@ -119,6 +119,12 @@ class MemoryDbModule(Protocol):
         *,
         run_id: int | None,
     ) -> dict[str, object] | None: ...
+    def verification_export_source(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        review_run_id: int,
+    ) -> Mapping[str, object]: ...
     def mark_stale_runs_failed(
         self,
         connection: sqlite3.Connection,
@@ -172,6 +178,16 @@ class CoachProposalsModule(Protocol):
 
 class ReplayModule(Protocol):
     def validate_replay_path(self, path: Path) -> tuple[ReplayValidationResult, ...]: ...
+
+
+class VerificationModule(Protocol):
+    def build_verification_export(
+        self,
+        source: Mapping[str, object],
+        *,
+        coverage: Mapping[str, object] | None,
+    ) -> dict[str, object]: ...
+    def dumps_verification_export(self, payload: Mapping[str, object]) -> str: ...
 
 
 def _import_module(name: str) -> ModuleType:
@@ -270,6 +286,13 @@ def load_replay_module() -> ReplayModule:
         return cast(ReplayModule, _import_module("eneo_review_replay"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo replay validator module") from exc
+
+
+def load_verification_module() -> VerificationModule:
+    try:
+        return cast(VerificationModule, _import_module("eneo_review_verification"))
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo verification export module") from exc
 
 
 def _nested(row: JsonObject, key: str) -> JsonObject:
@@ -524,6 +547,13 @@ def main() -> int:
     )
     coverage_parser.add_argument("--run-id", type=int, required=True)
     coverage_parser.add_argument("--json", action="store_true")
+
+    verification_parser = sub.add_parser(
+        "verification-export",
+        help="Generate a bounded private verification bundle for one completed review run.",
+    )
+    verification_parser.add_argument("--run-id", type=int, required=True)
+    verification_parser.add_argument("--output", required=True, help="Write JSON to this file.")
 
     learning_parser = sub.add_parser(
         "learning-report",
@@ -886,6 +916,27 @@ def main() -> int:
                 print(memory_db.json_dumps(summary or {}))
             else:
                 print_coverage(summary)
+            return 0
+
+        if args.command == "verification-export":
+            verification = load_verification_module()
+            try:
+                source = memory_db.verification_export_source(
+                    connection,
+                    review_run_id=args.run_id,
+                )
+                payload = verification.build_verification_export(
+                    source,
+                    coverage=memory_db.coverage_summary(connection, run_id=args.run_id),
+                )
+            except (ValueError, memory_db.ReviewMemoryError) as exc:
+                raise SystemExit(str(exc)) from exc
+            destination = Path(args.output)
+            write_private_file(
+                destination,
+                verification.dumps_verification_export(payload),
+            )
+            print(destination)
             return 0
 
     return 1

@@ -48,6 +48,27 @@ Human feedback and coach exports may inform future reviewer changes, but they do
 not automatically rewrite prompts, skills, suppressions, or policy. In short:
 review evidence can propose changes, but it cannot change policy by itself.
 
+## Private Claude Verification
+
+Claude verification is an operator-run shadow workflow, not part of the live
+webhook reviewer. The public review path does not launch Claude, spawn
+subprocesses, delegate to subagents, execute repository code, or hand another
+model a GitHub write token.
+
+`eneo-review-memory verification-export` reads an already completed review run
+and writes a bounded private JSON artifact with mode `0600`. The artifact is for
+falsifying current published findings out of band. It contains stable ids,
+base/head SHAs, coverage summary, and bounded `*_untrusted` finding evidence. It
+does not contain raw SQLite rows, rendered Markdown, feedback actor identities,
+or source comment URLs.
+If an operator gives this artifact to an external model, this bounded finding
+evidence is the intended review-data egress; do not paste raw database exports
+or webhook payloads instead.
+
+Claude output is advisory. It must not suppress findings, rewrite prompts,
+change feedback commands, publish comments, or become a merge gate without a
+separate human-reviewed implementation and replay evidence.
+
 ## GitHub Token Boundaries
 
 Use separate repository-scoped tokens. [Operations](OPERATIONS.md) owns the
@@ -100,10 +121,10 @@ decisions, and review-quality feedback. It can contain sensitive unpublished
 findings and maintainer-entered reasons. Back it up securely and scrub exports
 before sharing.
 
-Coach exports are private analysis artifacts. They contain bounded untrusted
-text, stable ids, exact observation provenance, hashes, and event metadata for a
-human-reviewed improvement workflow. The public webhook reviewer does not read
-those exports.
+Coach and verification exports are private analysis artifacts. They contain
+bounded untrusted text, stable ids, exact observation provenance, hashes, and
+event metadata for human-reviewed workflows. The public webhook reviewer does
+not read those exports.
 
 ## Non-Goals
 

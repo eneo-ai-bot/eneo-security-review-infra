@@ -201,6 +201,7 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("do not automatically rewrite prompts", words(security))
         self.assertIn("learning-report", operations)
         self.assertIn("does not read `review-learning/`", operations)
+        self.assertIn("verification-export", operations)
         self.assertIn("allowlisted developers", words(readme))
         self.assertIn("feedback bridge", security)
         self.assertIn("deterministic", security)
@@ -312,6 +313,27 @@ class DocsContractTests(unittest.TestCase):
         self.assertNotIn("Snyk", readme)
         self.assertNotIn("Trivy", readme)
         self.assertIn("startsWith(github.event.comment.body, '@review')", workflow)
+
+    def test_private_claude_verification_is_shadow_and_non_gating(self):
+        readme = read("README.md")
+        operations = read("docs/OPERATIONS.md")
+        security = read("docs/SECURITY.md")
+        learning = read("review-learning/README.md")
+        combined = words("\n".join([readme, operations, security, learning]))
+
+        self.assertIn("Private Claude Verification", security)
+        self.assertIn("verification-export", operations)
+        self.assertIn("verification-export", learning)
+        self.assertIn("shadow-mode", combined)
+        self.assertIn("does not publish comments", combined)
+        self.assertIn("suppress findings", combined)
+        self.assertIn("rewrite prompts", combined)
+        self.assertIn("gate pull requests", combined)
+        self.assertIn("bounded `*_untrusted`", combined)
+        self.assertIn("mode `0600`", combined)
+        self.assertIn("does not launch Claude", security)
+        self.assertNotIn("claude --", combined)
+        self.assertNotIn("automatic Claude", combined)
 
     def test_operations_and_security_have_single_owners_for_runtime_boundaries(self):
         operations = read("docs/OPERATIONS.md")

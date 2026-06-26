@@ -126,6 +126,13 @@ class PublicationForSupersession(TypedDict):
     superseded_by_comment_id: int
 
 
+class VerificationExportSource(TypedDict):
+    source_schema_version: int
+    run: dict[str, Any]
+    publication: dict[str, Any]
+    current_findings: list[dict[str, Any]]
+
+
 def _subject_row(
     connection: sqlite3.Connection,
     repository: str,
@@ -335,6 +342,69 @@ def _publication_findings(
         (publication_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def verification_export_source(
+    connection: sqlite3.Connection, *, review_run_id: int
+) -> VerificationExportSource:
+    review_run_id = int(review_run_id)
+    if review_run_id < 1:
+        raise ReviewMemoryError("review_run_id must be positive")
+    run = connection.execute(
+        """
+        SELECT id, repository, pr_number, base_sha, head_sha, status, phase,
+               started_at, completed_at
+        FROM review_runs
+        WHERE id = ?
+        """,
+        (review_run_id,),
+    ).fetchone()
+    if run is None:
+        raise ReviewMemoryError("review run was not found")
+
+    publication = connection.execute(
+        """
+        SELECT id, review_run_id, review_number, repository, pr_number, base_sha,
+               head_sha, delivery_status, rendered_hash, generated_at
+        FROM review_publications
+        WHERE review_run_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (review_run_id,),
+    ).fetchone()
+    if publication is None:
+        raise ReviewMemoryError("review run has no recorded publication")
+
+    publication_id = int(publication["id"])
+    expected = _publication_current_finding_count(connection, publication_id)
+    findings = connection.execute(
+        """
+        SELECT pf.local_reference, pf.status, pf.fingerprint, pf.context_hash,
+               fo.id AS observation_id, fo.rule_id, fo.path, fo.line, fo.symbol,
+               fo.anchor, fo.title, fo.severity, fo.category,
+               fo.publication_score, fo.confidence, fo.evidence,
+               fo.disproof_checks, fo.impact, fo.smallest_fix,
+               fo.introduced_by_diff
+        FROM publication_findings pf
+        JOIN finding_observations fo ON fo.id = pf.observation_id
+        WHERE pf.publication_id = ? AND pf.status = 'current'
+        ORDER BY CAST(SUBSTR(pf.local_reference, 2) AS INTEGER), pf.id
+        """,
+        (publication_id,),
+    ).fetchall()
+    if expected != len(findings):
+        raise ReviewMemoryError(
+            "current publication has findings without observation evidence"
+        )
+
+    schema_row = connection.execute("PRAGMA user_version").fetchone()
+    return {
+        "source_schema_version": int(schema_row[0] if schema_row else 0),
+        "run": dict(run),
+        "publication": dict(publication),
+        "current_findings": [dict(row) for row in findings],
+    }
 
 
 def _publication_result(

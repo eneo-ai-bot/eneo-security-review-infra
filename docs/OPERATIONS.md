@@ -334,6 +334,26 @@ eneo-review-memory coach-export \
   --output /opt/data/review-memory/coach-export.json
 ```
 
+Generate a bounded private verification bundle for one completed review run:
+
+```bash
+eneo-review-memory verification-export \
+  --run-id <id> \
+  --output /opt/data/review-memory/verification/run-<id>.json
+```
+
+This is the first Claude-verification slice. It is a shadow artifact, not a live
+review step. It does not publish comments. The bundle contains stable
+run/publication ids, exact base/head SHAs, coverage summary, and bounded
+`*_untrusted` evidence for the current published findings. A maintainer may hand
+it to Claude or another private review tool and ask for falsification. The result
+is advisory until a human turns it into a replay fixture, policy change, or code
+change through version control.
+
+Do not paste raw SQLite exports into an LLM. Use `verification-export` for
+review-finding falsification and `coach-export` for reviewer-improvement
+signals.
+
 Validate replay fixtures:
 
 ```bash

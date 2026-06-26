@@ -2,6 +2,7 @@
   "include": [
     "bootstrap/plugins/eneo_review_tools",
     "tools/eneo_review_private_io.py",
+    "tools/eneo_review_private_export.py",
     "tools/eneo_review_export.py",
     "tools/eneo_review_learning.py",
     "tools/eneo_review_coach.py",
@@ -9,7 +10,8 @@
     "tools/eneo_review_coach_run.py",
     "tools/eneo_review_feedback_bridge.py",
     "tools/eneo_review_memory.py",
-    "tools/eneo_review_replay.py"
+    "tools/eneo_review_replay.py",
+    "tools/eneo_review_verification.py"
   ],
   "exclude": [
     "**/__pycache__",

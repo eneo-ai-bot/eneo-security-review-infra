@@ -29,6 +29,9 @@ breaking-change slice.
 - Keeps comment delivery deterministic through `eneo_review_deliver`, not through
   free-form model output. Large reviews are split into deterministic comment
   parts instead of hiding findings.
+- Can export a private shadow-mode verification bundle for a completed review
+  run so a maintainer can ask another model to try to falsify the published
+  findings out of band.
 
 ## What It Is Not
 
@@ -61,6 +64,10 @@ flowchart TD
 
 The model proposes and challenges findings. Plugin code owns the durable state,
 publication, feedback parsing, snapshot checks, and GitHub writes.
+
+Private verification and learning artifacts are outside this live path. They
+read SQLite after a review has completed and do not publish comments, suppress
+findings, rewrite prompts, or gate pull requests.
 
 ## Engine And Profile
 
@@ -114,6 +121,8 @@ Common status commands in the `hermes-review` container:
 eneo-review-memory runs --repo <org>/<repo> --limit 10
 eneo-review-memory publications --repo <org>/<repo> --pr <number>
 eneo-review-memory coverage --run-id <id> --json
+eneo-review-memory verification-export --run-id <id> \
+  --output /opt/data/review-memory/verification/run-<id>.json
 ```
 
 ## Security
