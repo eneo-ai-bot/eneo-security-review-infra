@@ -63,11 +63,14 @@ class MemoryCoachTests(unittest.TestCase):
             )
         }
 
-        self.assertEqual(memory_db.SCHEMA_VERSION, 13)
+        self.assertEqual(memory_db.SCHEMA_VERSION, 14)
         self.assertIn("coach_runs", tables)
         self.assertIn("coach_candidates", tables)
         self.assertIn("review_quality_feedback", tables)
         self.assertIn("publication_findings", tables)
+        self.assertIn("review_verification_runs", tables)
+        self.assertIn("candidate_verifications", tables)
+        self.assertIn("candidate_reconciliations", tables)
 
     def test_no_change_run_records_without_candidates(self) -> None:
         item = run_input(decision="no_change", candidates=())

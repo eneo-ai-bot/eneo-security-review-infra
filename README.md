@@ -29,9 +29,10 @@ breaking-change slice.
 - Keeps comment delivery deterministic through `eneo_review_deliver`, not through
   free-form model output. Large reviews are split into deterministic comment
   parts instead of hiding findings.
-- Can export a private shadow-mode verification bundle for a completed review
-  run so a maintainer can ask another model to try to falsify the published
-  findings out of band.
+- Can export a private shadow-mode verification bundle and store provider-neutral
+  verifier/reconciliation state for a review run. The live deployment still
+  publishes from Codex-owned findings unless an explicit reconciliation decision
+  says otherwise.
 
 ## What It Is Not
 
@@ -65,9 +66,10 @@ flowchart TD
 The model proposes and challenges findings. Plugin code owns the durable state,
 publication, feedback parsing, snapshot checks, and GitHub writes.
 
-Private verification and learning artifacts are outside this live path. They
-read SQLite after a review has completed and do not publish comments, suppress
-findings, rewrite prompts, or gate pull requests.
+Private verification and learning artifacts are outside this live path unless a
+future runner explicitly wires them in. Verifier output is advisory evidence: it
+does not publish comments, suppress findings, rewrite prompts, or gate pull
+requests unless Codex records a reconciliation decision for the current run.
 
 ## Engine And Profile
 
@@ -75,7 +77,7 @@ findings, rewrite prompts, or gate pull requests.
 | --- | --- | --- |
 | Webhook transport | `compose.yaml`, `examples/github/ai-review-request.yml` | Authenticates review and feedback requests before Hermes runs. |
 | GitHub reads | `bootstrap/plugins/eneo_review_tools/` | Bounded PR metadata, diff, and file reads. |
-| Review memory | `review_memory_data` SQLite volume | Findings, decisions, publications, feedback, coverage, and run phases. |
+| Review memory | `review_memory_data` SQLite volume | Findings, decisions, publications, feedback, coverage, run phases, and verifier reconciliation state. |
 | Publication | `eneo_review_deliver` | Verifies snapshot and writes deterministic PR comments. |
 | Reviewer identity | `bootstrap/SOUL.md` | Tone, evidence posture, and identity. |
 | Review contract | `bootstrap/workspace/AGENTS.md` | Visible comment contract and evidence rules. |
@@ -85,6 +87,12 @@ findings, rewrite prompts, or gate pull requests.
 To adapt the reviewer for another team, start with the three profile files and
 the GitHub workflow allowlist. Do not fork the memory or publisher logic unless
 your runtime contract actually changes.
+
+The long-term split is engine plus profile: the engine owns GitHub transport,
+snapshot reads, memory, coverage, feedback, verifier reconciliation, and
+publication; a profile owns project policy, skills, tone, and enabled verifier
+providers. Today the shipped profile is Eneo, and the historical command/env
+names remain for compatibility with the current deployment.
 
 ## Developer Workflow
 

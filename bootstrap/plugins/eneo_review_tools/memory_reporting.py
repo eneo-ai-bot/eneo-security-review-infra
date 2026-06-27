@@ -114,6 +114,22 @@ def export_state(connection: sqlite3.Connection) -> dict[str, Any]:
         dict(row)
         for row in connection.execute("SELECT * FROM publication_findings ORDER BY id")
     ]
+    verification_runs = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM review_verification_runs ORDER BY id"
+        )
+    ]
+    candidate_verifications = [
+        dict(row)
+        for row in connection.execute("SELECT * FROM candidate_verifications ORDER BY id")
+    ]
+    candidate_reconciliations = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT * FROM candidate_reconciliations ORDER BY id"
+        )
+    ]
     quality_feedback = [
         dict(row)
         for row in connection.execute(
@@ -131,6 +147,9 @@ def export_state(connection: sqlite3.Connection) -> dict[str, Any]:
         "review_publications": publications,
         "review_run_files": run_files,
         "publication_findings": publication_findings,
+        "review_verification_runs": verification_runs,
+        "candidate_verifications": candidate_verifications,
+        "candidate_reconciliations": candidate_reconciliations,
         "review_quality_feedback": quality_feedback,
     }
 

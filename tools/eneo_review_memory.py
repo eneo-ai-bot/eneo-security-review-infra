@@ -399,6 +399,14 @@ def print_publications(publications: Sequence[JsonObject]) -> None:
             f"posted={item.get('posted_at') or '-'}  "
             f"failed={item.get('publish_failed_at') or '-'}"
         )
+        verification_status = item.get("verification_status") or "-"
+        if verification_status != "-":
+            print(
+                f"       verification={verification_status}  "
+                f"mode={item.get('verification_mode') or '-'}  "
+                f"provider={item.get('verification_provider') or '-'}  "
+                f"failure={item.get('verification_failure_code') or '-'}"
+            )
 
 
 def print_coverage(summary: JsonObject | None) -> None:

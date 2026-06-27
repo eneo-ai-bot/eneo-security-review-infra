@@ -13,6 +13,10 @@ try:
     from .memory_decisions import active_suppression
     from .memory_coverage import coverage_summary
     from .memory_findings import assign_local_reference
+    from .memory_verification import (
+        candidate_reconciliations_for_run,
+        latest_verification_status_by_run,
+    )
     from .memory_validation import (
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
@@ -40,6 +44,10 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_decisions import active_suppression
     from memory_coverage import coverage_summary
     from memory_findings import assign_local_reference
+    from memory_verification import (
+        candidate_reconciliations_for_run,
+        latest_verification_status_by_run,
+    )
     from memory_validation import (
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
@@ -323,9 +331,26 @@ def list_publications(
         (*params, limit),
     ).fetchall()
     publications: list[dict[str, Any]] = []
+    verification_statuses = latest_verification_status_by_run(
+        connection,
+        [
+            int(row["review_run_id"])
+            for row in rows
+            if row["review_run_id"] is not None
+        ],
+    )
     for row in rows:
         item = dict(row)
         item["comment_ids"] = _publication_comment_ids(connection, int(item["id"]))
+        verification = verification_statuses.get(int(item["review_run_id"] or 0))
+        item["verification_status"] = str(verification["status"]) if verification else ""
+        item["verification_mode"] = str(verification["mode"]) if verification else ""
+        item["verification_provider"] = (
+            str(verification["provider"]) if verification else ""
+        )
+        item["verification_failure_code"] = (
+            str(verification["failure_code"]) if verification else ""
+        )
         publications.append(item)
     return publications
 
@@ -776,9 +801,21 @@ def finalize_review(
         base_sha = str(subject.get("base_sha") or "")
 
         observed = _observations_for_run(connection, review_run_id)
+        candidate_reconciliations = candidate_reconciliations_for_run(
+            connection, review_run_id
+        )
+        # A drop is a final publication decision for this run, so it must exclude
+        # both fresh observations and prior findings that would otherwise carry over.
+        dropped_fingerprints = {
+            fingerprint
+            for fingerprint, item in candidate_reconciliations.items()
+            if item.get("final_decision") == "drop"
+        }
         current: list[PublishedFinding] = []
         for item in observed:
             fingerprint = str(item["fingerprint"])
+            if fingerprint in dropped_fingerprints:
+                continue
             context_hash = str(item["context_hash"])
             if active_suppression(connection, fingerprint, context_hash=context_hash):
                 continue
@@ -804,6 +841,7 @@ def finalize_review(
             item["fingerprint"]: item
             for item in previous_items
             if item.get("status") == "current"
+            and item["fingerprint"] not in dropped_fingerprints
         }
         current_by_fingerprint = {item["fingerprint"]: item for item in current}
         suppressed_previous = {

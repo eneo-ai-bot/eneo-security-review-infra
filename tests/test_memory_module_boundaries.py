@@ -21,6 +21,7 @@ OWNER_MODULES = [
     "memory_identity",
     "memory_decisions",
     "memory_findings",
+    "memory_verification",
     "memory_publications",
     "memory_feedback",
     "memory_reporting",
