@@ -17,6 +17,13 @@ import urllib.request
 try:
     from .feedback_authorization import parse_feedback_actor_allowlist
     from .feedback_contract import usage_lines
+    from .review_identity import (
+        FEEDBACK_COMMAND_NOT_RECOGNIZED,
+        FEEDBACK_NO_CURRENT_REVIEW,
+        FEEDBACK_NOT_CURRENT_REVIEW,
+        FEEDBACK_STALE_CONTEXT,
+        FEEDBACK_UNSUPPORTED_COMMAND,
+    )
     from .memory_feedback import (
         FeedbackStatus,
         feedback_event,
@@ -27,6 +34,13 @@ try:
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from feedback_authorization import parse_feedback_actor_allowlist
     from feedback_contract import usage_lines
+    from review_identity import (  # type: ignore[no-redef]
+        FEEDBACK_COMMAND_NOT_RECOGNIZED,
+        FEEDBACK_NO_CURRENT_REVIEW,
+        FEEDBACK_NOT_CURRENT_REVIEW,
+        FEEDBACK_STALE_CONTEXT,
+        FEEDBACK_UNSUPPORTED_COMMAND,
+    )
     from memory_feedback import (
         FeedbackStatus,
         feedback_event,
@@ -349,7 +363,7 @@ class GitHubApiClient:
 
 
 def help_message(detail: str = "") -> str:
-    lines = ["Eneo review command not recognized."]
+    lines = [FEEDBACK_COMMAND_NOT_RECOGNIZED]
     if detail:
         lines.extend(["", detail])
     lines.extend(["", *usage_lines()])
@@ -358,13 +372,13 @@ def help_message(detail: str = "") -> str:
 
 def status_message(status: FeedbackStatus) -> str:
     if status == "no_mapping":
-        return "I could not find a current Eneo review for this PR. Run `/review` first, then comment with the latest F reference."
+        return FEEDBACK_NO_CURRENT_REVIEW
     if status == "not_current":
-        return "That finding reference is not current. Use the F number from the latest Eneo review comment."
+        return FEEDBACK_NOT_CURRENT_REVIEW
     if status == "stale":
-        return "That finding cannot be recorded because its trusted file context is missing or stale. Run `/review` again, then retry with the latest F reference."
+        return FEEDBACK_STALE_CONTEXT
     if status == "unsupported":
-        return "That feedback command is not available from PR comments yet. Intentional design and accepted-risk decisions need the governance CLI."
+        return FEEDBACK_UNSUPPORTED_COMMAND
     return help_message()
 
 

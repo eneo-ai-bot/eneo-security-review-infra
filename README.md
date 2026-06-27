@@ -83,10 +83,13 @@ requests unless Codex records a reconciliation decision for the current run.
 | Review contract | `bootstrap/workspace/AGENTS.md` | Visible comment contract and evidence rules. |
 | Review procedure | `bootstrap/skills/eneo-pr-review/SKILL.md` | Two-pass PR review procedure. |
 | Example output | `examples/comments/example-review.md` | Single example of the rendered review shape. |
+| Visible review copy | `bootstrap/plugins/eneo_review_tools/review_identity.py` | Centralized profile-facing title, continuation, fix-brief, and feedback messages. |
 
 To adapt the reviewer for another team, start with the three profile files and
-the GitHub workflow allowlist. Do not fork the memory or publisher logic unless
-your runtime contract actually changes.
+the GitHub workflow allowlist. Visible profile copy lives in
+`review_identity.py`; keep the review title as a per-bundle constant because the
+publisher parses it when splitting and superseding stored comments. Do not fork
+the memory or publisher logic unless your runtime contract actually changes.
 
 The long-term split is engine plus profile: the engine owns GitHub transport,
 snapshot reads, memory, coverage, feedback, verifier reconciliation, and
