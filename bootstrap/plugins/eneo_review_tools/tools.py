@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Literal, cast
 
-from . import memory_db, review_publisher
+from . import changed_files, memory_db, review_publisher
 
 _API_ROOT = "https://api.github.com"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -193,12 +193,6 @@ def _json_object_or_empty(value: Any) -> JsonObject:
     return cast(JsonObject, value) if isinstance(value, dict) else {}
 
 
-def _json_list(value: Any, message: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise ToolInputError(message)
-    return cast(list[Any], value)
-
-
 def _int_value(value: Any, default: int = 0) -> int:
     try:
         return int(default if value is None else value)
@@ -313,58 +307,47 @@ def _overview_payload(
 
 
 def _changed_files(
-    repository: str, number: int, maximum: int = 300
+    repository: str, number: int, maximum: int = changed_files.MAX_CHANGED_FILES
 ) -> list[JsonObject]:
-    owner_repo = urllib.parse.quote(repository, safe="/")
+    # Enumeration (offset-safe pagination past the old 300/3-page cap) is owned by
+    # the ChangedFilePager; this adapter preserves the historical output contract,
+    # including the trusted context_hash used by the suppression model. The pager's
+    # index_state is not surfaced here — callers derive coverage from len() vs the
+    # PR's reported changed_files count, as before.
+    index = changed_files.enumerate_changed_files(
+        _request, repository, number, reported=0, max_files=maximum
+    )
     files: list[JsonObject] = []
-    for page in range(1, 4):
-        value = _request_json(
-            f"/repos/{owner_repo}/pulls/{number}/files?per_page=100&page={page}",
-            max_bytes=3_000_000,
+    for entry in index.files:
+        blob_sha = entry["blob_sha"]
+        patch_text = entry["patch"] or ""
+        is_blob = bool(_SHA_RE.fullmatch(blob_sha))
+        # GitHub normally supplies the file blob SHA. If it does not, keep a
+        # deterministic patch hash as a diagnostic value; the persistence path
+        # will fall back to the authoritative PR head SHA for safe suppression.
+        context_hash = (
+            blob_sha
+            if is_blob
+            else hashlib.sha256(
+                (
+                    f"{entry['path']}\n{entry['status']}\n"
+                    f"{entry['additions']}\n{entry['deletions']}\n{patch_text}"
+                ).encode("utf-8")
+            ).hexdigest()
         )
-        value = _json_list(value, "GitHub returned an unexpected changed-files response")
-        for raw_item in value:
-            item = cast(JsonObject, raw_item) if isinstance(raw_item, dict) else None
-            if not isinstance(item, dict):
-                continue
-            filename = str(item.get("filename", ""))[:500]
-            status = str(item.get("status", ""))[:40]
-            previous_filename = str(item.get("previous_filename", ""))[:500]
-            blob_sha = str(item.get("sha", "")).strip().lower()
-            patch_text = str(item.get("patch", ""))
-            # GitHub normally supplies the file blob SHA. If it does not, keep a
-            # deterministic patch hash as a diagnostic value; the persistence path
-            # will fall back to the authoritative PR head SHA for safe suppression.
-            context_hash = (
-                blob_sha
-                if _SHA_RE.fullmatch(blob_sha)
-                else hashlib.sha256(
-                    (
-                        f"{filename}\n{status}\n"
-                        f"{_int_value(item.get('additions'))}\n"
-                        f"{_int_value(item.get('deletions'))}\n{patch_text}"
-                    ).encode("utf-8")
-                ).hexdigest()
-            )
-            files.append(
-                {
-                    "path": filename,
-                    "status": status,
-                    "previous_path": previous_filename or None,
-                    "additions": _int_value(item.get("additions")),
-                    "deletions": _int_value(item.get("deletions")),
-                    "changes": _int_value(item.get("changes")),
-                    "patch_available": bool(patch_text),
-                    "context_hash": context_hash,
-                    "context_hash_source": "blob"
-                    if _SHA_RE.fullmatch(blob_sha)
-                    else "patch",
-                }
-            )
-            if len(files) >= maximum:
-                return files
-        if len(value) < 100:
-            break
+        files.append(
+            {
+                "path": entry["path"],
+                "status": entry["status"],
+                "previous_path": entry["previous_path"],
+                "additions": entry["additions"],
+                "deletions": entry["deletions"],
+                "changes": entry["changes"],
+                "patch_available": bool(patch_text),
+                "context_hash": context_hash,
+                "context_hash_source": "blob" if is_blob else "patch",
+            }
+        )
     return files
 
 
