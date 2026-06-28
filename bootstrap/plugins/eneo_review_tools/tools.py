@@ -932,11 +932,12 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
         base_sha = _pull_base_sha(pull)
 
         files = _changed_files(repository, number)
-        reported = max(_int_value(pull.get("changed_files")), len(files))
-        if reported > len(files):
-            raise ToolInputError(
-                "changed-file list is incomplete; no findings were recorded"
-            )
+        # Honest-partial recording: when GitHub reports more changed files than were
+        # enumerated (e.g. a PR beyond the files-API ceiling), record findings for the
+        # files that WERE enumerated rather than hard-refusing the whole review.
+        # Findings on un-enumerated paths are still rejected below, and incomplete
+        # coverage is surfaced by the renderer's "Review context incomplete" banner —
+        # the review is never silently dropped nor falsely reported clean.
         changed_files = {str(item.get("path", "")): item for item in files}
         context_hashes: dict[str, str] = {}
         finding_objects: list[JsonObject] = []
