@@ -134,6 +134,13 @@ class MemoryDbModule(Protocol):
         pr_number: int | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]: ...
+    def failed_runs_needing_status(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        pr_number: int | None = None,
+    ) -> list[dict[str, object]]: ...
     def run_is_stale(self, run: Mapping[str, object]) -> bool: ...
     def record_coach_run(
         self, connection: sqlite3.Connection, item: MemoryCoachRunInput
@@ -258,6 +265,84 @@ def load_memory_module() -> MemoryDbModule:
             _describe_memory_source(module, candidate)
             return cast(MemoryDbModule, module)
     raise SystemExit("Could not locate the eneo_review_tools plugin")
+
+
+class ReviewPublisherModule(Protocol):
+    def publish_run_failure_status(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: int,
+        reason: str,
+        failure_code: str,
+        github: object | None = None,
+    ) -> dict[str, object]: ...
+
+
+def load_review_publisher() -> ReviewPublisherModule:
+    try:
+        return cast(ReviewPublisherModule, _import_module("review_publisher"))
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo review publisher module") from exc
+
+
+_FAILURE_REASONS = {
+    "stale_timeout": "the review run stopped responding and was marked stale",
+    "github_diff_406": (
+        "GitHub could not render this pull request's diff (it is very large)"
+    ),
+    "review_deliver_error": "the review failed during delivery",
+}
+
+
+def _failure_reason(failure_code: str) -> str:
+    return _FAILURE_REASONS.get(
+        failure_code, "the review did not complete; see operator logs"
+    )
+
+
+def reap_and_publish(
+    connection: sqlite3.Connection,
+    memory_db: MemoryDbModule,
+    publisher: ReviewPublisherModule,
+    *,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    older_than_minutes: int = 30,
+    github: object | None = None,
+) -> dict[str, object]:
+    """Mark stale runs failed, then post a deterministic failure-status comment for every
+    failed run lacking one. Orchestration lives in the CLI, never in the memory layer."""
+    marked = memory_db.mark_stale_runs_failed(
+        connection,
+        repository=repository,
+        pr_number=pr_number,
+        older_than_minutes=older_than_minutes,
+    )
+    targets = memory_db.failed_runs_needing_status(
+        connection, repository=repository, pr_number=pr_number
+    )
+    posted = 0
+    failures: list[dict[str, object]] = []
+    for run in targets:
+        run_id = int(cast(int, run["id"]))
+        code = str(run.get("failure_code") or "review_failed")
+        try:
+            publisher.publish_run_failure_status(
+                connection,
+                run_id=run_id,
+                reason=_failure_reason(code),
+                failure_code=code,
+                github=github,
+            )
+            posted += 1
+        except Exception as exc:  # noqa: BLE001 - one bad post must not hide the rest.
+            failures.append({"run_id": run_id, "error": str(exc)})
+    return {
+        "marked_failed": int(cast(int, marked["failed_count"])),
+        "status_posted": posted,
+        "status_failed": failures,
+    }
 
 
 def load_learning_module() -> LearningModule:
@@ -532,6 +617,14 @@ def main() -> int:
         type=int,
         default=30,
         help="Age threshold for --mark-stalled. Default: 30.",
+    )
+    runs_parser.add_argument(
+        "--publish-failure-status",
+        action="store_true",
+        help=(
+            "Mark stale runs failed, then post a deterministic failure-status comment "
+            "for every failed run lacking one. Exits non-zero if any post fails."
+        ),
     )
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
     runs_parser.add_argument("--json", action="store_true")
@@ -868,6 +961,36 @@ def main() -> int:
             return 0
 
         if args.command == "runs":
+            if args.publish_failure_status:
+                if args.stats:
+                    raise SystemExit(
+                        "--publish-failure-status cannot be combined with --stats"
+                    )
+                if args.pr is not None and not args.repo:
+                    raise SystemExit("--pr requires --repo")
+                publisher = load_review_publisher()
+                try:
+                    summary = reap_and_publish(
+                        connection,
+                        memory_db,
+                        publisher,
+                        repository=args.repo,
+                        pr_number=args.pr,
+                        older_than_minutes=args.older_than_minutes,
+                    )
+                except memory_db.ReviewMemoryError as exc:
+                    raise SystemExit(str(exc)) from exc
+                if args.json:
+                    print(memory_db.json_dumps(summary))
+                else:
+                    failed = cast(Sequence[object], summary["status_failed"])
+                    print(
+                        f"marked_failed={summary['marked_failed']} "
+                        f"status_posted={summary['status_posted']} "
+                        f"status_failed={len(failed)}"
+                    )
+                # Watcher-of-the-watcher: a failed post must surface to the operator.
+                return 1 if summary["status_failed"] else 0
             if args.mark_stalled:
                 if args.stats:
                     raise SystemExit("--mark-stalled cannot be combined with --stats")

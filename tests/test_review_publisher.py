@@ -74,9 +74,9 @@ class FakeGitHub:
         return None
 
     def list_issue_comments(
-        self, repository: str, issue_number: int
+        self, repository: str, issue_number: int, *, max_pages: int = 3
     ) -> list[review_publisher.IssueComment]:
-        del repository, issue_number
+        del repository, issue_number, max_pages
         return list(self.comments)
 
     def update_issue_comment(

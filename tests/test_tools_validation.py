@@ -60,8 +60,8 @@ class _FakeGitHub:
             head_sha="a" * 40,
         )
 
-    def list_issue_comments(self, repository, issue_number):
-        del repository, issue_number
+    def list_issue_comments(self, repository, issue_number, *, max_pages=3):
+        del repository, issue_number, max_pages
         return []
 
     def update_issue_comment(self, repository, comment_id, body):

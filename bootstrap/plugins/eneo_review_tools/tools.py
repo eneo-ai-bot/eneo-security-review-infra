@@ -1014,6 +1014,25 @@ def _mark_run_failed(
         pass
 
 
+def _publish_failure_status_safe(
+    *, run_id: int, reason: str, failure_code: str
+) -> None:
+    """Best-effort, in-band failure-status post after a delivery failure.
+
+    Never masks the primary error; the out-of-band reaper is the durable catch-all for
+    runs that abort before reaching this path (e.g. loop-guard or turn-cap aborts)."""
+    try:
+        with closing(memory_db.connect_existing()) as connection:
+            review_publisher.publish_run_failure_status(
+                connection,
+                run_id=run_id,
+                reason=reason,
+                failure_code=failure_code,
+            )
+    except Exception:
+        pass
+
+
 def review_deliver(args: dict[str, Any], **_: Any) -> str:
     repository = ""
     number = 0
@@ -1105,6 +1124,11 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                 run_id=run_id,
                 failure_code="review_deliver_error",
             )
+            _publish_failure_status_safe(
+                run_id=run_id,
+                reason="the review failed during delivery",
+                failure_code="review_deliver_error",
+            )
         return _error(str(exc))
     except Exception:
         if repository and number and run_id:
@@ -1112,6 +1136,11 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                 repository=repository,
                 pr_number=number,
                 run_id=run_id,
+                failure_code="unexpected_review_deliver_failure",
+            )
+            _publish_failure_status_safe(
+                run_id=run_id,
+                reason="the review failed unexpectedly during delivery",
                 failure_code="unexpected_review_deliver_failure",
             )
         return _error("unexpected review-deliver failure")

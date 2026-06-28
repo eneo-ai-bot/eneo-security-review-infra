@@ -1384,6 +1384,21 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "changed_file_registration_complete",
         "INTEGER NOT NULL DEFAULT 0 CHECK (changed_file_registration_complete IN (0, 1))",
     )
+    # Durable state for the never-silent failure-status comment posted by the reaper /
+    # delivery failure paths. Additive columns: no SCHEMA_VERSION bump required.
+    _ensure_column(connection, "review_runs", "failure_detail", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        connection,
+        "review_runs",
+        "failure_status_comment_id",
+        "INTEGER CHECK (failure_status_comment_id IS NULL OR failure_status_comment_id > 0)",
+    )
+    _ensure_column(
+        connection,
+        "review_runs",
+        "failure_status_posted_at",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     _ensure_column(
         connection,
         "review_run_files",
