@@ -69,6 +69,7 @@ MIN_CONFIDENCE = 0.85
 MIN_PUBLICATION_SCORE = min(SEVERITY_SCORE_GATES.values())
 _RULE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
 HASH_RE = re.compile(r"^[0-9a-f]{40,64}$")
+_ELLIPSIS = "..."
 
 
 class ReviewMemoryError(ValueError):
@@ -115,7 +116,23 @@ def compact_text(value: Any, *, maximum: int = 800) -> str:
     text = " ".join(str(value or "").strip().split())
     if len(text) <= maximum:
         return text
-    return text[: maximum - 1].rstrip() + "..."
+    return truncate_text(text, maximum=maximum)
+
+
+def truncate_text(value: str, *, maximum: int) -> str:
+    if maximum <= 0:
+        return ""
+    if len(value) <= maximum:
+        return value
+    if maximum <= len(_ELLIPSIS):
+        return _ELLIPSIS[:maximum]
+    limit = maximum - len(_ELLIPSIS)
+    # Preserve length <= maximum; use a word break only when it keeps useful text.
+    floor = limit // 2
+    cut = max(value.rfind(" ", 0, limit + 1), value.rfind("\n", 0, limit + 1))
+    if cut <= floor:
+        cut = limit
+    return value[:cut].rstrip() + _ELLIPSIS
 
 
 def local_reference_number(value: str) -> int:

@@ -14,6 +14,7 @@ try:
         SEVERITY_PRIORITY,
         compact_text,
         local_reference_number,
+        truncate_text,
     )
     from .review_identity import (
         FIX_BRIEF_PROJECT_CONSTRAINT,
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         SEVERITY_PRIORITY,
         compact_text,
         local_reference_number,
+        truncate_text,
     )
     from review_identity import (  # type: ignore[no-redef]
         FIX_BRIEF_PROJECT_CONSTRAINT,
@@ -181,9 +183,7 @@ def safe_fenced_text(value: Any, *, maximum: int = 800) -> str:
         else " "
         for character in text
     )
-    if len(cleaned) > maximum:
-        cleaned = cleaned[: maximum - 1].rstrip() + "..."
-    return cleaned.replace("```", "` ` `")
+    return truncate_text(cleaned, maximum=maximum).replace("```", "` ` `")
 
 
 def inline_code(value: Any, *, maximum: int = 800) -> str:
@@ -370,13 +370,24 @@ def coverage_summary_line(coverage: ReviewCoverageSummary | None) -> str:
             f" GitHub reported {reported} changed paths, but only "
             f"{coverage['changed_files_registered']} were registered."
         )
+    source_context = ""
+    if coverage["changed_paths_with_source_reads"]:
+        source_read_label = count_label(
+            coverage["changed_paths_with_source_reads"],
+            "changed path",
+            "changed paths",
+        )
+        source_context = (
+            " Additional source context was read from "
+            f"{source_read_label}."
+        )
     return (
-        f"**Review context incomplete:** textual diff content was returned for "
+        f"**Review context incomplete:** textual diff content was inspected for "
         f"{coverage['changed_paths_with_diff']} of "
         f"{coverage['changed_paths']} registered changed paths; "
         f"{coverage['unavailable']} unavailable and "
-        f"{coverage['diff_truncated']} truncated.{registration_suffix}{suffix} "
-        "This review is not a clean result."
+        f"{coverage['diff_truncated']} truncated.{source_context}"
+        f"{registration_suffix}{suffix} This review is not a clean result."
     )
 
 
