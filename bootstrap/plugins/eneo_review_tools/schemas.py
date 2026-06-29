@@ -53,6 +53,52 @@ ENEO_PR_DIFF = {
     },
 }
 
+ENEO_PR_FILES = {
+    "name": "eneo_pr_files",
+    "description": (
+        "Page the run-owned changed-file index for a pull request. Use after "
+        "eneo_review_begin to inspect changed paths by domain or review_mode "
+        "without loading the entire PR file list into context."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "repository": {"type": "string"},
+            "pr_number": {"type": "integer", "minimum": 1},
+            "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run_id returned by eneo_review_begin.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 100,
+            },
+            "cursor": {
+                "type": "string",
+                "description": "Opaque next_cursor returned by the previous page.",
+            },
+            "domain": {
+                "type": "string",
+                "description": "Optional domain filter from file_index.by_domain.",
+            },
+            "review_mode": {
+                "type": "string",
+                "description": "Optional review_mode filter from file_index.by_review_mode.",
+            },
+            "changed_only": {
+                "type": "boolean",
+                "default": True,
+                "description": "Keep true for normal PR review; false also lists supporting context reads.",
+            },
+        },
+        "required": ["repository", "pr_number", "run_id"],
+        "additionalProperties": False,
+    },
+}
+
 ENEO_PR_FILE = {
     "name": "eneo_pr_file",
     "description": (

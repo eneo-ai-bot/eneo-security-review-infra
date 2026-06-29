@@ -128,12 +128,150 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(start["status"], "running")
         self.assertEqual(start["phase"], "collecting_diff")
         self.assertIn("run_id", start)
+        self.assertNotIn("files", start)
+        self.assertEqual(start["file_index"]["changed_files_registered"], 1)
+        self.assertEqual(start["file_index"]["sample_paths"][0]["path"], "backend/api.py")
         with closing(memory_db.connect()) as connection:
             runs = memory_db.list_runs(connection)
             coverage = memory_db.coverage_summary(connection, run_id=start["run_id"])
         self.assertEqual(runs[0]["phase"], "collecting_diff")
         self.assertIsNotNone(coverage)
         self.assertEqual(coverage["changed_paths"], 1)
+
+    def test_begin_returns_bounded_file_index_for_large_pr(self):
+        changed_files = [
+            {
+                "path": f"backend/module_{i:04d}.py",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+                "patch_available": True,
+                "context_hash": "d" * 40,
+                "context_hash_source": "blob",
+            }
+            for i in range(1500)
+        ]
+
+        start = self.begin(pr=13, changed_files=changed_files)
+
+        self.assertNotIn("files", start)
+        self.assertEqual(start["changed_files_reported"], 1500)
+        self.assertEqual(start["file_index"]["changed_files_registered"], 1500)
+        self.assertEqual(start["file_index"]["by_domain"], {"backend": 1500})
+        self.assertLessEqual(len(start["file_index"]["sample_paths"]), 40)
+        self.assertLess(len(json.dumps(start)), 20000)
+
+    def test_pr_files_pages_run_owned_changed_file_index(self):
+        changed_files = [
+            {
+                "path": ".github/workflows/ci.yml",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+                "patch_available": True,
+                "context_hash": "a" * 40,
+                "context_hash_source": "blob",
+            },
+            {
+                "path": "backend/api.py",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3,
+                "patch_available": True,
+                "context_hash": "b" * 40,
+                "context_hash_source": "blob",
+            },
+            {
+                "path": "frontend/app.ts",
+                "status": "added",
+                "additions": 5,
+                "deletions": 0,
+                "changes": 5,
+                "patch_available": True,
+                "context_hash": "c" * 40,
+                "context_hash_source": "blob",
+            },
+        ]
+        start = self.begin(pr=14, changed_files=changed_files)
+        run_id = int(start["run_id"])
+        pull = self.pull_with_repositories()
+
+        with patch.object(tools, "_pr", return_value=pull):
+            first = self.call(
+                tools.pr_files,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 14,
+                    "run_id": run_id,
+                    "limit": 2,
+                },
+            )
+            second = self.call(
+                tools.pr_files,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 14,
+                    "run_id": run_id,
+                    "limit": 2,
+                    "cursor": first["next_cursor"],
+                },
+            )
+            backend = self.call(
+                tools.pr_files,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 14,
+                    "run_id": run_id,
+                    "domain": "backend",
+                },
+            )
+
+        self.assertEqual(first["total_matching"], 3)
+        self.assertEqual([item["path"] for item in first["items"]], [".github/workflows/ci.yml", "backend/api.py"])
+        self.assertEqual(first["next_cursor"], "backend/api.py")
+        self.assertEqual([item["path"] for item in second["items"]], ["frontend/app.ts"])
+        self.assertIsNone(second["next_cursor"])
+        self.assertEqual(backend["total_matching"], 1)
+        self.assertEqual(backend["items"][0]["path"], "backend/api.py")
+
+    def test_pr_files_rejects_run_owned_by_another_pr_before_network(self):
+        start = self.begin(pr=14)
+        run_id = int(start["run_id"])
+
+        with patch.object(tools, "_pr", side_effect=AssertionError("unexpected network")):
+            result = self.call(
+                tools.pr_files,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 15,
+                    "run_id": run_id,
+                },
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("active review run", result["error"])
+
+    def test_pr_files_rejects_invalid_cursor_cleanly(self):
+        start = self.begin(pr=15)
+        run_id = int(start["run_id"])
+        pull = self.pull_with_repositories()
+
+        with patch.object(tools, "_pr", return_value=pull):
+            result = self.call(
+                tools.pr_files,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 15,
+                    "run_id": run_id,
+                    "cursor": "../backend/api.py",
+                },
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("traversal", result["error"])
 
     def test_duplicate_start_does_not_create_second_same_pr_run(self):
         a = self.begin(pr=7, head_sha="a" * 40)
@@ -327,7 +465,11 @@ class RunToolTests(unittest.TestCase):
                 },
             )
         run_id = int(overview["run_id"])
-        self.assertEqual(overview["files"][0]["path"], "backend/api.py")
+        self.assertNotIn("files", overview)
+        self.assertEqual(
+            overview["file_index"]["sample_paths"][0]["path"],
+            "backend/api.py",
+        )
 
         with closing(memory_db.connect()) as connection:
             summary = memory_db.coverage_summary(connection, run_id=run_id)

@@ -160,6 +160,7 @@ class ToolValidationTests(unittest.TestCase):
             {
                 "eneo_review_begin",
                 "eneo_pr_diff",
+                "eneo_pr_files",
                 "eneo_pr_file",
                 "eneo_review_memory_context",
                 "eneo_review_memory_record",

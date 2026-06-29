@@ -47,6 +47,41 @@ class CoverageSummary(TypedDict):
     truncated_paths: list[str]
 
 
+class RunFileItem(TypedDict):
+    path: str
+    change_status: str
+    domain: str
+    review_mode: str
+    diff_state: DiffState
+    is_changed_path: bool
+
+
+class RunFilePage(TypedDict):
+    run_id: int
+    repository: str
+    pr_number: int
+    limit: int
+    next_cursor: str | None
+    total_matching: int
+    items: list[RunFileItem]
+
+
+class FileIndexSummary(TypedDict):
+    changed_files_reported: int | None
+    changed_files_registered: int
+    changed_file_registration_complete: bool
+    by_domain: dict[str, int]
+    by_review_mode: dict[str, int]
+    by_change_status: dict[str, int]
+    sample_paths: list[RunFileItem]
+
+
+class RunRegistration(TypedDict):
+    changed_files_reported: int | None
+    changed_files_registered: int
+    changed_file_registration_complete: bool
+
+
 def _positive_run_id(value: int) -> int:
     if isinstance(value, bool):
         raise ReviewMemoryError("run_id must be a positive integer")
@@ -63,6 +98,8 @@ def _validate_run(
     repository: str,
     pr_number: int,
 ) -> None:
+    # Keep this guard at the memory boundary too; tool adapters are not the only
+    # callers of coverage reads/writes.
     row = connection.execute(
         """
         SELECT repository, pr_number, status
@@ -81,7 +118,7 @@ def _validate_run(
 
 def _run_registration(
     connection: sqlite3.Connection, run_id: int
-) -> dict[str, int | bool | None]:
+) -> RunRegistration:
     row = connection.execute(
         """
         SELECT changed_files_reported, changed_files_registered,
@@ -239,6 +276,131 @@ def register_changed_files(
         )
 
 
+def _counter(
+    connection: sqlite3.Connection, run_id: int, column: str
+) -> dict[str, int]:
+    if column not in {"domain", "review_mode", "change_status"}:
+        raise ReviewMemoryError("unsupported file-index counter")
+    rows = connection.execute(
+        f"""
+        SELECT {column} AS value, COUNT(*) AS count
+        FROM review_run_files
+        WHERE run_id = ? AND is_changed_path = 1
+        GROUP BY {column}
+        ORDER BY count DESC, value ASC
+        """,
+        (run_id,),
+    )
+    return {str(row["value"] or ""): int(row["count"]) for row in rows}
+
+
+def _file_item(row: sqlite3.Row) -> RunFileItem:
+    return {
+        "path": str(row["path"]),
+        "change_status": str(row["change_status"] or ""),
+        "domain": str(row["domain"] or ""),
+        "review_mode": str(row["review_mode"] or "normal"),
+        "diff_state": cast(DiffState, str(row["diff_state"] or "unseen")),
+        "is_changed_path": bool(row["is_changed_path"]),
+    }
+
+
+def file_index_summary(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    sample_limit: int = 40,
+) -> FileIndexSummary:
+    run_id = _positive_run_id(run_id)
+    limit = max(0, min(int(sample_limit), 80))
+    registration = _run_registration(connection, run_id)
+    rows = connection.execute(
+        """
+        SELECT path, change_status, is_changed_path, domain, review_mode, diff_state
+        FROM review_run_files
+        WHERE run_id = ? AND is_changed_path = 1
+        ORDER BY path
+        LIMIT ?
+        """,
+        (run_id, limit),
+    )
+    return {
+        "changed_files_reported": registration["changed_files_reported"],
+        "changed_files_registered": registration["changed_files_registered"],
+        "changed_file_registration_complete": registration[
+            "changed_file_registration_complete"
+        ],
+        "by_domain": _counter(connection, run_id, "domain"),
+        "by_review_mode": _counter(connection, run_id, "review_mode"),
+        "by_change_status": _counter(connection, run_id, "change_status"),
+        "sample_paths": [_file_item(row) for row in rows],
+    }
+
+
+def list_run_files(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    repository: str,
+    pr_number: int,
+    limit: int = 100,
+    cursor: str = "",
+    domain: str = "",
+    review_mode: str = "",
+    changed_only: bool = True,
+) -> RunFilePage:
+    run_id = _positive_run_id(run_id)
+    repository = normalize_repository(repository)
+    pr_number = int(pr_number)
+    _validate_run(connection, run_id=run_id, repository=repository, pr_number=pr_number)
+    page_size = max(1, min(int(limit), 200))
+    cursor_path = normalize_path(cursor) if cursor else ""
+    clauses = ["run_id = ?", "repository = ?", "pr_number = ?"]
+    params: list[object] = [run_id, repository, pr_number]
+    if changed_only:
+        clauses.append("is_changed_path = 1")
+    if domain:
+        clauses.append("domain = ?")
+        params.append(str(domain)[:80])
+    if review_mode:
+        clauses.append("review_mode = ?")
+        params.append(str(review_mode)[:80])
+    if cursor_path:
+        clauses.append("path > ?")
+        params.append(cursor_path)
+    where = " AND ".join(clauses)
+    total_clauses = [clause for clause in clauses if clause != "path > ?"]
+    total_params = params[:-1] if cursor_path else params
+    total = connection.execute(
+        f"SELECT COUNT(*) AS count FROM review_run_files WHERE {' AND '.join(total_clauses)}",
+        tuple(total_params),
+    ).fetchone()
+    rows = [
+        _file_item(row)
+        for row in connection.execute(
+            f"""
+            SELECT path, change_status, is_changed_path, domain, review_mode, diff_state
+            FROM review_run_files
+            WHERE {where}
+            ORDER BY path
+            LIMIT ?
+            """,
+            (*params, page_size + 1),
+        )
+    ]
+    has_next = len(rows) > page_size
+    items = rows[:page_size]
+    return {
+        "run_id": run_id,
+        "repository": repository,
+        "pr_number": pr_number,
+        "limit": page_size,
+        "next_cursor": items[-1]["path"] if has_next and items else None,
+        "total_matching": int(total["count"] if total else 0),
+        "items": items,
+    }
+
+
 def record_diff_exposure(
     connection: sqlite3.Connection,
     *,
@@ -393,15 +555,11 @@ def coverage_summary(
             "changed_paths_with_diff": 0,
             "changed_paths_with_source_reads": 0,
             "supporting_context_paths_read": 0,
-            "changed_files_reported": cast(
-                int | None, registration["changed_files_reported"]
-            ),
-            "changed_files_registered": int(
-                registration["changed_files_registered"] or 0
-            ),
-            "changed_file_registration_complete": bool(
-                registration["changed_file_registration_complete"]
-            ),
+            "changed_files_reported": registration["changed_files_reported"],
+            "changed_files_registered": registration["changed_files_registered"],
+            "changed_file_registration_complete": registration[
+                "changed_file_registration_complete"
+            ],
             "unavailable": 0,
             "diff_truncated": 0,
             "coverage_hash": "sha256:" + hashlib.sha256(b"[]").hexdigest(),
@@ -448,9 +606,9 @@ def coverage_summary(
         for row in changed_rows
         if str(row.get("diff_state") or "") == "truncated"
     ]
-    registered = int(registration["changed_files_registered"] or 0)
-    reported = cast(int | None, registration["changed_files_reported"])
-    registration_complete = bool(registration["changed_file_registration_complete"])
+    registered = registration["changed_files_registered"]
+    reported = registration["changed_files_reported"]
+    registration_complete = registration["changed_file_registration_complete"]
     expected_changed_paths = registered
     state: CoverageState = (
         "complete"

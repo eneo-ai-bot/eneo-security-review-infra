@@ -36,6 +36,12 @@ def register(ctx: ToolRegistry) -> None:
         handler=getattr(tools, "pr_diff"),
     )
     ctx.register_tool(
+        name="eneo_pr_files",
+        toolset="eneo_review",
+        schema=getattr(schemas, "ENEO_PR_FILES"),
+        handler=getattr(tools, "pr_files"),
+    )
+    ctx.register_tool(
         name="eneo_pr_file",
         toolset="eneo_review",
         schema=getattr(schemas, "ENEO_PR_FILE"),

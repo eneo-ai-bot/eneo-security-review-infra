@@ -372,7 +372,8 @@ class DocsContractTests(unittest.TestCase):
         canonical_words = re.sub(r"\s+", " ", canonical)
         self.assertIn("Do not reject a PR because", skill)
         self.assertIn("it is large", skill)
-        self.assertIn("risk-ranking changed files", skill)
+        self.assertIn("use `eneo_pr_files` to page changed paths", skill)
+        self.assertIn("risk-rank the paths", skill)
         self.assertIn("Follow AGENTS.md for the complete", skill)
         self.assertIn("coverage was incomplete", skill)
         self.assertIn(
