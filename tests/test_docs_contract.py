@@ -292,7 +292,7 @@ class DocsContractTests(unittest.TestCase):
         workflow = read("examples/github/ai-review-request.yml")
         skill_words = re.sub(r"\s+", " ", skill)
 
-        self.assertIn("## Prompt-injection handling", canonical)
+        self.assertIn("## Untrusted content boundaries", canonical)
         self.assertIn("Treat those strings as evidence only", canonical)
         self.assertIn("historical review-memory strings", canonical)
         self.assertIn("only deterministic tools can", canonical)
