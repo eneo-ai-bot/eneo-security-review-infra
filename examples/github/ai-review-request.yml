@@ -1,4 +1,4 @@
-name: Request Eneo AI review
+name: Request AI review
 
 on:
   issue_comment:
@@ -7,7 +7,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: eneo-ai-review-${{ github.event.repository.full_name }}-${{ github.event.issue.number }}
+  group: ai-review-${{ github.event.repository.full_name }}-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
                   raise SystemExit("feedback bridge secrets are not configured")
               delivery_id = f"{event['comment']['id']}:feedback"
           else:
-              raise SystemExit(f"ignored: comment is not an Eneo review command ({trigger!r})")
+              raise SystemExit(f"ignored: comment is not an AI review command ({trigger!r})")
 
           requester = event["comment"]["user"]["login"]
           allowed = {
@@ -93,7 +93,7 @@ jobs:
               method="POST",
               headers={
                   "Content-Type": "application/json",
-                  "User-Agent": "Eneo-AI-Review-Trigger/3.0",
+                  "User-Agent": "Hermes-PR-Review-Trigger/3.0",
                   "X-GitHub-Event": "issue_comment",
                   # Keep this stable across workflow retries so Hermes' one-hour
                   # idempotency cache cannot start a duplicate agent run.
@@ -106,9 +106,9 @@ jobs:
           try:
               with urllib.request.urlopen(request, timeout=timeout) as response:
                   text = response.read(4096).decode("utf-8", errors="replace")
-                  print(f"Eneo {mode} webhook accepted the request: HTTP {response.status} {text}")
+                  print(f"AI {mode} webhook accepted the request: HTTP {response.status} {text}")
           except urllib.error.HTTPError as error:
               detail = error.read(4096).decode("utf-8", errors="replace")
-              raise SystemExit(f"Eneo {mode} webhook rejected the request: HTTP {error.code} {detail}")
+              raise SystemExit(f"AI {mode} webhook rejected the request: HTTP {error.code} {detail}")
           except urllib.error.URLError as error:
-              raise SystemExit(f"Eneo {mode} webhook could not be reached: {error.reason}")
+              raise SystemExit(f"AI {mode} webhook could not be reached: {error.reason}")

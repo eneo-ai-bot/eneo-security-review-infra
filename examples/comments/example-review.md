@@ -1,4 +1,4 @@
-## Eneo AI code & security review
+## AI code & security review
 
 There are 2 current findings: 1 High (P1) and 1 Medium (P2).
 

@@ -290,7 +290,7 @@ class GitHubApiClient:
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
-                "User-Agent": "Eneo-Review-Feedback-Bridge/1.0",
+                "User-Agent": "Hermes-PR-Review-Feedback-Bridge/1.0",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )

@@ -83,6 +83,7 @@ PublicationStatus = Literal[
     "stale",
 ]
 READY_TO_POST: frozenset[str] = frozenset({"generated", "publish_failed"})
+PUBLICATION_MARKER_PREFIX = "eneo-review:canonical publication="
 
 
 class PriorFindingVerdict(TypedDict):
@@ -232,14 +233,30 @@ def _publication_key(
 def _with_publication_marker_blocks(
     blocks: Sequence[ReviewBlock], publication_key: str
 ) -> tuple[ReviewBlock, ...]:
-    marker = f"<!-- eneo-review:canonical publication={publication_key} -->"
+    marker = publication_marker_html(publication_key)
     if any(marker in block.markdown for block in blocks):
         return tuple(blocks)
     return (*blocks, ReviewBlock(kind="metadata", markdown=marker))
 
 
 def publication_marker(publication_key: str) -> str:
-    return f"eneo-review:canonical publication={publication_key}"
+    return f"{PUBLICATION_MARKER_PREFIX}{publication_key}"
+
+
+def publication_marker_html(publication_key: str) -> str:
+    return f"<!-- {publication_marker(publication_key)} -->"
+
+
+def extract_publication_key(body: str) -> str | None:
+    token_index = body.find(PUBLICATION_MARKER_PREFIX)
+    if token_index < 0:
+        return None
+    remainder = body[token_index + len(PUBLICATION_MARKER_PREFIX) :]
+    parts = remainder.split()
+    if not parts:
+        return None
+    key = parts[0].rstrip(" -\"'>")
+    return key if key.startswith("sha256:") else None
 
 
 def _publication_comment_ids(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotently install the Eneo review profile into HERMES_HOME."""
+"""Idempotently install the managed review profile into HERMES_HOME."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def main() -> int:
             )
             return result.returncode
 
-    print(f"Installed Eneo reviewer into {HERMES_HOME}")
+    print(f"Installed review profile into {HERMES_HOME}")
     print("Next: run `hermes model`, choose OpenAI Codex, then restart the gateway.")
     return 0
 

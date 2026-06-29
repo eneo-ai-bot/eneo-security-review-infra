@@ -159,7 +159,7 @@ shorten the review by omitting a surviving finding.
 - Keep each finding compact. Spend words on evidence and the fix, never on
   padding.
 - Start with the configured review title, currently
-  `## Eneo AI code & security review`, and one natural-language summary sentence
+  `## AI code & security review`, and one natural-language summary sentence
   that names the non-zero severity counts, for example `There are 2 current
   findings: 1 High (P1) and 1 Medium (P2).`
 - Do not include a top-level per-finding table. Long paths and memory
