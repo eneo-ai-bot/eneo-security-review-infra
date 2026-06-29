@@ -443,12 +443,16 @@ def print_runs(memory_db: MemoryDbModule, runs: Sequence[JsonObject]) -> None:
         phase = run.get("phase") or "-"
         heartbeat = run.get("last_heartbeat_at") or "-"
         failure = run.get("failure_code") or "-"
+        detail = run.get("failure_detail") or ""
         print(
             f"#{run['id']:<5} {status:8} {run['repository']}#{run['pr_number']}  "
             f"findings={findings}  started={run['started_at']}  "
             f"completed={run['completed_at'] or '-'}"
         )
-        print(f"       phase={phase}  heartbeat={heartbeat}  failure={failure}")
+        line = f"       phase={phase}  heartbeat={heartbeat}  failure={failure}"
+        if detail:
+            line += f"  detail={detail}"
+        print(line)
 
 
 def print_mark_stalled_result(result: JsonObject) -> None:
@@ -627,6 +631,11 @@ def main() -> int:
         ),
     )
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
+    runs_parser.add_argument(
+        "--failed",
+        action="store_true",
+        help="List only runs that failed (with their failure code/detail).",
+    )
     runs_parser.add_argument("--json", action="store_true")
 
     publications_parser = sub.add_parser(
@@ -1017,6 +1026,8 @@ def main() -> int:
                     print_run_stats(run_metrics)
             else:
                 runs = memory_db.list_runs(connection, repository=args.repo, limit=args.limit)
+                if args.failed:
+                    runs = [run for run in runs if run.get("status") == "failed"]
                 if args.json:
                     print(memory_db.json_dumps(runs))
                 else:

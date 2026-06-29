@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Literal, cast
 
-from . import changed_files, diff_render, memory_db, review_publisher
+from . import changed_files, diff_render, failure_codes, memory_db, review_publisher
 
 _API_ROOT = "https://api.github.com"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -995,7 +995,7 @@ def _mark_run_failed(
     pr_number: int,
     run_id: int,
     findings_count: int | None = None,
-    failure_code: str = "review_failed",
+    failure_code: str = failure_codes.REVIEW_FAILED,
 ) -> None:
     try:
         with closing(memory_db.connect_existing()) as connection:
@@ -1122,12 +1122,12 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                 repository=repository,
                 pr_number=number,
                 run_id=run_id,
-                failure_code="review_deliver_error",
+                failure_code=failure_codes.REVIEW_DELIVER_ERROR,
             )
             _publish_failure_status_safe(
                 run_id=run_id,
                 reason="the review failed during delivery",
-                failure_code="review_deliver_error",
+                failure_code=failure_codes.REVIEW_DELIVER_ERROR,
             )
         return _error(str(exc))
     except Exception:
@@ -1136,11 +1136,11 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                 repository=repository,
                 pr_number=number,
                 run_id=run_id,
-                failure_code="unexpected_review_deliver_failure",
+                failure_code=failure_codes.UNEXPECTED_REVIEW_DELIVER_FAILURE,
             )
             _publish_failure_status_safe(
                 run_id=run_id,
                 reason="the review failed unexpectedly during delivery",
-                failure_code="unexpected_review_deliver_failure",
+                failure_code=failure_codes.UNEXPECTED_REVIEW_DELIVER_FAILURE,
             )
         return _error("unexpected review-deliver failure")

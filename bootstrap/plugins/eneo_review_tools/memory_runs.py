@@ -316,7 +316,7 @@ def mark_stale_runs_failed(
     for row in rows:
         row["status"] = "failed"
         row["phase"] = "failed"
-        row["failure_code"] = "stale_timeout"
+        row["failure_code"] = "stale_timeout"  # canonical: failure_codes.STALE_TIMEOUT
         row["last_heartbeat_at"] = completed
         row["completed_at"] = completed
     return {
