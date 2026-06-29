@@ -1029,7 +1029,7 @@ def _failure_status_body(
     run_id: int, head_sha: str, reason: str, failure_code: str
 ) -> str:
     return (
-        "## Eneo AI code & security review — could not be completed\n\n"
+        f"## {REVIEW_COMMENT_TITLE} — could not be completed\n\n"
         "This automated review did not finish, so no findings were published.\n\n"
         f"- Reason: {reason}\n"
         f"- Status code: `{failure_code}`\n\n"
