@@ -119,6 +119,12 @@ class MemoryDbModule(Protocol):
         *,
         run_id: int | None,
     ) -> dict[str, object] | None: ...
+    def verification_export_source(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        review_run_id: int,
+    ) -> Mapping[str, object]: ...
     def mark_stale_runs_failed(
         self,
         connection: sqlite3.Connection,
@@ -128,6 +134,13 @@ class MemoryDbModule(Protocol):
         pr_number: int | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]: ...
+    def failed_runs_needing_status(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        repository: str | None = None,
+        pr_number: int | None = None,
+    ) -> list[dict[str, object]]: ...
     def run_is_stale(self, run: Mapping[str, object]) -> bool: ...
     def record_coach_run(
         self, connection: sqlite3.Connection, item: MemoryCoachRunInput
@@ -172,6 +185,16 @@ class CoachProposalsModule(Protocol):
 
 class ReplayModule(Protocol):
     def validate_replay_path(self, path: Path) -> tuple[ReplayValidationResult, ...]: ...
+
+
+class VerificationModule(Protocol):
+    def build_verification_export(
+        self,
+        source: Mapping[str, object],
+        *,
+        coverage: Mapping[str, object] | None,
+    ) -> dict[str, object]: ...
+    def dumps_verification_export(self, payload: Mapping[str, object]) -> str: ...
 
 
 def _import_module(name: str) -> ModuleType:
@@ -244,6 +267,84 @@ def load_memory_module() -> MemoryDbModule:
     raise SystemExit("Could not locate the eneo_review_tools plugin")
 
 
+class ReviewPublisherModule(Protocol):
+    def publish_run_failure_status(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: int,
+        reason: str,
+        failure_code: str,
+        github: object | None = None,
+    ) -> dict[str, object]: ...
+
+
+def load_review_publisher() -> ReviewPublisherModule:
+    try:
+        return cast(ReviewPublisherModule, _import_module("review_publisher"))
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo review publisher module") from exc
+
+
+_FAILURE_REASONS = {
+    "stale_timeout": "the review run stopped responding and was marked stale",
+    "github_diff_406": (
+        "GitHub could not render this pull request's diff (it is very large)"
+    ),
+    "review_deliver_error": "the review failed during delivery",
+}
+
+
+def _failure_reason(failure_code: str) -> str:
+    return _FAILURE_REASONS.get(
+        failure_code, "the review did not complete; see operator logs"
+    )
+
+
+def reap_and_publish(
+    connection: sqlite3.Connection,
+    memory_db: MemoryDbModule,
+    publisher: ReviewPublisherModule,
+    *,
+    repository: str | None = None,
+    pr_number: int | None = None,
+    older_than_minutes: int = 30,
+    github: object | None = None,
+) -> dict[str, object]:
+    """Mark stale runs failed, then post a deterministic failure-status comment for every
+    failed run lacking one. Orchestration lives in the CLI, never in the memory layer."""
+    marked = memory_db.mark_stale_runs_failed(
+        connection,
+        repository=repository,
+        pr_number=pr_number,
+        older_than_minutes=older_than_minutes,
+    )
+    targets = memory_db.failed_runs_needing_status(
+        connection, repository=repository, pr_number=pr_number
+    )
+    posted = 0
+    failures: list[dict[str, object]] = []
+    for run in targets:
+        run_id = int(cast(int, run["id"]))
+        code = str(run.get("failure_code") or "review_failed")
+        try:
+            publisher.publish_run_failure_status(
+                connection,
+                run_id=run_id,
+                reason=_failure_reason(code),
+                failure_code=code,
+                github=github,
+            )
+            posted += 1
+        except Exception as exc:  # noqa: BLE001 - one bad post must not hide the rest.
+            failures.append({"run_id": run_id, "error": str(exc)})
+    return {
+        "marked_failed": int(cast(int, marked["failed_count"])),
+        "status_posted": posted,
+        "status_failed": failures,
+    }
+
+
 def load_learning_module() -> LearningModule:
     try:
         return cast(LearningModule, _import_module("eneo_review_learning"))
@@ -270,6 +371,13 @@ def load_replay_module() -> ReplayModule:
         return cast(ReplayModule, _import_module("eneo_review_replay"))
     except ModuleNotFoundError as exc:
         raise SystemExit("Could not locate the Eneo replay validator module") from exc
+
+
+def load_verification_module() -> VerificationModule:
+    try:
+        return cast(VerificationModule, _import_module("eneo_review_verification"))
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Could not locate the Eneo verification export module") from exc
 
 
 def _nested(row: JsonObject, key: str) -> JsonObject:
@@ -335,12 +443,16 @@ def print_runs(memory_db: MemoryDbModule, runs: Sequence[JsonObject]) -> None:
         phase = run.get("phase") or "-"
         heartbeat = run.get("last_heartbeat_at") or "-"
         failure = run.get("failure_code") or "-"
+        detail = run.get("failure_detail") or ""
         print(
             f"#{run['id']:<5} {status:8} {run['repository']}#{run['pr_number']}  "
             f"findings={findings}  started={run['started_at']}  "
             f"completed={run['completed_at'] or '-'}"
         )
-        print(f"       phase={phase}  heartbeat={heartbeat}  failure={failure}")
+        line = f"       phase={phase}  heartbeat={heartbeat}  failure={failure}"
+        if detail:
+            line += f"  detail={detail}"
+        print(line)
 
 
 def print_mark_stalled_result(result: JsonObject) -> None:
@@ -376,6 +488,14 @@ def print_publications(publications: Sequence[JsonObject]) -> None:
             f"posted={item.get('posted_at') or '-'}  "
             f"failed={item.get('publish_failed_at') or '-'}"
         )
+        verification_status = item.get("verification_status") or "-"
+        if verification_status != "-":
+            print(
+                f"       verification={verification_status}  "
+                f"mode={item.get('verification_mode') or '-'}  "
+                f"provider={item.get('verification_provider') or '-'}  "
+                f"failure={item.get('verification_failure_code') or '-'}"
+            )
 
 
 def print_coverage(summary: JsonObject | None) -> None:
@@ -502,7 +622,20 @@ def main() -> int:
         default=30,
         help="Age threshold for --mark-stalled. Default: 30.",
     )
+    runs_parser.add_argument(
+        "--publish-failure-status",
+        action="store_true",
+        help=(
+            "Mark stale runs failed, then post a deterministic failure-status comment "
+            "for every failed run lacking one. Exits non-zero if any post fails."
+        ),
+    )
     runs_parser.add_argument("--days", type=int, default=30, help="Window in days for --stats.")
+    runs_parser.add_argument(
+        "--failed",
+        action="store_true",
+        help="List only runs that failed (with their failure code/detail).",
+    )
     runs_parser.add_argument("--json", action="store_true")
 
     publications_parser = sub.add_parser(
@@ -524,6 +657,13 @@ def main() -> int:
     )
     coverage_parser.add_argument("--run-id", type=int, required=True)
     coverage_parser.add_argument("--json", action="store_true")
+
+    verification_parser = sub.add_parser(
+        "verification-export",
+        help="Generate a bounded private verification bundle for one completed review run.",
+    )
+    verification_parser.add_argument("--run-id", type=int, required=True)
+    verification_parser.add_argument("--output", required=True, help="Write JSON to this file.")
 
     learning_parser = sub.add_parser(
         "learning-report",
@@ -830,6 +970,36 @@ def main() -> int:
             return 0
 
         if args.command == "runs":
+            if args.publish_failure_status:
+                if args.stats:
+                    raise SystemExit(
+                        "--publish-failure-status cannot be combined with --stats"
+                    )
+                if args.pr is not None and not args.repo:
+                    raise SystemExit("--pr requires --repo")
+                publisher = load_review_publisher()
+                try:
+                    summary = reap_and_publish(
+                        connection,
+                        memory_db,
+                        publisher,
+                        repository=args.repo,
+                        pr_number=args.pr,
+                        older_than_minutes=args.older_than_minutes,
+                    )
+                except memory_db.ReviewMemoryError as exc:
+                    raise SystemExit(str(exc)) from exc
+                if args.json:
+                    print(memory_db.json_dumps(summary))
+                else:
+                    failed = cast(Sequence[object], summary["status_failed"])
+                    print(
+                        f"marked_failed={summary['marked_failed']} "
+                        f"status_posted={summary['status_posted']} "
+                        f"status_failed={len(failed)}"
+                    )
+                # Watcher-of-the-watcher: a failed post must surface to the operator.
+                return 1 if summary["status_failed"] else 0
             if args.mark_stalled:
                 if args.stats:
                     raise SystemExit("--mark-stalled cannot be combined with --stats")
@@ -856,6 +1026,8 @@ def main() -> int:
                     print_run_stats(run_metrics)
             else:
                 runs = memory_db.list_runs(connection, repository=args.repo, limit=args.limit)
+                if args.failed:
+                    runs = [run for run in runs if run.get("status") == "failed"]
                 if args.json:
                     print(memory_db.json_dumps(runs))
                 else:
@@ -886,6 +1058,27 @@ def main() -> int:
                 print(memory_db.json_dumps(summary or {}))
             else:
                 print_coverage(summary)
+            return 0
+
+        if args.command == "verification-export":
+            verification = load_verification_module()
+            try:
+                source = memory_db.verification_export_source(
+                    connection,
+                    review_run_id=args.run_id,
+                )
+                payload = verification.build_verification_export(
+                    source,
+                    coverage=memory_db.coverage_summary(connection, run_id=args.run_id),
+                )
+            except (ValueError, memory_db.ReviewMemoryError) as exc:
+                raise SystemExit(str(exc)) from exc
+            destination = Path(args.output)
+            write_private_file(
+                destination,
+                verification.dumps_verification_export(payload),
+            )
+            print(destination)
             return 0
 
     return 1

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from typing import Final, cast
 
 from eneo_review_export import optional_int, optional_string, rows, schema_version
 from eneo_review_learning import LearningSignal, build_learning_report
+from eneo_review_private_export import (
+    bounded_text,
+    dumps_private_json,
+    stable_json_hash,
+)
 
 
 COACH_SCHEMA_VERSION: Final = 1
@@ -67,7 +70,7 @@ def build_coach_export(
     payload: dict[str, object] = {
         "schema_version": COACH_SCHEMA_VERSION,
         "source_schema_version": source_schema_version,
-        "repository_untrusted": _bounded_text(repository or "", MAX_SHORT_TEXT),
+        "repository_untrusted": bounded_text(repository or "", MAX_SHORT_TEXT),
         "source_exported_at": optional_string(state, "exported_at"),
         "cursor": cursor,
         "events": events,
@@ -77,12 +80,12 @@ def build_coach_export(
         ],
     }
     event_set_id = _event_set_id(payload)
-    snapshot_id = _snapshot_id(payload)
+    snapshot_id = stable_json_hash(payload)
     return {"snapshot_id": snapshot_id, "event_set_id": event_set_id, **payload}
 
 
 def dumps_coach_export(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    return dumps_private_json(payload)
 
 
 def _signal_event(group: str, signal: LearningSignal) -> dict[str, object]:
@@ -94,9 +97,9 @@ def _signal_event(group: str, signal: LearningSignal) -> dict[str, object]:
         "suggested_route": signal.suggested_route,
         "promotion_eligible": signal.promotion_eligible,
         "missing_evidence": list(signal.missing_evidence),
-        "human_reason_untrusted": _bounded_text(signal.reason, MAX_UNTRUSTED_TEXT),
-        "reviewer_title_untrusted": _bounded_text(signal.title, MAX_SHORT_TEXT),
-        "next_step_untrusted": _bounded_text(signal.next_step, MAX_UNTRUSTED_TEXT),
+        "human_reason_untrusted": bounded_text(signal.reason, MAX_UNTRUSTED_TEXT),
+        "reviewer_title_untrusted": bounded_text(signal.title, MAX_SHORT_TEXT),
+        "next_step_untrusted": bounded_text(signal.next_step, MAX_UNTRUSTED_TEXT),
         "related_event_ids": list(signal.related_event_ids),
         "related_event_ids_total": len(signal.related_event_ids),
     }
@@ -107,7 +110,7 @@ def _signal_event(group: str, signal: LearningSignal) -> dict[str, object]:
         event["related_event_ids"] = list(signal.related_event_ids[-MAX_DECISION_CHAIN:])
     if signal.provenance is not None:
         event["source"] = {
-            "repository_untrusted": _bounded_text(
+            "repository_untrusted": bounded_text(
                 signal.provenance.repository, MAX_SHORT_TEXT
             ),
             "pr_number": signal.provenance.pr_number,
@@ -115,23 +118,16 @@ def _signal_event(group: str, signal: LearningSignal) -> dict[str, object]:
             "fingerprint": signal.provenance.fingerprint,
             "observation_id": signal.provenance.observation_id,
             "local_reference": signal.provenance.local_reference,
-            "path_untrusted": _bounded_text(signal.provenance.path, MAX_SHORT_TEXT),
+            "path_untrusted": bounded_text(signal.provenance.path, MAX_SHORT_TEXT),
         }
     else:
         event["source"] = {
-            "repository_untrusted": _bounded_text(signal.repository, MAX_SHORT_TEXT),
+            "repository_untrusted": bounded_text(signal.repository, MAX_SHORT_TEXT),
             "pr_number": signal.pr_number,
             "local_reference": signal.local_reference,
             "fingerprint": signal.fingerprint,
         }
     return event
-
-
-def _bounded_text(value: str, maximum: int) -> str:
-    normalized = " ".join(value.split())
-    if len(normalized) <= maximum:
-        return normalized
-    return normalized[: maximum - 3].rstrip() + "..."
 
 
 def _source_numeric_id(signal: LearningSignal) -> int | None:
@@ -150,12 +146,6 @@ def _max_row_id(state: Mapping[str, object], key: str) -> int:
     return value
 
 
-def _snapshot_id(payload: Mapping[str, object]) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
 def _event_set_id(payload: Mapping[str, object]) -> str:
     cursor = payload.get("cursor")
     cursor_identity: object = None
@@ -172,6 +162,4 @@ def _event_set_id(payload: Mapping[str, object]) -> str:
         "cursor": cursor_identity,
         "events": payload.get("events"),
     }
-    canonical = json.dumps(stable_payload, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
+    return stable_json_hash(stable_payload)

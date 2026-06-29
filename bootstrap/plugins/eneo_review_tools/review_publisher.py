@@ -14,8 +14,8 @@ import urllib.request
 from typing import Any, Literal, Protocol, cast
 
 try:
-    from . import memory_publications
-    from .memory_validation import ReviewMemoryError
+    from . import memory_publications, memory_runs
+    from .memory_validation import ReviewMemoryError, isoformat, utc_now
     from .review_renderer import (
         ReviewBlock,
         review_blocks_from_json,
@@ -24,7 +24,8 @@ try:
     from .review_identity import CONTINUATION_LEAD, REVIEW_COMMENT_TITLE
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     import memory_publications  # type: ignore[no-redef]
-    from memory_validation import ReviewMemoryError
+    import memory_runs  # type: ignore[no-redef]
+    from memory_validation import ReviewMemoryError, isoformat, utc_now
     from review_renderer import (  # type: ignore[no-redef]
         ReviewBlock,
         review_blocks_from_json,
@@ -74,7 +75,7 @@ class GitHubPublicationGateway(Protocol):
     def get_pull_request(self, repository: str, pr_number: int) -> PullRequestState: ...
 
     def list_issue_comments(
-        self, repository: str, issue_number: int
+        self, repository: str, issue_number: int, *, max_pages: int = 3
     ) -> list[IssueComment]: ...
 
     def update_issue_comment(
@@ -254,10 +255,10 @@ class GitHubIssueCommentGateway:
         return self._current_user_login
 
     def list_issue_comments(
-        self, repository: str, issue_number: int
+        self, repository: str, issue_number: int, *, max_pages: int = 3
     ) -> list[IssueComment]:
         comments: list[IssueComment] = []
-        for page in range(1, 4):
+        for page in range(1, max_pages + 1):
             page_items = _json_list(
                 self._request_json(
                     "GET",
@@ -901,6 +902,9 @@ def publish_review(
                 comment_id=comment_ids[0],
                 comment_ids=comment_ids,
             )
+            _cleanup_prior_failure_status(
+                connection, github, publication["repository"], publication["pr_number"]
+            )
             return {
                 "published": True,
                 "publication_id": publication_id,
@@ -933,6 +937,9 @@ def publish_review(
             superseding_publication_id=publication_id,
             max_comment_bytes=budget,
         )
+        _cleanup_prior_failure_status(
+            connection, github, publication["repository"], publication["pr_number"]
+        )
         result: dict[str, object] = {
             "published": True,
             "publication_id": publication_id,
@@ -958,3 +965,145 @@ def publish_review(
             "delivery_status": "publish_failed",
             "failure_code": exc.code,
         }
+
+
+def _cleanup_prior_failure_status(
+    connection: sqlite3.Connection,
+    github: GitHubPublicationGateway,
+    repository: str,
+    pr_number: int,
+) -> None:
+    """Remove any failure-status comments once a real review has posted for this PR.
+
+    Stored-comment-id first; a comment that is already gone is tolerated (the stored id
+    is cleared regardless so it is not retried). A deep marker scan then removes any
+    failure-status comments that were posted but never had their id durably stored (e.g.
+    a pre-migration/degraded post), which the stored-id sweep cannot see."""
+    deleted: set[int] = set()
+    for entry in memory_runs.failure_status_comments_for_pr(
+        connection, repository, pr_number
+    ):
+        comment_id = int(entry["comment_id"])
+        try:
+            github.delete_issue_comment(repository, comment_id)
+        except GitHubPublicationError:
+            pass
+        deleted.add(comment_id)
+        memory_runs.clear_failure_status_comment(connection, entry["run_id"])
+    for comment in _my_failure_status_comments(github, repository, pr_number):
+        if comment.comment_id in deleted:
+            continue
+        try:
+            github.delete_issue_comment(repository, comment.comment_id)
+        except GitHubPublicationError:
+            pass
+        deleted.add(comment.comment_id)
+
+
+_FAILURE_STATUS_TOKEN = "eneo-review:failure-status"
+# The failure-status fallback (no stored comment id) must find a recent comment even on
+# very noisy PRs. GitHub returns issue comments oldest-first, so a recently posted
+# failure-status comment can sit far beyond the default 300-comment window; scan deeper
+# (bounded) on this rare fallback path so we never duplicate or orphan one.
+_FAILURE_STATUS_SCAN_PAGES = 50
+
+
+def _failure_status_marker(run_id: int, head_sha: str) -> str:
+    return f"<!-- {_FAILURE_STATUS_TOKEN} run={run_id} head={head_sha} -->"
+
+
+def _my_failure_status_comments(
+    gateway: GitHubPublicationGateway, repository: str, pr_number: int
+) -> list[IssueComment]:
+    """Deep-scan the bot's own failure-status comments (beyond the 300-comment cap)."""
+    mine = _comments_by_author(
+        gateway.list_issue_comments(
+            repository, pr_number, max_pages=_FAILURE_STATUS_SCAN_PAGES
+        ),
+        gateway.current_user_login(),
+    )
+    return [comment for comment in mine if _FAILURE_STATUS_TOKEN in comment.body]
+
+
+def _failure_status_body(
+    run_id: int, head_sha: str, reason: str, failure_code: str
+) -> str:
+    return (
+        f"## {REVIEW_COMMENT_TITLE} — could not be completed\n\n"
+        "This automated review did not finish, so no findings were published.\n\n"
+        f"- Reason: {reason}\n"
+        f"- Status code: `{failure_code}`\n\n"
+        "This is an automated status, not a review result; deterministic CI remains "
+        "the merge gate. The review will retry on the next request.\n\n"
+        f"{_failure_status_marker(run_id, head_sha)}\n"
+    )
+
+
+def _persist_failure_status(
+    connection: sqlite3.Connection, run_id: int, comment_id: int
+) -> str:
+    posted_at = isoformat(utc_now())
+    try:
+        memory_runs.record_failure_status_comment(
+            connection, run_id, comment_id=comment_id, posted_at=posted_at
+        )
+    except sqlite3.OperationalError:
+        # Pre-migration database without the durable columns: the comment is posted;
+        # we just cannot store its id. connect() normally migrates before serving.
+        pass
+    return posted_at
+
+
+def publish_run_failure_status(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    reason: str,
+    failure_code: str,
+    github: GitHubPublicationGateway | None = None,
+) -> dict[str, object]:
+    """Post (or idempotently update) a deterministic 'review could not complete' comment.
+
+    Stored-comment-id first: if the run already has a failure_status_comment_id, PATCH it
+    directly without listing comments (robust on PRs with hundreds of comments). Otherwise
+    search the bot's own comments for the failure-status marker, else create a new comment.
+    Works on terminal status='failed' rows. The body is deterministic code, never model
+    text, satisfying the "no model-authored fallback comment" rule.
+    """
+    run = memory_runs.get_run(connection, run_id)
+    if run is None:
+        raise ReviewMemoryError("run_id is not a known review run")
+    repository = str(run["repository"])
+    pr_number = int(run["pr_number"])
+    head_sha = str(run.get("head_sha") or "")
+    stored_id = run.get("failure_status_comment_id")
+    gateway = github or _default_gateway()
+    body = _failure_status_body(int(run_id), head_sha, reason, failure_code)
+
+    if isinstance(stored_id, int) and not isinstance(stored_id, bool) and stored_id > 0:
+        comment = gateway.update_issue_comment(repository, stored_id, body)
+    else:
+        marker = _failure_status_marker(int(run_id), head_sha)
+        existing = next(
+            (
+                comment
+                for comment in _my_failure_status_comments(
+                    gateway, repository, pr_number
+                )
+                if marker in comment.body
+            ),
+            None,
+        )
+        if existing is not None:
+            comment = gateway.update_issue_comment(repository, existing.comment_id, body)
+        else:
+            comment = gateway.create_issue_comment(repository, pr_number, body)
+
+    posted_at = _persist_failure_status(connection, int(run_id), comment.comment_id)
+    return {
+        "posted": True,
+        "run_id": int(run_id),
+        "comment_id": comment.comment_id,
+        "failure_code": failure_code,
+        "posted_at": posted_at,
+    }

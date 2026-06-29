@@ -334,6 +334,32 @@ eneo-review-memory coach-export \
   --output /opt/data/review-memory/coach-export.json
 ```
 
+Generate a bounded private verification bundle for one completed review run:
+
+```bash
+eneo-review-memory verification-export \
+  --run-id <id> \
+  --output /opt/data/review-memory/verification/run-<id>.json
+```
+
+This is the private verifier slice. The export is a shadow artifact, not a live
+review step. It does not publish comments. The bundle contains stable
+run/publication ids, exact base/head SHAs, coverage summary, and bounded
+`*_untrusted` evidence for the current published findings. A maintainer may hand
+it to Claude or another private review tool and ask for falsification. Verifier
+output can be stored in SQLite for audit, but raw verifier verdicts are not
+authoritative: only an explicit Codex reconciliation decision for the same run
+can drop a recorded candidate before publication.
+
+The schema is provider-neutral (`provider`, `model`, `mode`, `status`) so future
+profiles can choose Codex-only, advisory verification, or gated verification.
+This repository does not launch Claude from the webhook reviewer in the current
+slice; adding that runner is a separate reviewed runtime change.
+
+Do not paste raw SQLite exports into an LLM. Use `verification-export` for
+review-finding falsification and `coach-export` for reviewer-improvement
+signals.
+
 Validate replay fixtures:
 
 ```bash

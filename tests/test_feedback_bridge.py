@@ -13,7 +13,7 @@ from pathlib import Path
 PLUGIN_PARENT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PLUGIN_PARENT))
 
-from eneo_review_tools import feedback_bridge, memory_db  # noqa: E402
+from eneo_review_tools import feedback_bridge, memory_db, review_identity  # noqa: E402
 
 
 class FakeGitHub:
@@ -215,6 +215,28 @@ class FeedbackBridgeTests(unittest.TestCase):
         self.assertEqual(
             feedback_bridge.ready_check(self.config)["status"],
             "ready",
+        )
+
+    def test_feedback_user_copy_comes_from_review_identity(self) -> None:
+        self.assertIn(
+            review_identity.FEEDBACK_COMMAND_NOT_RECOGNIZED,
+            feedback_bridge.help_message(),
+        )
+        self.assertEqual(
+            feedback_bridge.status_message("no_mapping"),
+            review_identity.FEEDBACK_NO_CURRENT_REVIEW,
+        )
+        self.assertEqual(
+            feedback_bridge.status_message("not_current"),
+            review_identity.FEEDBACK_NOT_CURRENT_REVIEW,
+        )
+        self.assertEqual(
+            feedback_bridge.status_message("stale"),
+            review_identity.FEEDBACK_STALE_CONTEXT,
+        )
+        self.assertEqual(
+            feedback_bridge.status_message("unsupported"),
+            review_identity.FEEDBACK_UNSUPPORTED_COMMAND,
         )
 
     def test_false_positive_records_and_confirms_with_success_reaction_only(self) -> None:

@@ -13,6 +13,10 @@ try:
     from .memory_decisions import active_suppression
     from .memory_coverage import coverage_summary
     from .memory_findings import assign_local_reference
+    from .memory_verification import (
+        candidate_reconciliations_for_run,
+        latest_verification_status_by_run,
+    )
     from .memory_validation import (
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
@@ -40,6 +44,10 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_decisions import active_suppression
     from memory_coverage import coverage_summary
     from memory_findings import assign_local_reference
+    from memory_verification import (
+        candidate_reconciliations_for_run,
+        latest_verification_status_by_run,
+    )
     from memory_validation import (
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
@@ -124,6 +132,13 @@ class PublicationForSupersession(TypedDict):
     superseded_by_review_number: int | None
     superseded_by_head_sha: str
     superseded_by_comment_id: int
+
+
+class VerificationExportSource(TypedDict):
+    source_schema_version: int
+    run: dict[str, Any]
+    publication: dict[str, Any]
+    current_findings: list[dict[str, Any]]
 
 
 def _subject_row(
@@ -316,9 +331,26 @@ def list_publications(
         (*params, limit),
     ).fetchall()
     publications: list[dict[str, Any]] = []
+    verification_statuses = latest_verification_status_by_run(
+        connection,
+        [
+            int(row["review_run_id"])
+            for row in rows
+            if row["review_run_id"] is not None
+        ],
+    )
     for row in rows:
         item = dict(row)
         item["comment_ids"] = _publication_comment_ids(connection, int(item["id"]))
+        verification = verification_statuses.get(int(item["review_run_id"] or 0))
+        item["verification_status"] = str(verification["status"]) if verification else ""
+        item["verification_mode"] = str(verification["mode"]) if verification else ""
+        item["verification_provider"] = (
+            str(verification["provider"]) if verification else ""
+        )
+        item["verification_failure_code"] = (
+            str(verification["failure_code"]) if verification else ""
+        )
         publications.append(item)
     return publications
 
@@ -335,6 +367,69 @@ def _publication_findings(
         (publication_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def verification_export_source(
+    connection: sqlite3.Connection, *, review_run_id: int
+) -> VerificationExportSource:
+    review_run_id = int(review_run_id)
+    if review_run_id < 1:
+        raise ReviewMemoryError("review_run_id must be positive")
+    run = connection.execute(
+        """
+        SELECT id, repository, pr_number, base_sha, head_sha, status, phase,
+               started_at, completed_at
+        FROM review_runs
+        WHERE id = ?
+        """,
+        (review_run_id,),
+    ).fetchone()
+    if run is None:
+        raise ReviewMemoryError("review run was not found")
+
+    publication = connection.execute(
+        """
+        SELECT id, review_run_id, review_number, repository, pr_number, base_sha,
+               head_sha, delivery_status, rendered_hash, generated_at
+        FROM review_publications
+        WHERE review_run_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (review_run_id,),
+    ).fetchone()
+    if publication is None:
+        raise ReviewMemoryError("review run has no recorded publication")
+
+    publication_id = int(publication["id"])
+    expected = _publication_current_finding_count(connection, publication_id)
+    findings = connection.execute(
+        """
+        SELECT pf.local_reference, pf.status, pf.fingerprint, pf.context_hash,
+               fo.id AS observation_id, fo.rule_id, fo.path, fo.line, fo.symbol,
+               fo.anchor, fo.title, fo.severity, fo.category,
+               fo.publication_score, fo.confidence, fo.evidence,
+               fo.disproof_checks, fo.impact, fo.smallest_fix,
+               fo.introduced_by_diff
+        FROM publication_findings pf
+        JOIN finding_observations fo ON fo.id = pf.observation_id
+        WHERE pf.publication_id = ? AND pf.status = 'current'
+        ORDER BY CAST(SUBSTR(pf.local_reference, 2) AS INTEGER), pf.id
+        """,
+        (publication_id,),
+    ).fetchall()
+    if expected != len(findings):
+        raise ReviewMemoryError(
+            "current publication has findings without observation evidence"
+        )
+
+    schema_row = connection.execute("PRAGMA user_version").fetchone()
+    return {
+        "source_schema_version": int(schema_row[0] if schema_row else 0),
+        "run": dict(run),
+        "publication": dict(publication),
+        "current_findings": [dict(row) for row in findings],
+    }
 
 
 def _publication_result(
@@ -706,9 +801,21 @@ def finalize_review(
         base_sha = str(subject.get("base_sha") or "")
 
         observed = _observations_for_run(connection, review_run_id)
+        candidate_reconciliations = candidate_reconciliations_for_run(
+            connection, review_run_id
+        )
+        # A drop is a final publication decision for this run, so it must exclude
+        # both fresh observations and prior findings that would otherwise carry over.
+        dropped_fingerprints = {
+            fingerprint
+            for fingerprint, item in candidate_reconciliations.items()
+            if item.get("final_decision") == "drop"
+        }
         current: list[PublishedFinding] = []
         for item in observed:
             fingerprint = str(item["fingerprint"])
+            if fingerprint in dropped_fingerprints:
+                continue
             context_hash = str(item["context_hash"])
             if active_suppression(connection, fingerprint, context_hash=context_hash):
                 continue
@@ -734,6 +841,7 @@ def finalize_review(
             item["fingerprint"]: item
             for item in previous_items
             if item.get("status") == "current"
+            and item["fingerprint"] not in dropped_fingerprints
         }
         current_by_fingerprint = {item["fingerprint"]: item for item in current}
         suppressed_previous = {

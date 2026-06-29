@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -47,6 +47,9 @@ REQUIRED_TABLES = frozenset(
         "review_publications",
         "review_publication_comments",
         "publication_findings",
+        "review_verification_runs",
+        "candidate_verifications",
+        "candidate_reconciliations",
         "review_quality_feedback",
         "processed_feedback_events",
         "decision_audit",
@@ -1025,6 +1028,66 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_observations_fingerprint_seen
             ON finding_observations(fingerprint, observed_at DESC);
 
+        CREATE TABLE IF NOT EXISTS review_verification_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_run_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            mode TEXT NOT NULL CHECK (mode IN ('shadow', 'advise', 'gate')),
+            status TEXT NOT NULL CHECK (
+                status IN ('skipped', 'unavailable', 'running', 'completed', 'failed')
+            ),
+            bundle_hash TEXT NOT NULL DEFAULT '',
+            failure_code TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_verification_runs_run
+            ON review_verification_runs(review_run_id, id DESC);
+
+        CREATE TABLE IF NOT EXISTS candidate_verifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            verification_run_id INTEGER NOT NULL,
+            review_run_id INTEGER NOT NULL,
+            observation_id INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            verdict TEXT NOT NULL CHECK (
+                verdict IN ('confirmed', 'refuted', 'needs_more_evidence')
+            ),
+            confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+            counter_evidence TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (verification_run_id) REFERENCES review_verification_runs(id),
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id),
+            FOREIGN KEY (observation_id) REFERENCES finding_observations(id),
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_verifications_run
+            ON candidate_verifications(review_run_id, observation_id, id DESC);
+
+        CREATE TABLE IF NOT EXISTS candidate_reconciliations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_run_id INTEGER NOT NULL,
+            observation_id INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            final_decision TEXT NOT NULL CHECK (final_decision IN ('publish', 'drop')),
+            reason TEXT NOT NULL DEFAULT '',
+            verification_run_id INTEGER,
+            created_at TEXT NOT NULL,
+            UNIQUE(review_run_id, fingerprint),
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id),
+            FOREIGN KEY (observation_id) REFERENCES finding_observations(id),
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint),
+            FOREIGN KEY (verification_run_id) REFERENCES review_verification_runs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_reconciliations_run
+            ON candidate_reconciliations(review_run_id, observation_id);
+
         CREATE TABLE IF NOT EXISTS pr_finding_references (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repository TEXT NOT NULL,
@@ -1321,6 +1384,21 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "changed_file_registration_complete",
         "INTEGER NOT NULL DEFAULT 0 CHECK (changed_file_registration_complete IN (0, 1))",
     )
+    # Durable state for the never-silent failure-status comment posted by the reaper /
+    # delivery failure paths. Additive columns: no SCHEMA_VERSION bump required.
+    _ensure_column(connection, "review_runs", "failure_detail", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        connection,
+        "review_runs",
+        "failure_status_comment_id",
+        "INTEGER CHECK (failure_status_comment_id IS NULL OR failure_status_comment_id > 0)",
+    )
+    _ensure_column(
+        connection,
+        "review_runs",
+        "failure_status_posted_at",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     _ensure_column(
         connection,
         "review_run_files",
@@ -1426,6 +1504,24 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_observations_run
             ON finding_observations(review_run_id, id DESC)
             WHERE review_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_verification_runs_run
+            ON review_verification_runs(review_run_id, id DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_candidate_verifications_run
+            ON candidate_verifications(review_run_id, observation_id, id DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_candidate_reconciliations_run
+            ON candidate_reconciliations(review_run_id, observation_id)
         """
     )
     connection.execute(

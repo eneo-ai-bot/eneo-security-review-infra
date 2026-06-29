@@ -316,7 +316,7 @@ def mark_stale_runs_failed(
     for row in rows:
         row["status"] = "failed"
         row["phase"] = "failed"
-        row["failure_code"] = "stale_timeout"
+        row["failure_code"] = "stale_timeout"  # canonical: failure_codes.STALE_TIMEOUT
         row["last_heartbeat_at"] = completed
         row["completed_at"] = completed
     return {
@@ -328,6 +328,112 @@ def mark_stale_runs_failed(
         "completed_at": completed,
         "runs": rows,
     }
+
+
+def get_run(connection: sqlite3.Connection, run_id: int) -> dict[str, Any] | None:
+    """Read a review run row by id at any status. Pure storage; no GitHub awareness."""
+    if isinstance(run_id, bool) or int(run_id) < 1:
+        raise ReviewMemoryError("run_id must be a positive integer")
+    row = connection.execute(
+        "SELECT * FROM review_runs WHERE id = ?", (int(run_id),)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def record_failure_status_comment(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    comment_id: int,
+    posted_at: str,
+) -> bool:
+    """Persist the durable failure-status comment id.
+
+    Intentionally NOT gated to running runs — the failure-status comment is posted for
+    terminal status='failed' rows by the reaper / delivery-failure paths.
+    """
+    if isinstance(run_id, bool) or int(run_id) < 1:
+        raise ReviewMemoryError("run_id must be a positive integer")
+    if isinstance(comment_id, bool) or int(comment_id) < 1:
+        raise ReviewMemoryError("comment_id must be a positive integer")
+    with connection:
+        cursor = connection.execute(
+            """
+            UPDATE review_runs
+            SET failure_status_comment_id = ?,
+                failure_status_posted_at = ?
+            WHERE id = ?
+            """,
+            (int(comment_id), str(posted_at), int(run_id)),
+        )
+    return cursor.rowcount > 0
+
+
+def clear_failure_status_comment(connection: sqlite3.Connection, run_id: int) -> None:
+    """Clear the failure-status comment id once a real review supersedes it."""
+    with connection:
+        connection.execute(
+            """
+            UPDATE review_runs
+            SET failure_status_comment_id = NULL,
+                failure_status_posted_at = ''
+            WHERE id = ?
+            """,
+            (int(run_id),),
+        )
+
+
+def failure_status_comments_for_pr(
+    connection: sqlite3.Connection, repository: str, pr_number: int
+) -> list[dict[str, int]]:
+    """Stored failure-status comments for a PR, so a successful review can clean them up."""
+    rows = connection.execute(
+        """
+        SELECT id, failure_status_comment_id
+        FROM review_runs
+        WHERE repository = ?
+          AND pr_number = ?
+          AND failure_status_comment_id IS NOT NULL
+        """,
+        (normalize_repository(repository), int(pr_number)),
+    ).fetchall()
+    return [
+        {"run_id": int(row["id"]), "comment_id": int(row["failure_status_comment_id"])}
+        for row in rows
+    ]
+
+
+def failed_runs_needing_status(
+    connection: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    pr_number: int | None = None,
+) -> list[dict[str, Any]]:
+    """Failed runs that have not yet had a failure-status comment posted.
+
+    The reaper posts a deterministic status for these so an aborted review is never
+    silent on the PR. Pure read; the CLI orchestrates the publishing.
+    """
+    conditions = ["status = 'failed'", "failure_status_comment_id IS NULL"]
+    params: list[Any] = []
+    if repository is not None:
+        conditions.append("repository = ?")
+        params.append(normalize_repository(repository))
+    if pr_number is not None:
+        if isinstance(pr_number, bool) or int(pr_number) < 1:
+            raise ReviewMemoryError("pr_number must be positive")
+        conditions.append("pr_number = ?")
+        params.append(int(pr_number))
+    rows = connection.execute(
+        f"""
+        SELECT id, repository, pr_number, head_sha, failure_code
+        FROM review_runs
+        WHERE {" AND ".join(conditions)}
+        ORDER BY id ASC
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def update_run_phase(

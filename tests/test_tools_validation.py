@@ -60,8 +60,8 @@ class _FakeGitHub:
             head_sha="a" * 40,
         )
 
-    def list_issue_comments(self, repository, issue_number):
-        del repository, issue_number
+    def list_issue_comments(self, repository, issue_number, *, max_pages=3):
+        del repository, issue_number, max_pages
         return []
 
     def update_issue_comment(self, repository, comment_id, body):
@@ -252,6 +252,48 @@ class ToolValidationTests(unittest.TestCase):
                 )
             )
         self.assertIn("changed pull-request file", result["error"])
+
+    def test_record_partial_enumeration_still_records_enumerated_finding(self):
+        # GitHub reports more changed files than were enumerated (e.g. a PR beyond the
+        # ~3000-file files-API ceiling). A finding on an ENUMERATED file must still
+        # record (honest-partial) rather than be hard-refused; coverage stays
+        # incomplete (surfaced by the renderer banner) but is never silently dropped.
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40},
+            "changed_files": 2,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(
+                tools,
+                "_changed_files",
+                return_value=[
+                    {
+                        "path": "backend/changed.py",
+                        "context_hash": "c" * 40,
+                        "context_hash_source": "blob",
+                    }
+                ],
+            ),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "run_id": run_id,
+                        "findings": [self.finding],
+                    }
+                )
+            )
+        self.assertNotIn("error", result)
+        self.assertEqual(result["recorded"][0]["context_hash"], "c" * 40)
 
     def test_record_uses_trusted_blob_hash(self):
         pull = {

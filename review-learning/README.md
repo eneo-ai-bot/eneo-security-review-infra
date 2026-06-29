@@ -50,6 +50,21 @@ Coach exports contain stable event ids, exact observation provenance, bounded
 deduping equivalent evidence across exports. They omit actors, source URLs, and
 raw database rows. Output files are written atomically with mode `0600`.
 
+For independent finding falsification, export one completed review run instead
+of asking another model to review the whole PR:
+
+```bash
+eneo-review-memory verification-export \
+  --run-id <id> \
+  --output /opt/data/review-memory/verification/run-<id>.json
+```
+
+Verification exports are shadow-mode evidence bundles. They do not call Claude,
+publish comments, suppress findings, change reviewer policy, or open pull
+requests. Use them to ask a private reviewer to challenge the current published
+findings; promote only human-accepted lessons through replay fixtures and normal
+code review.
+
 Then select deterministic improvement proposals from the coach events:
 
 ```bash
