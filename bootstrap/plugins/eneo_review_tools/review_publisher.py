@@ -183,7 +183,7 @@ class GitHubIssueCommentGateway:
         body = None
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "Eneo-Hermes-Review-Publisher/1.0",
+            "User-Agent": "Hermes-PR-Review-Publisher/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
             "Authorization": f"Bearer {token}",
         }
@@ -378,19 +378,6 @@ def _verify_pr_target(
     return None
 
 
-def _extract_publication_key(body: str) -> str | None:
-    token = "eneo-review:canonical publication="
-    token_index = body.find(token)
-    if token_index < 0:
-        return None
-    remainder = body[token_index + len(token) :]
-    parts = remainder.split()
-    if not parts:
-        return None
-    key = parts[0].rstrip(" -\"'>")
-    return key if key.startswith("sha256:") else None
-
-
 def _comments_by_author(
     comments: list[IssueComment], author_login: str
 ) -> list[IssueComment]:
@@ -400,10 +387,6 @@ def _comments_by_author(
         for comment in comments
         if comment.author_login and comment.author_login.casefold() == expected
     ]
-
-
-def _canonical_html_marker(publication_key: str) -> str:
-    return f"<!-- {memory_publications.publication_marker(publication_key)} -->"
 
 
 def _part_marker(publication_key: str, part_number: int, total_parts: int) -> str:
@@ -437,7 +420,7 @@ def _pack_blocks(blocks: list[str], max_bytes: int) -> list[str]:
 def _publication_blocks(
     body: str, *, rendered_blocks_json: str, publication_key: str
 ) -> list[str]:
-    marker = _canonical_html_marker(publication_key)
+    marker = memory_publications.publication_marker_html(publication_key)
     if rendered_blocks_json:
         try:
             blocks = review_blocks_from_json(rendered_blocks_json, fallback_markdown=body)
@@ -515,7 +498,7 @@ def _publication_comments(
 ) -> dict[int, IssueComment]:
     found: dict[int, IssueComment] = {}
     for comment in comments:
-        if _extract_publication_key(comment.body) != publication_key:
+        if memory_publications.extract_publication_key(comment.body) != publication_key:
             continue
         marker = memory_publications.publication_marker(publication_key)
         marker_index = comment.body.find(marker)
@@ -541,7 +524,8 @@ def _comments_by_id(
         indexed[comment_id]
         for comment_id in comment_ids
         if comment_id in indexed
-        and "eneo-review:canonical publication=" in indexed[comment_id].body
+        and memory_publications.extract_publication_key(indexed[comment_id].body)
+        is not None
     ]
 
 
@@ -587,7 +571,7 @@ def _publish_parts(
 def _historical_content_blocks(
     publication: memory_publications.PublicationForSupersession,
 ) -> list[str]:
-    marker = _canonical_html_marker(publication["publication_key"])
+    marker = memory_publications.publication_marker_html(publication["publication_key"])
     blocks_json = publication["rendered_blocks_json"]
     if blocks_json:
         blocks = review_blocks_from_json(

@@ -35,6 +35,7 @@ try:
         PublishedFinding,
         ReviewBlock,
         ReviewCoverageSummary,
+        UncheckedFinding,
         render_review,
         review_blocks_from_json,
         review_blocks_to_json,
@@ -66,6 +67,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         PublishedFinding,
         ReviewBlock,
         ReviewCoverageSummary,
+        UncheckedFinding,
         render_review,
         review_blocks_from_json,
         review_blocks_to_json,
@@ -83,6 +85,7 @@ PublicationStatus = Literal[
     "stale",
 ]
 READY_TO_POST: frozenset[str] = frozenset({"generated", "publish_failed"})
+PUBLICATION_MARKER_PREFIX = "eneo-review:canonical publication="
 
 
 class PriorFindingVerdict(TypedDict):
@@ -93,7 +96,7 @@ class PriorFindingVerdict(TypedDict):
 
 class PriorReconciliation(TypedDict):
     closed: list[ClosedFinding]
-    carry_forward: list[str]
+    not_checked: list[str]
     still_present: list[str]
     partially_resolved: list[str]
 
@@ -232,14 +235,30 @@ def _publication_key(
 def _with_publication_marker_blocks(
     blocks: Sequence[ReviewBlock], publication_key: str
 ) -> tuple[ReviewBlock, ...]:
-    marker = f"<!-- eneo-review:canonical publication={publication_key} -->"
+    marker = publication_marker_html(publication_key)
     if any(marker in block.markdown for block in blocks):
         return tuple(blocks)
     return (*blocks, ReviewBlock(kind="metadata", markdown=marker))
 
 
 def publication_marker(publication_key: str) -> str:
-    return f"eneo-review:canonical publication={publication_key}"
+    return f"{PUBLICATION_MARKER_PREFIX}{publication_key}"
+
+
+def publication_marker_html(publication_key: str) -> str:
+    return f"<!-- {publication_marker(publication_key)} -->"
+
+
+def extract_publication_key(body: str) -> str | None:
+    token_index = body.find(PUBLICATION_MARKER_PREFIX)
+    if token_index < 0:
+        return None
+    remainder = body[token_index + len(PUBLICATION_MARKER_PREFIX) :]
+    parts = remainder.split()
+    if not parts:
+        return None
+    key = parts[0].rstrip(" -\"'>")
+    return key if key.startswith("sha256:") else None
 
 
 def _publication_comment_ids(
@@ -502,7 +521,6 @@ def _finding_payload(
     local_reference: str,
     context_hash: str,
     observation_id: int | None = None,
-    review_status: Literal["observed", "carried_forward"],
 ) -> PublishedFinding:
     if observation_id is None and item.get("id") is not None:
         observation_id = int(item["id"])
@@ -511,7 +529,6 @@ def _finding_payload(
         "fingerprint": str(item["fingerprint"]),
         "observation_id": observation_id,
         "context_hash": context_hash,
-        "review_status": review_status,
         "rule_id": str(item["rule_id"]),
         "category": str(item["category"]),
         "path": str(item["path"]),
@@ -554,6 +571,14 @@ def _closed_payload(
         "verdict": verdict,
         "title": title,
         "evidence": evidence,
+    }
+
+
+def _unchecked_payload(item: dict[str, Any], *, title: str = "") -> UncheckedFinding:
+    return {
+        "local_reference": str(item["local_reference"]),
+        "fingerprint": str(item["fingerprint"]),
+        "title": title,
     }
 
 
@@ -634,7 +659,7 @@ def _reconcile_prior_findings(
             )
 
     closed: list[ClosedFinding] = []
-    carry_forward: list[str] = []
+    not_checked: list[str] = []
     still_present: list[str] = []
     partially_resolved: list[str] = []
     for fingerprint, item in previous_current.items():
@@ -676,7 +701,7 @@ def _reconcile_prior_findings(
             continue
 
         if verdict["verdict"] == "not_checked":
-            carry_forward.append(fingerprint)
+            not_checked.append(fingerprint)
             continue
         if verdict["verdict"] == "resolved":
             closed.append(
@@ -707,7 +732,7 @@ def _reconcile_prior_findings(
 
     return {
         "closed": closed,
-        "carry_forward": carry_forward,
+        "not_checked": not_checked,
         "still_present": still_present,
         "partially_resolved": partially_resolved,
     }
@@ -828,7 +853,6 @@ def finalize_review(
                     local_reference=local_reference,
                     context_hash=context_hash,
                     observation_id=int(item["id"]) if item.get("id") is not None else None,
-                    review_status="observed",
                 )
             )
 
@@ -867,34 +891,21 @@ def finalize_review(
             if latest:
                 item["title"] = str(latest.get("title", ""))
 
-        needs_recheck: list[str] = []
-        for fingerprint in reconciliation["carry_forward"]:
+        unchecked: list[UncheckedFinding] = []
+        not_checked_refs: list[str] = []
+        for fingerprint in reconciliation["not_checked"]:
             item = previous_current[fingerprint]
-            # A carried finding has no fresh trusted file hash. Reuse the hash
-            # from the previously published finding so suppressions apply only
-            # to the exact file version a human or prior review saw.
-            context_hash = str(item["context_hash"])
-            carried = _latest_observation_for_pr(
+            local_reference = str(item["local_reference"])
+            latest = _latest_observation_for_pr(
                 connection, repository, pr_number, fingerprint
             )
-            if carried is None:
-                continue
-            local_reference = str(item["local_reference"])
-            current.append(
-                _finding_payload(
-                    carried,
-                    local_reference=local_reference,
-                    context_hash=context_hash,
-                    observation_id=(
-                        int(item["observation_id"])
-                        if item.get("observation_id") is not None
-                        else None
-                    ),
-                    review_status="carried_forward",
+            unchecked.append(
+                _unchecked_payload(
+                    item,
+                    title=str(latest.get("title", "")) if latest else "",
                 )
             )
-            current_by_fingerprint[fingerprint] = current[-1]
-            needs_recheck.append(local_reference)
+            not_checked_refs.append(local_reference)
 
         still_present = reconciliation["still_present"]
         partially_resolved = reconciliation["partially_resolved"]
@@ -910,10 +921,11 @@ def finalize_review(
             head_sha=head_sha,
             findings=current,
             closed=closed,
+            unchecked=unchecked,
             still_present=still_present,
             partially_resolved=partially_resolved,
             new_refs=new_refs,
-            needs_recheck=needs_recheck,
+            not_checked_refs=not_checked_refs,
             feedback_enabled=_feedback_enabled(),
             coverage=cast(
                 ReviewCoverageSummary | None,

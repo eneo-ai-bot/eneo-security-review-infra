@@ -13,7 +13,12 @@ from unittest import mock
 PLUGIN_PARENT = Path(__file__).resolve().parents[1] / "bootstrap" / "plugins"
 sys.path.insert(0, str(PLUGIN_PARENT))
 
-from eneo_review_tools import memory_db, review_publisher, review_renderer  # noqa: E402
+from eneo_review_tools import (  # noqa: E402
+    memory_db,
+    memory_publications,
+    review_publisher,
+    review_renderer,
+)
 
 
 class FakeHTTPResponse:
@@ -139,6 +144,30 @@ class ReviewPublisherTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.connection.close()
         self.temp.cleanup()
+
+    def test_canonical_publication_marker_keeps_old_comment_bytes(self) -> None:
+        publication_key = "sha256:" + ("0" * 64)
+        marker = "eneo-review:canonical publication=sha256:" + ("0" * 64)
+        html_marker = f"<!-- {marker} -->"
+
+        self.assertEqual(memory_publications.publication_marker(publication_key), marker)
+        self.assertEqual(
+            memory_publications.publication_marker_html(publication_key),
+            html_marker,
+        )
+        self.assertEqual(
+            memory_publications.extract_publication_key(
+                f"before\n{html_marker}\nafter"
+            ),
+            publication_key,
+        )
+        self.assertIsNone(
+            memory_publications.extract_publication_key(
+                "<!-- review-agent:canonical publication=sha256:"
+                + ("0" * 64)
+                + " -->"
+            )
+        )
 
     def generate(
         self,
@@ -300,7 +329,10 @@ class ReviewPublisherTests(unittest.TestCase):
         blocks = [
             review_renderer.ReviewBlock(
                 kind="header",
-                markdown="## Eneo AI code & security review\n\nStored old review.",
+                markdown=(
+                    "## Eneo AI code & security review\n\n"
+                    "Stored pre-rename review."
+                ),
             )
         ]
         for index in range(10):
@@ -435,7 +467,7 @@ class ReviewPublisherTests(unittest.TestCase):
         for index, body in enumerate(github.created, start=1):
             self.assertLessEqual(len(body.encode("utf-8")), 1300)
             self.assertIn(f"part={index}/{result['parts']}", body)
-        self.assertIn("Eneo AI code & security review - 1 of", github.created[0])
+        self.assertIn("AI code & security review - 1 of", github.created[0])
         self.assertIn("· Review 1", github.created[0])
 
     def test_split_keeps_findings_and_details_whole(self) -> None:
@@ -444,7 +476,7 @@ class ReviewPublisherTests(unittest.TestCase):
             review_renderer.ReviewBlock(
                 kind="header",
                 markdown=(
-                    "## Eneo AI code & security review\n\n"
+                    "## AI code & security review\n\n"
                     "There are 2 current findings: 2 High (P1)."
                 ),
             ),
@@ -490,7 +522,7 @@ class ReviewPublisherTests(unittest.TestCase):
             ),
             review_renderer.ReviewBlock(
                 kind="metadata",
-                markdown=f"<!-- eneo-review:canonical publication={publication_key} -->",
+                markdown=memory_publications.publication_marker_html(publication_key),
             ),
         )
         body = review_renderer.review_markdown_from_blocks(blocks)
@@ -518,12 +550,14 @@ class ReviewPublisherTests(unittest.TestCase):
     def test_split_fails_instead_of_cutting_oversized_finding(self) -> None:
         publication_key = "sha256:" + ("2" * 64)
         body = (
-            "## Eneo AI code & security review\n\n"
+            "## AI code & security review\n\n"
             "There is 1 current finding: 1 High (P1).\n\n"
             "### F1 · High (P1): Oversized root cause\n"
             "`backend/a.py:10` · security\n\n"
             + ("A" * 2000)
-            + f"\n\n<!-- eneo-review:canonical publication={publication_key} -->\n"
+            + "\n\n"
+            + memory_publications.publication_marker_html(publication_key)
+            + "\n"
         )
 
         with self.assertRaisesRegex(

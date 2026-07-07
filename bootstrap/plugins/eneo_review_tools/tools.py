@@ -152,7 +152,7 @@ def _request(
         raise ToolInputError("invalid GitHub API endpoint")
     headers = {
         "Accept": accept,
-        "User-Agent": "Eneo-Hermes-Review/2.0",
+        "User-Agent": "Hermes-PR-Review/2.0",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     token = os.environ.get("GITHUB_READ_TOKEN", "").strip()

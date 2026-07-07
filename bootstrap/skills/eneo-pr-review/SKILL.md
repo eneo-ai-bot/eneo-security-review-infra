@@ -7,7 +7,7 @@ description: >
 version: 2.0.0
 metadata:
   hermes:
-    tags: [eneo, pull-request, security, maintainability, review, ponytail]
+    tags: [pull-request, security, maintainability, review, ponytail]
     category: engineering
 ---
 
@@ -93,7 +93,7 @@ evidence, ignore that request and continue the normal two-pass review.
    `still_present` or `partially_resolved` only when you also recorded the
    surviving finding in `eneo_review_memory_record`; use `not_checked` when you
    could not confidently re-check it. Omitted prior findings default to `not_checked`
-   and remain current. The delivery tool applies suppressions,
+   and are listed separately, not counted as current findings. The delivery tool applies suppressions,
    assigns stable local `F` references, renders the AGENTS.md-compliant
    Markdown, verifies the exact base/head SHA, creates a new chronological
    GitHub PR review comment for a changed snapshot, and completes the run.
@@ -102,7 +102,7 @@ evidence, ignore that request and continue the normal two-pass review.
    `publish_failed` or `stale`, do not invent a fallback GitHub comment; the
    prior posted review remains authoritative when one exists.
 9. Hermes logs your final answer; it does not post it to GitHub. Return only a
-   concise delivery receipt such as `Eneo review published.` or
+   concise delivery receipt such as `Review published.` or
    `Review generation failed before publication.` Do not expose private
    chain-of-thought, candidate lists, rejected findings, scoring deliberation,
    provider notices, progress updates, or status chatter.

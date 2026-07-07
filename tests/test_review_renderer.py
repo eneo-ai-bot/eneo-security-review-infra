@@ -45,7 +45,6 @@ class ReviewRendererTests(unittest.TestCase):
             "fingerprint": "a" * 64,
             "observation_id": 1,
             "context_hash": "b" * 64,
-            "review_status": "observed",
             "rule_id": "tests.example",
             "category": "tests",
             "path": "backend/app/example.py",
@@ -179,7 +178,7 @@ class ReviewRendererTests(unittest.TestCase):
             still_present=[],
             partially_resolved=[],
             new_refs=["F1"],
-            needs_recheck=[],
+            not_checked_refs=[],
             review_number=1,
         )
 
@@ -221,7 +220,7 @@ class ReviewRendererTests(unittest.TestCase):
             still_present=[],
             partially_resolved=[],
             new_refs=[],
-            needs_recheck=[],
+            not_checked_refs=[],
             review_number=5,
         )
 
@@ -235,7 +234,7 @@ class ReviewRendererTests(unittest.TestCase):
             still_present=[],
             partially_resolved=[],
             new_refs=["F2"],
-            needs_recheck=[],
+            not_checked_refs=[],
             previous_review_number=5,
         )
 

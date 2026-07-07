@@ -12,9 +12,8 @@ where organization-specific policy lives: `bootstrap/SOUL.md`,
 `bootstrap/workspace/AGENTS.md`, and `bootstrap/skills/eneo-pr-review/SKILL.md`.
 
 Some runtime names still use the historical `ENEO_*` and `eneo_*` prefixes. Treat
-those as implementation names for this deployment, not as proof that the engine
-can only review Eneo repositories. Generalizing the namespace is a separate
-breaking-change slice.
+those as compatibility names for this deployment, not as proof that the engine
+can only review Eneo repositories.
 
 ## What It Does
 

@@ -437,10 +437,10 @@ class ReviewMemoryTests(unittest.TestCase):
             still_present=[],
             partially_resolved=[],
             new_refs=["F4", "F3"],
-            needs_recheck=["F2", "F1"],
+            not_checked_refs=["F2", "F1"],
         )
 
-        self.assertIn("F1 and F2 need recheck", summary)
+        self.assertIn("F1 and F2 not rechecked", summary)
         self.assertIn("F3 and F4 are new", summary)
 
     def test_runtime_connection_requires_initialized_schema(self):
@@ -933,7 +933,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("Copyable fix brief for a coding agent", result["markdown"])
         self.assertNotIn("Give feedback on this review", result["markdown"])
 
-    def test_finalize_review_carries_unobserved_previous_findings(self):
+    def test_finalize_review_lists_unchecked_previous_findings_outside_current(self):
         first = self.finding
         second = dict(
             self.finding,
@@ -959,16 +959,25 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         result = self.finalize(head_sha="b" * 40)
 
-        self.assertEqual(result["findings_count"], 2)
+        self.assertEqual(result["findings_count"], 1)
         self.assertEqual(result["resolved_count"], 0)
         self.assertIn("**Compared with Review 1 at", result["markdown"])
-        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertIn("F1 not rechecked", result["markdown"])
         self.assertIn("F2 still present", result["markdown"])
+        self.assertIn("Previous findings not rechecked", result["markdown"])
         self.assertIn(
+            "These prior findings were not observed in this run and are not counted as current findings.",
+            result["markdown"],
+        )
+        self.assertIn(
+            "### F2 · Medium (P2): Regression test misses tenant failure path",
+            result["markdown"],
+        )
+        self.assertNotIn(
             "### F1 · Critical (P0): Document creation omits tenant scope",
             result["markdown"],
         )
-        self.assertIn("F1 - Critical (P0) - security", result["markdown"])
+        self.assertNotIn("F1 - Critical (P0) - security", result["markdown"])
         self.assertNotIn("F1 resolved", result["markdown"])
 
     def test_finalize_review_resolves_prior_finding_with_explicit_verdict(self):
@@ -1200,8 +1209,8 @@ class ReviewMemoryTests(unittest.TestCase):
             previous_verdicts=[{"local_reference": "F2", "verdict": "still_present"}],
         )
 
-        self.assertEqual(result["findings_count"], 2)
-        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertEqual(result["findings_count"], 1)
+        self.assertIn("F1 not rechecked", result["markdown"])
         self.assertIn("F2 still present", result["markdown"])
 
     def test_carried_reference_is_not_reused_by_new_finding(self):
@@ -1248,7 +1257,7 @@ class ReviewMemoryTests(unittest.TestCase):
         result = self.finalize(head_sha="c" * 40)
 
         self.assertIn("F2 still present", result["markdown"])
-        self.assertIn("F1 needs recheck", result["markdown"])
+        self.assertNotIn("F1 not rechecked", result["markdown"])
         self.assertIn("F3 is new", result["markdown"])
         self.assertIn(
             "### F3 · High (P1): Migration job can run without bounded retries",

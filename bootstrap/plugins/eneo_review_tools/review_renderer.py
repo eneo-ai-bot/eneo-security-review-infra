@@ -42,7 +42,6 @@ class PublishedFinding(TypedDict):
     fingerprint: str
     observation_id: int | None
     context_hash: str
-    review_status: Literal["observed", "carried_forward"]
     rule_id: str
     category: str
     path: str
@@ -54,6 +53,12 @@ class PublishedFinding(TypedDict):
     disproof_checks: str
     impact: str
     smallest_fix: str
+
+
+class UncheckedFinding(TypedDict):
+    local_reference: str
+    fingerprint: str
+    title: str
 
 
 class ClosedFinding(TypedDict):
@@ -88,6 +93,7 @@ class ReviewCoverageSummary(TypedDict):
 ReviewBlockKind = Literal[
     "header",
     "finding",
+    "unchecked_history",
     "closed_history",
     "fix_brief",
     "feedback_help",
@@ -111,6 +117,7 @@ _BLOCK_KINDS = frozenset(
     {
         "header",
         "finding",
+        "unchecked_history",
         "closed_history",
         "fix_brief",
         "feedback_help",
@@ -259,11 +266,11 @@ def lifecycle_summary(
     still_present: Sequence[str],
     partially_resolved: Sequence[str],
     new_refs: Sequence[str],
-    needs_recheck: Sequence[str],
+    not_checked_refs: Sequence[str],
     previous_review_number: int | None = None,
     previous_head_sha: str = "",
 ) -> str:
-    if not (closed or still_present or partially_resolved or new_refs or needs_recheck):
+    if not (closed or still_present or partially_resolved or new_refs or not_checked_refs):
         return severity_summary(findings)
 
     clauses: list[str] = []
@@ -299,8 +306,8 @@ def lifecycle_summary(
         clauses.append(
             ref_clause(partially_resolved, "partially resolved", "partially resolved")
         )
-    if needs_recheck:
-        clauses.append(ref_clause(needs_recheck, "needs recheck", "need recheck"))
+    if not_checked_refs:
+        clauses.append(ref_clause(not_checked_refs, "not rechecked", "not rechecked"))
     if new_refs:
         clauses.append(ref_clause(new_refs, "is new", "are new"))
 
@@ -598,7 +605,8 @@ def render_review(
     still_present: Sequence[str],
     partially_resolved: Sequence[str],
     new_refs: Sequence[str],
-    needs_recheck: Sequence[str],
+    not_checked_refs: Sequence[str],
+    unchecked: Sequence[UncheckedFinding] = (),
     feedback_enabled: bool = False,
     coverage: ReviewCoverageSummary | None = None,
     review_number: int | None = None,
@@ -618,7 +626,7 @@ def render_review(
             still_present=still_present,
             partially_resolved=partially_resolved,
             new_refs=new_refs,
-            needs_recheck=needs_recheck,
+            not_checked_refs=not_checked_refs,
             previous_review_number=previous_review_number,
             previous_head_sha=previous_head_sha,
         ),
@@ -656,16 +664,6 @@ def render_review(
             "",
             f"**Reviewer checks:** {safe_text(item['disproof_checks'], maximum=500)}",
         ]
-        if item["review_status"] == "carried_forward":
-            finding_lines.extend(
-                [
-                    "",
-                    (
-                        "**Recheck needed:** This previous finding was not explicitly "
-                        "observed in the latest run, so it remains current until verified."
-                    ),
-                ]
-            )
         blocks.append(ReviewBlock(kind="finding", markdown="\n".join(finding_lines)))
 
     if closed:
@@ -689,6 +687,31 @@ def render_review(
         closed_lines.extend(["", "</details>"])
         blocks.append(
             ReviewBlock(kind="closed_history", markdown="\n".join(closed_lines))
+        )
+
+    if unchecked:
+        unchecked_lines = [
+            "<details>",
+            "<summary>Previous findings not rechecked</summary>",
+            "",
+            (
+                "These prior findings were not observed in this run and are not "
+                "counted as current findings."
+            ),
+            "",
+        ]
+        for item in sorted(
+            unchecked,
+            key=lambda value: local_reference_number(value["local_reference"]),
+        ):
+            title = safe_text(item.get("title", ""), maximum=180)
+            line = f"- {item['local_reference']} - not rechecked"
+            if title:
+                line += f": {title}"
+            unchecked_lines.append(line)
+        unchecked_lines.extend(["", "</details>"])
+        blocks.append(
+            ReviewBlock(kind="unchecked_history", markdown="\n".join(unchecked_lines))
         )
 
     if current:
@@ -739,7 +762,8 @@ def render_review_markdown(
     still_present: Sequence[str],
     partially_resolved: Sequence[str],
     new_refs: Sequence[str],
-    needs_recheck: Sequence[str],
+    not_checked_refs: Sequence[str],
+    unchecked: Sequence[UncheckedFinding] = (),
     feedback_enabled: bool = False,
     coverage: ReviewCoverageSummary | None = None,
     review_number: int | None = None,
@@ -755,7 +779,8 @@ def render_review_markdown(
         still_present=still_present,
         partially_resolved=partially_resolved,
         new_refs=new_refs,
-        needs_recheck=needs_recheck,
+        not_checked_refs=not_checked_refs,
+        unchecked=unchecked,
         feedback_enabled=feedback_enabled,
         coverage=coverage,
         review_number=review_number,
