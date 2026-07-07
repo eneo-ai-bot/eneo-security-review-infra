@@ -206,11 +206,11 @@ class FeedbackIngestionTests(unittest.TestCase):
         self.assertEqual(second.status, "no_mapping")
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
 
-    def test_carried_forward_publication_keeps_prior_observation_id(self) -> None:
-        recorded = self.record()[0]
+    def test_unchecked_previous_finding_is_not_current_feedback_target(self) -> None:
+        self.record()[0]
         self.finalize()
         self.record(head_sha="b" * 40, findings=[])
-        self.finalize(head_sha="b" * 40)
+        result = self.finalize(head_sha="b" * 40)
 
         row = self.connection.execute(
             """
@@ -223,8 +223,9 @@ class FeedbackIngestionTests(unittest.TestCase):
             ("b" * 40,),
         ).fetchone()
 
-        self.assertEqual(row["status"], "current")
-        self.assertEqual(row["observation_id"], recorded["observation_id"])
+        self.assertIsNone(row)
+        self.assertEqual(result["findings_count"], 0)
+        self.assertIn("Previous findings not rechecked", result["markdown"])
 
     def test_current_publication_unique_index_blocks_duplicates(self) -> None:
         self.record()

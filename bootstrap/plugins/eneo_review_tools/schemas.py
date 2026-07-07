@@ -283,9 +283,9 @@ ENEO_REVIEW_DELIVER = {
                 "maxItems": memory_contract.MAX_FINDINGS_PER_REVIEW,
                 "description": (
                     "Optional explicit verdicts for prior F references returned through "
-                    "repeat_review_findings. Omitted prior findings default to not_checked "
-                    "and remain current until explicitly resolved, invalidated, suppressed, "
-                    "or observed again."
+                    "repeat_review_findings. Omitted prior findings default to not_checked, "
+                    "are shown as not rechecked, and are not counted as current findings "
+                    "unless observed again."
                 ),
                 "items": {
                     "type": "object",

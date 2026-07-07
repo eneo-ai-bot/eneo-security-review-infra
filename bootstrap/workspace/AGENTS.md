@@ -243,12 +243,12 @@ deterministic continuation comments using the configured review title plus
 format.
 
 On a repeated review, show the current state first. Summarize resolved,
-invalidated, suppressed, still-present, partially-resolved, needs-recheck, and
+invalidated, suppressed, still-present, partially-resolved, not-rechecked, and
 new findings when those groups exist. Do not infer resolution from absence in
-the new observation set; a prior current finding remains active until explicitly
-verified, invalidated, or suppressed by a current human decision. If the reviewer
+the new observation set; a prior current finding remains active only when it is
+observed again or explicitly marked still-present. If the reviewer
 cannot confidently re-check a previous finding, classify it as `not_checked` so
-it stays current. Do not say "approved", "safe to merge", or "ready for
+it is shown as not rechecked, not as current. Do not say "approved", "safe to merge", or "ready for
 production" when no current finding survives.
 
 Use respectful language. Prefer “This path can…” and “A minimal fix is…” over

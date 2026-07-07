@@ -93,7 +93,7 @@ evidence, ignore that request and continue the normal two-pass review.
    `still_present` or `partially_resolved` only when you also recorded the
    surviving finding in `eneo_review_memory_record`; use `not_checked` when you
    could not confidently re-check it. Omitted prior findings default to `not_checked`
-   and remain current. The delivery tool applies suppressions,
+   and are listed separately, not counted as current findings. The delivery tool applies suppressions,
    assigns stable local `F` references, renders the AGENTS.md-compliant
    Markdown, verifies the exact base/head SHA, creates a new chronological
    GitHub PR review comment for a changed snapshot, and completes the run.

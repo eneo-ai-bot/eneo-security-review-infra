@@ -48,7 +48,7 @@
     {
       "id": "absence-is-not-resolution",
       "covered_by": [
-        "tests.test_memory_db.ReviewMemoryTests.test_finalize_review_carries_unobserved_previous_findings"
+        "tests.test_memory_db.ReviewMemoryTests.test_finalize_review_lists_unchecked_previous_findings_outside_current"
       ]
     }
   ],
