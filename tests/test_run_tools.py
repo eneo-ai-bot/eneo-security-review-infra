@@ -138,6 +138,24 @@ class RunToolTests(unittest.TestCase):
         self.assertIsNotNone(coverage)
         self.assertEqual(coverage["changed_paths"], 1)
 
+    def test_begin_persists_trigger_comment_context(self):
+        start = self.begin(
+            extra={"trigger_comment_id": 4903308824, "trigger_user": "CCimen"}
+        )
+
+        with closing(memory_db.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT trigger_comment_id, trigger_user
+                FROM review_runs
+                WHERE id = ?
+                """,
+                (start["run_id"],),
+            ).fetchone()
+
+        self.assertEqual(row["trigger_comment_id"], 4903308824)
+        self.assertEqual(row["trigger_user"], "CCimen")
+
     def test_begin_returns_bounded_file_index_for_large_pr(self):
         changed_files = [
             {
@@ -293,6 +311,33 @@ class RunToolTests(unittest.TestCase):
             runs = {r["id"]: r for r in memory_db.list_runs(connection)}
         self.assertEqual(runs[a["run_id"]]["status"], "running")
         self.assertEqual(len(runs), 1)
+
+    def test_begin_starts_fresh_run_after_posted_same_snapshot_review(self):
+        first_run_id = self.prepare_recorded_review(pr=16)
+        github = FakeGitHub()
+        with (
+            patch.object(tools, "_pr", return_value=self.pull()),
+            patch.object(review_publisher, "_default_gateway", return_value=github),
+        ):
+            delivered = self.call(
+                tools.review_deliver,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 16,
+                    "head_sha": "a" * 40,
+                    "run_id": first_run_id,
+                },
+            )
+        self.assertTrue(delivered["published"])
+
+        rerun = self.begin(pr=16)
+
+        self.assertEqual(rerun["status"], "running")
+        self.assertNotEqual(rerun["run_id"], first_run_id)
+        with closing(memory_db.connect()) as connection:
+            runs = memory_db.list_runs(connection, repository="eneo-ai/eneo")
+        pr_runs = [run for run in runs if run["pr_number"] == 16]
+        self.assertEqual([run["status"] for run in pr_runs], ["running", "generated"])
 
     def test_non_allowlisted_repo_rejected(self):
         result = self.call(

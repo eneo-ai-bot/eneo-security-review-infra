@@ -389,12 +389,21 @@ def review_begin(args: dict[str, Any], **_: Any) -> str:
             raise ToolInputError("draft pull requests are not reviewed")
         base_sha = _pull_base_sha(pull)
         head_sha = _pull_head_sha(pull)
+        raw_trigger_comment_id = args.get("trigger_comment_id")
+        trigger_comment_id = (
+            _positive_id(raw_trigger_comment_id, field="trigger_comment_id")
+            if raw_trigger_comment_id is not None
+            else None
+        )
+        trigger_user = str(args.get("trigger_user") or "")
 
         with closing(memory_db.connect_existing()) as connection:
             run = memory_db.start_run(
                 connection,
                 repository,
                 number,
+                trigger_comment_id=trigger_comment_id,
+                trigger_user=trigger_user,
                 base_sha=base_sha,
                 head_sha=head_sha,
             )
@@ -410,22 +419,6 @@ def review_begin(args: dict[str, Any], **_: Any) -> str:
                         "instruction": (
                             "Stop this review turn now. Another review is already "
                             "running for this PR."
-                        ),
-                    }
-                )
-            if run["status"] == "already_reviewed":
-                return _output(
-                    {
-                        "status": "already_reviewed",
-                        "publication_id": run["publication_id"],
-                        "comment_id": run["comment_id"],
-                        "review_number": run["review_number"],
-                        "base_sha": run["base_sha"],
-                        "head_sha": run["head_sha"],
-                        "message": run["message"],
-                        "instruction": (
-                            "Stop this review turn now. This exact base/head snapshot "
-                            "already has a current posted review."
                         ),
                     }
                 )

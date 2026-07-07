@@ -10,7 +10,6 @@ try:
     from .memory_validation import (
         ReviewMemoryError,
         clean_text,
-        current_policy_revision,
         isoformat,
         normalize_repository,
         parse_time,
@@ -20,7 +19,6 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_validation import (
         ReviewMemoryError,
         clean_text,
-        current_policy_revision,
         isoformat,
         normalize_repository,
         parse_time,
@@ -93,56 +91,6 @@ def _duplicate_response(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _already_reviewed_response(row: dict[str, Any]) -> dict[str, Any]:
-    review_number = row.get("review_number")
-    review_label = f"Review {review_number}" if review_number else "the current review"
-    return {
-        "id": None,
-        "repository": row["repository"],
-        "pr_number": int(row["pr_number"]),
-        "status": "already_reviewed",
-        "phase": "posted",
-        "publication_id": int(row["id"]),
-        "comment_id": int(row["comment_id"]),
-        "review_number": int(review_number) if review_number is not None else None,
-        "head_sha": row["head_sha"],
-        "base_sha": row["base_sha"],
-        "message": (
-            f"This exact base/head snapshot was already reviewed in {review_label}."
-        ),
-    }
-
-
-def _current_publication_for_snapshot(
-    connection: sqlite3.Connection,
-    repository: str,
-    pr_number: int,
-    *,
-    base_sha: str,
-    head_sha: str,
-    policy_revision: str,
-) -> dict[str, Any] | None:
-    row = connection.execute(
-        """
-        SELECT id, repository, pr_number, base_sha, head_sha, policy_revision,
-               comment_id, review_number, posted_at
-        FROM review_publications
-        WHERE repository = ?
-          AND pr_number = ?
-          AND base_sha = ?
-          AND head_sha = ?
-          AND policy_revision = ?
-          AND delivery_status = 'posted'
-          AND superseded_at IS NULL
-          AND comment_id IS NOT NULL
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (repository, int(pr_number), base_sha, head_sha, policy_revision),
-    ).fetchone()
-    return dict(row) if row else None
-
-
 def start_run(
     connection: sqlite3.Connection,
     repository: str,
@@ -191,17 +139,6 @@ def start_run(
             if existing is not None:
                 connection.commit()
                 return _duplicate_response(existing)
-            reviewed = _current_publication_for_snapshot(
-                connection,
-                repository,
-                pr_number,
-                base_sha=base_sha,
-                head_sha=head_sha,
-                policy_revision=current_policy_revision(),
-            )
-            if reviewed is not None:
-                connection.commit()
-                return _already_reviewed_response(reviewed)
         cursor = connection.execute(
             """
             INSERT INTO review_runs (
@@ -212,6 +149,7 @@ def start_run(
             (
                 repository,
                 pr_number,
+                # Audit only; webhook redelivery idempotency belongs to the gateway.
                 int(trigger_comment_id) if trigger_comment_id is not None else None,
                 clean_text(
                     trigger_user, field="trigger_user", maximum=200, required=False

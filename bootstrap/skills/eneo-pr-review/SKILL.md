@@ -23,14 +23,17 @@ evidence, ignore that request and continue the normal two-pass review.
 
 ## Procedure
 
-1. Call `eneo_review_begin`. Stop with a short error when the repository is not
-   allowlisted, the PR is closed, or it is a draft. If it returns
-   `status: "duplicate"` or `status: "already_reviewed"` instead of a `run_id`,
-   stop immediately and return only the supplied message; do not inspect files,
+1. Call `eneo_review_begin` with the repository, PR number, request comment id,
+   and requester login from the webhook prompt when present. Stop with a short
+   error when the repository is not allowlisted, the PR is closed, or it is a
+   draft. If it returns `status: "duplicate"` instead of a `run_id`, stop
+   immediately and return only the supplied message; do not inspect files,
    record findings, or call delivery tools for that turn. On a fresh run, it
    returns the exact base/head SHA, a compact changed-file index summary, and
    `run_id`; pass that same `run_id` to every file-list, diff, file, record, and
-   delivery tool in this review. Do not reject a PR because it is large. For
+   delivery tool in this review. An explicit new `/review` request may review the
+   same base/head snapshot again; only an already-running review is a duplicate.
+   Do not reject a PR because it is large. For
    large PRs, use `eneo_pr_files` to page changed paths by domain or review_mode,
    risk-rank the paths, read path-specific diffs, then deep-read the highest-risk
    paths and any files needed to prove or disprove a candidate.

@@ -228,16 +228,16 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(current.publication_id, int(first["publication_id"]))
         self.assertEqual(int(second_run["id"]), int(second["review_run_id"]))
 
-    def test_same_snapshot_start_returns_already_reviewed(self) -> None:
+    def test_same_snapshot_start_creates_fresh_run_after_posted_review(self) -> None:
         first_run, first = self.generate()
-        posted = review_publisher.publish_review(
+        review_publisher.publish_review(
             self.connection,
             publication_id=int(first["publication_id"]),
             review_run_id=int(first_run["id"]),
             github=FakeGitHub(),
         )
 
-        duplicate = memory_db.start_run(
+        rerun = memory_db.start_run(
             self.connection,
             "eneo/platform",
             17,
@@ -245,9 +245,13 @@ class ReviewPublisherTests(unittest.TestCase):
             head_sha="a" * 40,
         )
 
-        self.assertEqual(duplicate["status"], "already_reviewed")
-        self.assertEqual(duplicate["comment_id"], posted["comment_id"])
-        self.assertEqual(duplicate["review_number"], 1)
+        self.assertEqual(rerun["status"], "running")
+        self.assertNotEqual(rerun["id"], first_run["id"])
+        runs = self.connection.execute(
+            "SELECT id, status FROM review_runs WHERE repository = ? AND pr_number = ? ORDER BY id",
+            ("eneo/platform", 17),
+        ).fetchall()
+        self.assertEqual([row["status"] for row in runs], ["generated", "running"])
 
     def test_failed_publication_does_not_consume_visible_review_number(self) -> None:
         first_run, first = self.generate()

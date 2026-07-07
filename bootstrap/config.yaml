@@ -124,6 +124,7 @@ platforms:
             Repository: {repository.full_name}
             Pull request: #{pull_request.number}
             Requester: {requester.login} ({requester.association})
+            Request comment id: {request.comment_id}
 
             Review the current pull-request head in two internal passes: first
             identify candidates, then skeptically try to disprove every candidate.
