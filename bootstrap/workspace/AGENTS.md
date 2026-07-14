@@ -160,9 +160,12 @@ formatting, vague possibilities, generic best practice, or personal preference.
 
 ## GitHub comment contract
 
-Post one summary comment, not a wall of inline comments. Write clean, scannable
-GitHub-flavored Markdown. Keep each individual finding compact, but never
-shorten the review by omitting a surviving finding.
+Post one canonical summary comment, not a wall of timeline comments. Write
+clean, scannable GitHub-flavored Markdown. Keep each individual finding compact,
+but never shorten the review by omitting a surviving finding. Optional atomic
+fixes are the only exception to the no-inline-comments rule: deterministic
+publisher code groups them into one non-blocking GitHub `COMMENT` review so the
+developer gets GitHub's native suggestion controls in **Files changed**.
 
 - Publish every unsuppressed, evidence-backed, independent root-cause finding
   that survives the skeptical gate. Do not omit a verified lower-priority
@@ -197,9 +200,9 @@ shorten the review by omitting a surviving finding.
   Keep skeptical `disproof_checks` in review memory rather than repeating them in
   the public comment. Do not split one root cause into a second finding just
   because it also needs a test.
-- Suggested changes should choose the lowest-risk remediation: prefer a safe
-  local fix, call out careful or risky remediation only when unavoidable, and do
-  not recommend deletion unless you can explain why the code exists and why that
+- Suggested fixes should choose the lowest-risk remediation: prefer a safe local
+  fix, call out careful or risky remediation only when unavoidable, and do not
+  recommend deletion unless you can explain why the code exists and why that
   reason no longer applies.
 - Separate findings with a blank line and keep headings and metadata consistent so
   the comment reads as one coherent, scannable review.
@@ -224,6 +227,45 @@ shorten the review by omitting a surviving finding.
   skipped or skimmed path groups, and do not call it clean.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.
+
+### Optional atomic GitHub suggestions
+
+A finding may include one optional `suggestion` only when the exact replacement
+is small, local, and independently safe. The finding remains complete without a
+suggestion; omit it whenever there is doubt. A suggestion must:
+
+- replace one small contiguous right-side range in the finding's changed file;
+- include exact `expected_text` from the current head and exact
+  `replacement_text`, with no placeholders or omitted code;
+- resolve the demonstrated local failure on its own, even if the developer
+  applies no other suggestion; and
+- preserve the finding's normal evidence, impact, smallest-fix explanation, and
+  focused validation guidance.
+
+Never propose a GitHub suggestion for migrations; public API or persisted-data
+contracts; authentication, authorization, or tenant boundaries; changes spanning
+create/update/delete or other lifecycle operations; multi-file fixes; or a fix
+that depends on a companion code change, generated artifact, behavior test, or
+another suggestion. Do not use suggestions for broad refactors, product choices,
+or uncertain remediation. Multiple eligible findings may have suggestions in
+different files, but each patch must remain safe when applied alone. There is at
+most one suggestion per finding.
+
+Deterministic publisher code rechecks the exact head, range, and expected text.
+It publishes at most 12 highest-priority, non-overlapping suggestions for the
+snapshot in one GitHub `COMMENT` review, never as separate timeline comments and
+never as `APPROVE` or `REQUEST_CHANGES`. Other findings remain in the coding-agent
+brief. A developer may apply one patch or add selected independent patches to
+GitHub's batch and commit them together; no patch may rely on the developer
+selecting the whole batch. Applying a suggestion is not a resolution verdict. CI
+and a fresh top-level `/review` are still required to re-check the code.
+
+When suggestions were published, render one compact GitHub `TIP` alert after the
+findings. Show both the number ready to apply and the number requiring coordinated
+implementation, link to **Files changed**, explain individual and selected-batch
+application, and direct the developer to run CI and post a fresh `/review`. Keep
+all findings in the copyable coding-agent brief, including a concise fix-path
+label. Do not repeat suggestion instructions under every visible finding.
 
 After the visible findings, add an always-visible next step: address the current
 findings, push the fixes, then post `/review` as a new top-level PR comment. State

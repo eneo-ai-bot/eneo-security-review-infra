@@ -30,7 +30,9 @@ The live reviewer does not receive:
 
 Review output reaches GitHub only through `eneo_review_deliver`. The tool verifies
 the PR base/head snapshot, renders the stored comment, publishes deterministic
-comment parts, and records the delivery state.
+comment parts and any validated atomic suggestions, and records the delivery
+state. Suggestions are grouped in one non-blocking GitHub `COMMENT` review; the
+model never receives a GitHub mutation tool.
 
 ## Prompt-Injection Handling
 
@@ -77,6 +79,12 @@ exact permission matrix.
 None of these tokens need repository administration, workflow write, package
 write, secrets access, branch deletion, or contents write.
 
+The publisher token needs Pull requests read/write for both the PR summary and
+native review suggestions. It does not need Issues write or Contents write and
+cannot commit those patches through the review flow. A developer chooses whether
+to apply an individual suggestion or a selected batch in GitHub, and that human
+action creates the commit.
+
 If GitHub returns `Resource not accessible by personal access token`, inspect the
 endpoint-specific failure in `eneo-review-memory publications --json`. Most
 runtime 403s are missing org approval or missing Issues/Pull requests permission
@@ -116,10 +124,10 @@ the invariants the ADR requires.
 
 ## Data Handling
 
-The SQLite database stores findings, review runs, publication metadata, human
-decisions, and review-quality feedback. It can contain sensitive unpublished
-findings and maintainer-entered reasons. Back it up securely and scrub exports
-before sharing.
+The SQLite database stores findings, review runs, publication and suggestion
+metadata, human decisions, and review-quality feedback. It can contain sensitive
+unpublished findings and maintainer-entered reasons. Back it up securely and
+scrub exports before sharing.
 
 Coach and verification exports are private analysis artifacts. They contain
 bounded untrusted text, stable ids, exact observation provenance, hashes, and

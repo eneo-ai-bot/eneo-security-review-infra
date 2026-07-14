@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import json
 import sys
@@ -16,6 +17,7 @@ sys.path.insert(0, str(PLUGIN_PARENT))
 from eneo_review_tools import (  # noqa: E402
     memory_db,
     memory_publications,
+    memory_suggestions,
     review_publisher,
     review_renderer,
 )
@@ -50,15 +52,28 @@ class FakeGitHub:
         head_sha: str = "a" * 40,
         bot_login: str = "eneo-ai-bot",
         comments: list[review_publisher.IssueComment] | None = None,
+        review_comments: list[review_publisher.PullRequestReviewComment] | None = None,
     ) -> None:
         self.base_sha = base_sha
         self.head_sha = head_sha
         self.bot_login = bot_login
         self.comments = list(comments or [])
+        self.review_comments = list(review_comments or [])
         self.created: list[str] = []
         self.updated: list[tuple[int, str]] = []
         self.deleted: list[int] = []
+        self.created_reviews: list[
+            tuple[
+                str,
+                int,
+                str,
+                str,
+                tuple[review_publisher.InlineReviewComment, ...],
+            ]
+        ] = []
         self.next_comment_id = 1000
+        self.next_review_id = 2000
+        self.next_review_comment_id = 3000
 
     def current_user_login(self) -> str:
         return self.bot_login
@@ -123,11 +138,138 @@ class FakeGitHub:
         ]
         self.deleted.append(comment_id)
 
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[review_publisher.InlineReviewComment],
+    ) -> review_publisher.PullRequestReview:
+        self.next_review_id += 1
+        review_id = self.next_review_id
+        frozen_comments = tuple(comments)
+        self.created_reviews.append(
+            (repository, pr_number, commit_id, body, frozen_comments)
+        )
+        for comment in frozen_comments:
+            self.next_review_comment_id += 1
+            self.review_comments.append(
+                review_publisher.PullRequestReviewComment(
+                    comment_id=self.next_review_comment_id,
+                    review_id=review_id,
+                    body=comment.body,
+                    author_login=self.bot_login,
+                    path=comment.path,
+                    commit_id=commit_id,
+                    line=comment.line,
+                    side=comment.side,
+                    start_line=comment.start_line,
+                    start_side=comment.start_side,
+                )
+            )
+        return review_publisher.PullRequestReview(
+            review_id=review_id,
+            body=body,
+            author_login=self.bot_login,
+            commit_id=commit_id,
+            state="COMMENTED",
+        )
+
+    def list_pull_request_review_comments(
+        self, repository: str, pr_number: int, *, max_pages: int = 3
+    ) -> list[review_publisher.PullRequestReviewComment]:
+        del repository, pr_number, max_pages
+        return list(self.review_comments)
+
+
+class FailingSuggestionGitHub(FakeGitHub):
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[review_publisher.InlineReviewComment],
+    ) -> review_publisher.PullRequestReview:
+        del repository, pr_number, commit_id, body, comments
+        raise review_publisher.GitHubPublicationError(
+            "github_403_create_pull_request_review",
+            status=403,
+            operation="create_pull_request_review",
+        )
+
+
+class AmbiguousSuggestionGitHub(FakeGitHub):
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[review_publisher.InlineReviewComment],
+    ) -> review_publisher.PullRequestReview:
+        super().create_pull_request_review(
+            repository,
+            pr_number,
+            commit_id=commit_id,
+            body=body,
+            comments=comments,
+        )
+        raise review_publisher.GitHubPublicationError(
+            "github_http_502_create_pull_request_review",
+            status=502,
+            operation="create_pull_request_review",
+        )
+
+
+class AcceptedThenUnreachableSuggestionGitHub(FakeGitHub):
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[review_publisher.InlineReviewComment],
+    ) -> review_publisher.PullRequestReview:
+        super().create_pull_request_review(
+            repository,
+            pr_number,
+            commit_id=commit_id,
+            body=body,
+            comments=comments,
+        )
+        raise review_publisher.GitHubPublicationError(
+            "github_unreachable",
+            operation="create_pull_request_review",
+        )
+
+
+class AdvancingHeadGitHub(FakeGitHub):
+    def __init__(self, *, advance_on_call: int) -> None:
+        super().__init__()
+        self.advance_on_call = advance_on_call
+        self.pull_reads = 0
+
+    def get_pull_request(
+        self, repository: str, pr_number: int
+    ) -> review_publisher.PullRequestState:
+        self.pull_reads += 1
+        if self.pull_reads >= self.advance_on_call:
+            self.head_sha = "c" * 40
+        return super().get_pull_request(repository, pr_number)
+
 
 class ReviewPublisherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.connection = memory_db.connect(str(Path(self.temp.name) / "memory.sqlite3"))
+        self.connection = memory_db.connect(
+            str(Path(self.temp.name) / "memory.sqlite3")
+        )
         self.finding = {
             "rule_id": "tenant.missing-scope",
             "category": "security",
@@ -155,7 +297,9 @@ class ReviewPublisherTests(unittest.TestCase):
         marker = "eneo-review:canonical publication=sha256:" + ("0" * 64)
         html_marker = f"<!-- {marker} -->"
 
-        self.assertEqual(memory_publications.publication_marker(publication_key), marker)
+        self.assertEqual(
+            memory_publications.publication_marker(publication_key), marker
+        )
         self.assertEqual(
             memory_publications.publication_marker_html(publication_key),
             html_marker,
@@ -168,9 +312,7 @@ class ReviewPublisherTests(unittest.TestCase):
         )
         self.assertIsNone(
             memory_publications.extract_publication_key(
-                "<!-- review-agent:canonical publication=sha256:"
-                + ("0" * 64)
-                + " -->"
+                "<!-- review-agent:canonical publication=sha256:" + ("0" * 64) + " -->"
             )
         )
 
@@ -180,8 +322,23 @@ class ReviewPublisherTests(unittest.TestCase):
         base_sha: str = "b" * 40,
         head_sha: str = "a" * 40,
         connection=None,
+        with_suggestion: bool = False,
     ):
         connection = connection or self.connection
+        finding = (
+            dict(
+                self.finding,
+                rule_id="correctness.boolean-default",
+                category="correctness",
+                anchor="boolean default",
+                title="Boolean default enables the unsafe mode",
+                evidence="The changed boolean default is true.",
+                impact="The feature runs in the wrong mode.",
+                smallest_fix="Restore the disabled default.",
+            )
+            if with_suggestion
+            else self.finding
+        )
         run = memory_db.start_run(
             connection,
             "eneo/platform",
@@ -189,16 +346,36 @@ class ReviewPublisherTests(unittest.TestCase):
             base_sha=base_sha,
             head_sha=head_sha,
         )
-        memory_db.record_findings(
+        recorded = memory_db.record_findings(
             connection,
             "eneo/platform",
             17,
             head_sha,
-            [self.finding],
+            [finding],
             review_run_id=int(run["id"]),
             base_sha=base_sha,
-            context_hashes={self.finding["path"]: "d" * 40},
-        )
+            context_hashes={finding["path"]: "d" * 40},
+        )[0]
+        if with_suggestion:
+            suggestion: memory_suggestions.ValidatedSuggestion = {
+                "path": finding["path"],
+                "start_line": finding["line"],
+                "end_line": finding["line"],
+                "expected_hash": hashlib.sha256(b"unsafe = True").hexdigest(),
+                "replacement_text": "unsafe = False",
+                "suggestion_key": memory_suggestions.suggestion_key(
+                    "eneo/platform",
+                    17,
+                    head_sha,
+                    str(recorded["fingerprint"]),
+                ),
+            }
+            with connection:
+                memory_suggestions.replace_observation_suggestion(
+                    connection,
+                    observation_id=int(recorded["observation_id"]),
+                    suggestion=suggestion,
+                )
         publication = memory_db.finalize_review(
             connection,
             "eneo/platform",
@@ -283,6 +460,287 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(second["review_number"], 1)
         self.assertIn("Review 1", github.created[0])
 
+    def test_atomic_patch_uses_one_native_comment_review_and_one_summary(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = FakeGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertTrue(result["suggestions_published"])
+        self.assertEqual(result["suggestions_count"], 1)
+        self.assertEqual(len(github.created_reviews), 1)
+        self.assertEqual(len(github.created), 1)
+        repository, number, commit_id, review_body, comments = github.created_reviews[0]
+        self.assertEqual((repository, number), ("eneo/platform", 17))
+        self.assertEqual(commit_id, "a" * 40)
+        self.assertIn("Optional atomic patches", review_body)
+        self.assertIn("Applying a patch does not itself mark", review_body)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, self.finding["path"])
+        self.assertEqual(comments[0].line, self.finding["line"])
+        self.assertEqual(comments[0].side, "RIGHT")
+        self.assertIsNone(comments[0].start_line)
+        self.assertIn("```suggestion\nunsafe = False\n```", comments[0].body)
+        self.assertIn("eneo-review:suggestion key=sha256:", comments[0].body)
+        self.assertIn("optional GitHub suggestion ready to apply", github.created[0])
+
+    def test_independent_patches_across_files_share_one_native_review(self) -> None:
+        first = dict(
+            self.finding,
+            rule_id="correctness.backend-default",
+            category="correctness",
+            path="backend/flags.py",
+            line=12,
+            symbol="backend_default",
+            anchor="backend default",
+            title="Backend default uses the wrong unit",
+            evidence="The backend passes milliseconds to a seconds API.",
+            impact="Retries wait too long.",
+            smallest_fix="Convert the value at the scheduler boundary.",
+        )
+        second = dict(
+            self.finding,
+            rule_id="correctness.frontend-default",
+            category="correctness",
+            path="frontend/flags.ts",
+            line=8,
+            symbol="frontendDefault",
+            anchor="frontend default",
+            title="Frontend default uses the wrong unit",
+            evidence="The frontend passes milliseconds to a seconds API.",
+            impact="Retries wait too long.",
+            smallest_fix="Convert the value at the scheduler boundary.",
+        )
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+        )
+        recorded = memory_db.record_findings(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            [first, second],
+            review_run_id=int(run["id"]),
+            base_sha="b" * 40,
+            context_hashes={first["path"]: "c" * 40, second["path"]: "d" * 40},
+        )
+        with self.connection:
+            for finding, observation in zip((first, second), recorded, strict=True):
+                replacement = (
+                    "value = 1000" if finding is first else "const value = 1000"
+                )
+                suggestion: memory_suggestions.ValidatedSuggestion = {
+                    "path": str(finding["path"]),
+                    "start_line": int(finding["line"]),
+                    "end_line": int(finding["line"]),
+                    "expected_hash": hashlib.sha256(b"value = 1").hexdigest(),
+                    "replacement_text": replacement,
+                    "suggestion_key": memory_suggestions.suggestion_key(
+                        "eneo/platform",
+                        17,
+                        "a" * 40,
+                        str(observation["fingerprint"]),
+                    ),
+                }
+                memory_suggestions.replace_observation_suggestion(
+                    self.connection,
+                    observation_id=int(observation["observation_id"]),
+                    suggestion=suggestion,
+                )
+        publication = memory_db.finalize_review(
+            self.connection,
+            "eneo/platform",
+            17,
+            "a" * 40,
+            review_run_id=int(run["id"]),
+        )
+        github = FakeGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["suggestions_published"])
+        self.assertEqual(result["suggestions_count"], 2)
+        self.assertEqual(len(github.created_reviews), 1)
+        comments = github.created_reviews[0][4]
+        self.assertEqual(
+            {comment.path for comment in comments}, {first["path"], second["path"]}
+        )
+
+    def test_suggestion_failure_keeps_finding_and_posts_summary_without_ready_tip(
+        self,
+    ) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = FailingSuggestionGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertFalse(result["suggestions_published"])
+        self.assertEqual(
+            result["suggestion_failure_code"],
+            "github_403_create_pull_request_review",
+        )
+        self.assertEqual(len(github.created), 1)
+        self.assertIn("Boolean default enables the unsafe mode", github.created[0])
+        self.assertNotIn("ready to apply", github.created[0])
+        self.assertIn(
+            "Candidate for an optional atomic GitHub suggestion", github.created[0]
+        )
+        row = self.connection.execute(
+            """
+            SELECT delivery_status, suggestion_delivery_status
+            FROM review_publications WHERE id = ?
+            """,
+            (int(publication["publication_id"]),),
+        ).fetchone()
+        self.assertEqual(row["delivery_status"], "posted")
+        self.assertEqual(row["suggestion_delivery_status"], "publish_failed")
+
+    def test_native_suggestion_marker_recovers_ambiguous_create_response(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        stored = memory_suggestions.suggestions_for_publication(
+            self.connection, int(publication["publication_id"])
+        )[0]
+        existing = review_publisher.PullRequestReviewComment(
+            comment_id=77,
+            review_id=88,
+            body=review_publisher._inline_suggestion_body(stored),
+            author_login="eneo-ai-bot",
+            path=stored["path"],
+            commit_id="a" * 40,
+            line=stored["end_line"],
+            side="RIGHT",
+            start_line=None,
+            start_side=None,
+        )
+        github = FakeGitHub(review_comments=[existing])
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertTrue(result["suggestions_published"])
+        self.assertEqual(result["suggestions_recovered"], 1)
+        self.assertEqual(result["suggestions_created"], 0)
+        self.assertEqual(result["suggestion_review_id"], 88)
+        self.assertEqual(github.created_reviews, [])
+
+    def test_ambiguous_review_create_reconciles_remote_markers(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = AmbiguousSuggestionGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertTrue(result["suggestions_published"])
+        self.assertEqual(len(github.created_reviews), 1)
+        self.assertIn("optional GitHub suggestion ready to apply", github.created[0])
+
+    def test_accepted_review_post_then_unreachable_reconciles_once(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = AcceptedThenUnreachableSuggestionGitHub()
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(result["published"])
+        self.assertTrue(result["suggestions_published"])
+        self.assertEqual(len(github.created_reviews), 1)
+        self.assertEqual(len(github.review_comments), 1)
+        self.assertIn("optional GitHub suggestion ready to apply", github.created[0])
+
+    def test_head_change_before_suggestion_write_stales_whole_publication(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = AdvancingHeadGitHub(advance_on_call=2)
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertFalse(result["published"])
+        self.assertEqual(result["delivery_status"], "stale")
+        self.assertEqual(github.created_reviews, [])
+        self.assertEqual(github.created, [])
+
+    def test_head_change_after_suggestion_write_never_posts_ready_summary(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = AdvancingHeadGitHub(advance_on_call=3)
+
+        result = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertFalse(result["published"])
+        self.assertEqual(result["delivery_status"], "stale")
+        self.assertEqual(len(github.created_reviews), 1)
+        self.assertEqual(github.created, [])
+        delivery = memory_suggestions.suggestion_delivery_status(
+            self.connection, int(publication["publication_id"])
+        )
+        self.assertEqual(delivery["suggestion_delivery_status"], "stale")
+
+    def test_posted_publication_does_not_duplicate_native_suggestion(self) -> None:
+        run, publication = self.generate(with_suggestion=True)
+        github = FakeGitHub()
+        first = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        second = review_publisher.publish_review(
+            self.connection,
+            publication_id=int(publication["publication_id"]),
+            review_run_id=int(run["id"]),
+            github=github,
+        )
+
+        self.assertTrue(first["suggestions_published"])
+        self.assertTrue(second["suggestions_published"])
+        self.assertTrue(second["suggestions_idempotent"])
+        self.assertEqual(len(github.created_reviews), 1)
+        self.assertEqual(len(github.created), 1)
+
     def test_publish_creates_new_round_and_marks_previous_historical(self) -> None:
         first_run, first = self.generate()
         github = FakeGitHub()
@@ -340,8 +798,7 @@ class ReviewPublisherTests(unittest.TestCase):
             review_renderer.ReviewBlock(
                 kind="header",
                 markdown=(
-                    "## Eneo AI code & security review\n\n"
-                    "Stored pre-rename review."
+                    "## Eneo AI code & security review\n\nStored pre-rename review."
                 ),
             )
         ]
@@ -517,9 +974,7 @@ class ReviewPublisherTests(unittest.TestCase):
                 markdown=(
                     "<details>\n"
                     "<summary>Copyable fix brief for a coding agent</summary>\n\n"
-                    "```text\n"
-                    + ("Fix brief line. " * 20)
-                    + "\n```\n\n"
+                    "```text\n" + ("Fix brief line. " * 20) + "\n```\n\n"
                     "</details>"
                 ),
             ),
@@ -667,7 +1122,9 @@ class ReviewPublisherTests(unittest.TestCase):
         first_comment_ids = list(first_result["comment_ids"])
         self.assertGreater(len(first_comment_ids), 1)
 
-        fresh_connection = memory_db.connect(str(Path(self.temp.name) / "fresh.sqlite3"))
+        fresh_connection = memory_db.connect(
+            str(Path(self.temp.name) / "fresh.sqlite3")
+        )
         try:
             second_run, second = self.generate(
                 head_sha="c" * 40,
@@ -856,6 +1313,338 @@ class ReviewPublisherTests(unittest.TestCase):
                 gateway.create_issue_comment("eneo-ai/eneo", 240, "review")
 
         self.assertEqual(error.exception.code, "github_403_create_issue_comment")
+
+    def test_http_gateway_creates_one_comment_review_with_multiple_inline_ranges(
+        self,
+    ) -> None:
+        head_sha = "a" * 40
+        review_body = "Optional atomic fixes.\n\n<!-- review=one -->"
+        seen: list[tuple[str, str, str, object]] = []
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            del timeout
+            payload = json.loads((request.data or b"{}").decode("utf-8"))
+            seen.append(
+                (
+                    request.get_method(),
+                    request.full_url,
+                    request.get_header("Authorization", ""),
+                    payload,
+                )
+            )
+            return FakeHTTPResponse(
+                {
+                    "id": 81,
+                    "body": review_body,
+                    "user": {"login": "eneo-ai-bot"},
+                    "commit_id": head_sha,
+                    "state": "COMMENTED",
+                }
+            )
+
+        comments = [
+            review_publisher.InlineReviewComment(
+                path="backend/api.py",
+                body="F1\n```suggestion\nreturn scoped_query\n```",
+                line=42,
+                side="RIGHT",
+            ),
+            review_publisher.InlineReviewComment(
+                path="frontend/src/client.ts",
+                body="F2\n```suggestion\nconst value = first\nconst ready = true\n```",
+                start_line=7,
+                start_side="RIGHT",
+                line=8,
+                side="RIGHT",
+            ),
+        ]
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            review = gateway.create_pull_request_review(
+                "eneo-ai/eneo",
+                240,
+                commit_id=head_sha,
+                body=review_body,
+                comments=comments,
+            )
+
+        self.assertEqual(
+            review,
+            review_publisher.PullRequestReview(
+                review_id=81,
+                body=review_body,
+                author_login="eneo-ai-bot",
+                commit_id=head_sha,
+                state="COMMENTED",
+            ),
+        )
+        self.assertEqual(
+            seen[0][:3],
+            (
+                "POST",
+                "https://api.github.com/repos/eneo-ai/eneo/pulls/240/reviews",
+                "Bearer write-token",
+            ),
+        )
+        self.assertEqual(
+            seen[0][3],
+            {
+                "commit_id": head_sha,
+                "body": review_body,
+                "event": "COMMENT",
+                "comments": [
+                    {
+                        "path": "backend/api.py",
+                        "body": "F1\n```suggestion\nreturn scoped_query\n```",
+                        "line": 42,
+                        "side": "RIGHT",
+                    },
+                    {
+                        "path": "frontend/src/client.ts",
+                        "body": (
+                            "F2\n```suggestion\nconst value = first\n"
+                            "const ready = true\n```"
+                        ),
+                        "line": 8,
+                        "side": "RIGHT",
+                        "start_line": 7,
+                        "start_side": "RIGHT",
+                    },
+                ],
+            },
+        )
+
+    def test_http_gateway_lists_review_comments_with_bounded_pagination(self) -> None:
+        head_sha = "a" * 40
+        urls: list[str] = []
+
+        def item(comment_id: int, *, outdated: bool = False) -> dict[str, object]:
+            return {
+                "id": comment_id,
+                "pull_request_review_id": 81,
+                "body": f"F1\n<!-- suggestion={comment_id} -->",
+                "user": {"login": "eneo-ai-bot"},
+                "path": "backend/api.py",
+                "commit_id": head_sha,
+                "line": None if outdated else 42,
+                "side": None if outdated else "RIGHT",
+                "start_line": None,
+                "start_side": None,
+            }
+
+        first_page = [item(index) for index in range(1, 101)]
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            del timeout
+            urls.append(request.full_url)
+            return FakeHTTPResponse(
+                first_page
+                if "page=1&" in request.full_url
+                else [item(101, outdated=True)]
+            )
+
+        gateway = review_publisher.GitHubIssueCommentGateway(
+            "write-token", read_token="read-token"
+        )
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            comments = gateway.list_pull_request_review_comments(
+                "eneo-ai/eneo", 240, max_pages=2
+            )
+
+        self.assertEqual(len(comments), 101)
+        self.assertEqual(comments[0].comment_id, 1)
+        self.assertEqual(comments[-1].comment_id, 101)
+        self.assertIsNone(comments[-1].line)
+        self.assertIsNone(comments[-1].side)
+        self.assertEqual(
+            urls,
+            [
+                "https://api.github.com/repos/eneo-ai/eneo/pulls/240/comments"
+                "?per_page=100&page=1&sort=created&direction=desc",
+                "https://api.github.com/repos/eneo-ai/eneo/pulls/240/comments"
+                "?per_page=100&page=2&sort=created&direction=desc",
+            ],
+        )
+
+    def test_http_gateway_does_not_retry_non_idempotent_review_post(self) -> None:
+        attempts = 0
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            nonlocal attempts
+            del timeout
+            attempts += 1
+            raise urllib.error.HTTPError(
+                request.full_url,
+                502,
+                "ambiguous gateway failure",
+                {},
+                None,
+            )
+
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(review_publisher.GitHubPublicationError) as error:
+                gateway.create_pull_request_review(
+                    "eneo-ai/eneo",
+                    240,
+                    commit_id="a" * 40,
+                    body="Optional atomic fix.",
+                    comments=[
+                        review_publisher.InlineReviewComment(
+                            path="backend/api.py",
+                            body="F1\n```suggestion\nreturn scoped_query\n```",
+                            line=42,
+                            side="RIGHT",
+                        )
+                    ],
+                )
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(
+            error.exception.code,
+            "github_http_502_create_pull_request_review",
+        )
+
+    def test_http_gateway_preserves_review_operation_on_url_error(self) -> None:
+        attempts = 0
+
+        def fake_urlopen(
+            request: urllib.request.Request, timeout: int
+        ) -> FakeHTTPResponse:
+            nonlocal attempts
+            del request, timeout
+            attempts += 1
+            raise urllib.error.URLError("connection reset after request")
+
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(review_publisher.GitHubPublicationError) as error:
+                gateway.create_pull_request_review(
+                    "eneo-ai/eneo",
+                    240,
+                    commit_id="a" * 40,
+                    body="Optional atomic fix.",
+                    comments=[
+                        review_publisher.InlineReviewComment(
+                            path="backend/api.py",
+                            body="F1\n```suggestion\nreturn scoped_query\n```",
+                            line=42,
+                            side="RIGHT",
+                        )
+                    ],
+                )
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(error.exception.code, "github_unreachable")
+        self.assertEqual(error.exception.operation, "create_pull_request_review")
+
+    def test_http_gateway_rejects_malformed_review_identity_fields(self) -> None:
+        head_sha = "a" * 40
+        response = {
+            "id": True,
+            "body": "Optional atomic fix.",
+            "user": {"login": "eneo-ai-bot"},
+            "commit_id": head_sha,
+            "state": "COMMENTED",
+        }
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+
+        with mock.patch(
+            "urllib.request.urlopen", return_value=FakeHTTPResponse(response)
+        ):
+            with self.assertRaises(review_publisher.GitHubPublicationError) as error:
+                gateway.create_pull_request_review(
+                    "eneo-ai/eneo",
+                    240,
+                    commit_id=head_sha,
+                    body="Optional atomic fix.",
+                    comments=[
+                        review_publisher.InlineReviewComment(
+                            path="backend/api.py",
+                            body="F1\n```suggestion\nreturn scoped_query\n```",
+                            line=42,
+                            side="RIGHT",
+                        )
+                    ],
+                )
+
+        self.assertEqual(error.exception.code, "github_bad_review_response")
+
+    def test_http_gateway_rejects_malformed_review_comment_author(self) -> None:
+        response = [
+            {
+                "id": 9,
+                "pull_request_review_id": 81,
+                "body": "F1\n<!-- suggestion=one -->",
+                "user": {"login": ""},
+                "path": "backend/api.py",
+                "commit_id": "a" * 40,
+                "line": 42,
+                "side": "RIGHT",
+                "start_line": None,
+                "start_side": None,
+            }
+        ]
+        gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+
+        with mock.patch(
+            "urllib.request.urlopen", return_value=FakeHTTPResponse(response)
+        ):
+            with self.assertRaises(review_publisher.GitHubPublicationError) as error:
+                gateway.list_pull_request_review_comments("eneo-ai/eneo", 240)
+
+        self.assertEqual(error.exception.code, "github_bad_review_comments_response")
+
+    def test_http_gateway_reports_review_creation_failure_codes(self) -> None:
+        head_sha = "a" * 40
+
+        for status, expected_code in (
+            (403, "github_403_create_pull_request_review"),
+            (422, "github_http_422_create_pull_request_review"),
+        ):
+            with self.subTest(status=status):
+
+                def fake_urlopen(
+                    request: urllib.request.Request, timeout: int
+                ) -> FakeHTTPResponse:
+                    del timeout
+                    raise urllib.error.HTTPError(
+                        request.full_url,
+                        status,
+                        "review creation failed",
+                        {},
+                        None,
+                    )
+
+                gateway = review_publisher.GitHubIssueCommentGateway("write-token")
+                with mock.patch("urllib.request.urlopen", fake_urlopen):
+                    with self.assertRaises(
+                        review_publisher.GitHubPublicationError
+                    ) as error:
+                        gateway.create_pull_request_review(
+                            "eneo-ai/eneo",
+                            240,
+                            commit_id=head_sha,
+                            body="Optional atomic fix.",
+                            comments=[
+                                review_publisher.InlineReviewComment(
+                                    path="backend/api.py",
+                                    body=(
+                                        "F1\n```suggestion\nreturn scoped_query\n```"
+                                    ),
+                                    line=42,
+                                    side="RIGHT",
+                                )
+                            ],
+                        )
+                self.assertEqual(error.exception.code, expected_code)
 
 
 if __name__ == "__main__":

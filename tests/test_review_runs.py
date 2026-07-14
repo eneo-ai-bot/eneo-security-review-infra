@@ -186,6 +186,59 @@ class ReviewRunsTests(unittest.TestCase):
         self.assertEqual(runs[2]["status"], "running")
         self.assertIsNotNone(runs[1]["completed_at"])
 
+    def test_stale_reaper_releases_abandoned_publication_claims(self):
+        now = memory_db.utc_now()
+        run = memory_db.start_run(
+            self.connection,
+            "eneo-ai/eneo",
+            9,
+            base_sha="b" * 40,
+            head_sha="a" * 40,
+            now=now - timedelta(minutes=45),
+        )
+        memory_db.record_findings(
+            self.connection,
+            "eneo-ai/eneo",
+            9,
+            "a" * 40,
+            [],
+            review_run_id=int(run["id"]),
+            base_sha="b" * 40,
+        )
+        publication = memory_db.finalize_review(
+            self.connection,
+            "eneo-ai/eneo",
+            9,
+            "a" * 40,
+            review_run_id=int(run["id"]),
+        )
+        self.connection.execute(
+            """
+            UPDATE review_publications
+            SET delivery_status = 'posting',
+                suggestion_delivery_status = 'posting'
+            WHERE id = ?
+            """,
+            (int(publication["publication_id"]),),
+        )
+        self.connection.commit()
+
+        memory_db.mark_stale_runs_failed(self.connection, now=now)
+
+        row = self.connection.execute(
+            """
+            SELECT delivery_status, failure_code,
+                   suggestion_delivery_status, suggestion_failure_code
+            FROM review_publications
+            WHERE id = ?
+            """,
+            (int(publication["publication_id"]),),
+        ).fetchone()
+        self.assertEqual(row["delivery_status"], "publish_failed")
+        self.assertEqual(row["failure_code"], "stale_timeout")
+        self.assertEqual(row["suggestion_delivery_status"], "publish_failed")
+        self.assertEqual(row["suggestion_failure_code"], "stale_timeout")
+
     def test_start_run_marks_stale_same_pr_only(self):
         now = memory_db.utc_now()
         old = now - timedelta(minutes=45)
@@ -366,6 +419,10 @@ class ReviewRunsTests(unittest.TestCase):
 
         payload = json.loads(completed.stdout)
         self.assertEqual(payload[0]["delivery_status"], "generated")
+        self.assertEqual(payload[0]["suggestion_delivery_status"], "none")
+        self.assertIsNone(payload[0]["suggestion_review_id"])
+        self.assertIsNone(payload[0]["suggestion_posting_started_at"])
+        self.assertEqual(payload[0]["suggestion_failure_code"], "")
         self.assertEqual(payload[0]["review_run_id"], run["id"])
         self.connection = memory_db.connect(str(self.db_path))
 

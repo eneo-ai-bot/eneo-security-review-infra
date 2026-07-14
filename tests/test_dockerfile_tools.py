@@ -72,6 +72,7 @@ class DockerfileToolsTests(unittest.TestCase):
             "memory_identity",
             "memory_decisions",
             "memory_findings",
+            "memory_suggestions",
             "memory_publications",
             "memory_feedback",
             "memory_reporting",

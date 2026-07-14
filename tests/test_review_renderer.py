@@ -56,6 +56,7 @@ class ReviewRendererTests(unittest.TestCase):
             "disproof_checks": "Reviewer checks text.",
             "impact": "Impact text.",
             "smallest_fix": "Suggested fix.",
+            "suggestion_available": False,
         }
         value.update(overrides)
         return value
@@ -273,6 +274,98 @@ class ReviewRendererTests(unittest.TestCase):
         self.assertIn(
             "Changed-file diff context: complete for all registered changed paths.",
             rendered,
+        )
+
+    def test_atomic_suggestions_render_one_native_github_tip(self) -> None:
+        findings = [
+            self.finding(suggestion_available=True),
+            self.finding(
+                local_reference="F2",
+                fingerprint="c" * 64,
+                rule_id="tests.coordinated",
+                title="Coordinated change",
+            ),
+        ]
+
+        rendered = review_renderer.render_review_markdown(
+            repository="eneo/platform",
+            pr_number=17,
+            head_sha="a" * 40,
+            findings=findings,
+            closed=[],
+            still_present=[],
+            partially_resolved=[],
+            new_refs=["F1", "F2"],
+            not_checked_refs=[],
+            coverage=self.coverage(),
+        )
+
+        self.assertEqual(rendered.count("> [!TIP]"), 1)
+        self.assertIn(
+            "1 optional GitHub suggestion ready to apply · "
+            "1 finding needs coordinated implementation",
+            rendered,
+        )
+        self.assertIn(
+            "[Files changed](https://github.com/eneo/platform/pull/17/files)",
+            rendered,
+        )
+        self.assertIn("batch only the selected atomic patches", rendered)
+        self.assertIn("Run CI", rendered)
+        self.assertIn("post `/review` as a new top-level PR comment", rendered)
+        self.assertIn("Applying a patch does not resolve its finding", rendered)
+        suggestion_blocks = [
+            block
+            for block in review_renderer.render_review(
+                repository="eneo/platform",
+                pr_number=17,
+                head_sha="a" * 40,
+                findings=findings,
+                closed=[],
+                still_present=[],
+                partially_resolved=[],
+                new_refs=["F1", "F2"],
+                not_checked_refs=[],
+                coverage=self.coverage(),
+            ).blocks
+            if block.kind == "suggestion_help"
+        ]
+        self.assertEqual(len(suggestion_blocks), 1)
+        self.assertNotIn("**Fix path:**", rendered.split("<details>", 1)[0])
+        self.assertIn(
+            "Fix path: Candidate for an optional atomic GitHub suggestion",
+            rendered,
+        )
+        self.assertIn(
+            "Fix path: Coordinated implementation required; use this brief.",
+            rendered,
+        )
+
+    def test_atomic_suggestion_tip_reports_zero_coordinated_findings(self) -> None:
+        tip = review_renderer.render_suggestion_tip(
+            "eneo/platform",
+            17,
+            [self.finding(suggestion_available=True)],
+        )
+
+        self.assertIn(
+            "1 optional GitHub suggestion ready to apply · "
+            "0 findings need coordinated implementation",
+            tip,
+        )
+
+    def test_suggestion_tip_keeps_incomplete_review_actions_visible(self) -> None:
+        tip = review_renderer.render_suggestion_tip(
+            "eneo/platform",
+            17,
+            [self.finding(suggestion_available=True)],
+            review_incomplete=True,
+            not_checked_refs=["F3", "F2"],
+        )
+
+        self.assertIn(
+            "Before rerunning, restore the missing review context and recheck F2 and F3.",
+            tip,
         )
 
     def test_fix_brief_preserves_incomplete_and_not_rechecked_context(self) -> None:

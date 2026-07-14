@@ -94,20 +94,20 @@ class ToolValidationTests(unittest.TestCase):
         }
         memory_db.connect(self.db).close()
         self.finding = {
-            "rule_id": "tenant.missing-scope",
-            "category": "security",
+            "rule_id": "correctness.boolean-default",
+            "category": "correctness",
             "path": "backend/changed.py",
             "line": 10,
             "symbol": "handler",
-            "anchor": "POST /documents",
-            "title": "Tenant scope omitted",
+            "anchor": "feature default",
+            "title": "Boolean default remains disabled",
             "severity": "Critical",
             "publication_score": 9,
             "confidence": 0.9,
             "evidence": "Concrete evidence.",
             "disproof_checks": "Checked the guard.",
-            "impact": "Cross-tenant write.",
-            "smallest_fix": "Bind tenant from context.",
+            "impact": "The feature remains unavailable.",
+            "smallest_fix": "Restore the enabled default.",
             "introduced_by_diff": True,
         }
 
@@ -127,6 +127,55 @@ class ToolValidationTests(unittest.TestCase):
             return int(run["id"])
         finally:
             connection.close()
+
+    def select_optional_suggestions(
+        self,
+        findings: list[dict[str, object]],
+        *,
+        patch_text: str,
+        head_text: str,
+        suppressed_indices: frozenset[int] = frozenset(),
+    ) -> tuple[int, dict[int, str]]:
+        run_id = self.start_run()
+        connection = memory_db.connect_existing(self.db)
+        try:
+            recorded = memory_db.record_findings(
+                connection,
+                "eneo/platform",
+                1,
+                "a" * 40,
+                findings,
+                review_run_id=run_id,
+                base_sha="b" * 40,
+                context_hashes={"backend/changed.py": "c" * 40},
+            )
+        finally:
+            connection.close()
+        for index in suppressed_indices:
+            recorded[index]["suppressed"] = True
+        pull = {
+            "head": {
+                "sha": "a" * 40,
+                "repo": {"full_name": "eneo/platform"},
+            }
+        }
+        changed = {
+            "path": "backend/changed.py",
+            "patch": patch_text,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_file_at_revision", return_value=head_text.encode()),
+        ):
+            return tools._record_optional_suggestions(
+                repository="eneo/platform",
+                pr_number=1,
+                head_sha="a" * 40,
+                pull=pull,
+                findings=findings,
+                recorded=recorded,
+                changed_by_path={"backend/changed.py": changed},
+            )
 
     def test_empty_allowlist_denies_by_default(self):
         with patch.dict(os.environ, {"ENEO_ALLOWED_REPOSITORIES": ""}, clear=False):
@@ -149,6 +198,22 @@ class ToolValidationTests(unittest.TestCase):
         for field, maximum in memory_db.FINDING_TEXT_LIMITS.items():
             with self.subTest(field=field):
                 self.assertEqual(finding_properties[field]["maxLength"], maximum)
+
+    def test_schema_exposes_bounded_optional_atomic_suggestion(self):
+        properties = schemas.ENEO_REVIEW_MEMORY_RECORD["parameters"]["properties"][
+            "findings"
+        ]["items"]["properties"]
+        suggestion = properties["suggestion"]
+
+        self.assertFalse(suggestion["additionalProperties"])
+        self.assertEqual(
+            set(suggestion["required"]),
+            {"start_line", "end_line", "expected_text", "replacement_text"},
+        )
+        self.assertEqual(
+            suggestion["properties"]["replacement_text"]["maxLength"],
+            memory_db.MAX_SUGGESTION_TEXT_CHARS,
+        )
 
     def test_schema_describes_demonstrated_paths_and_complete_remediation(self):
         finding_properties = schemas.ENEO_REVIEW_MEMORY_RECORD["parameters"][
@@ -409,6 +474,495 @@ class ToolValidationTests(unittest.TestCase):
             )
         self.assertEqual(result["recorded"][0]["context_hash"], "a" * 40)
 
+    def test_record_validates_and_persists_atomic_suggestion(self):
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {
+                "sha": "a" * 40,
+                "repo": {"full_name": "eneo/platform"},
+            },
+            "base": {"sha": "b" * 40},
+            "changed_files": 1,
+        }
+        changed = {
+            "path": "backend/changed.py",
+            "context_hash": "c" * 40,
+            "context_hash_source": "blob",
+            "patch": "@@ -9,2 +9,2 @@\n context\n-old = None\n+enabled = False",
+        }
+        finding = dict(
+            self.finding,
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "enabled = False",
+                "replacement_text": "enabled = True",
+            },
+        )
+        head = "\n".join([*(f"line {number}" for number in range(1, 10)), "enabled = False"])
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=[changed]),
+            patch.object(tools, "_file_at_revision", return_value=head.encode()),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "run_id": run_id,
+                        "findings": [finding],
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["suggestions_recorded"], 1)
+        self.assertEqual(result["recorded"][0]["suggestion"], {"status": "recorded"})
+        connection = memory_db.connect_existing(self.db)
+        try:
+            row = connection.execute("SELECT * FROM review_suggestions").fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["start_line"], 10)
+        self.assertEqual(row["replacement_text"], "enabled = True")
+
+    def test_high_risk_finding_never_persists_atomic_suggestion(self):
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {
+                "sha": "a" * 40,
+                "repo": {"full_name": "eneo/platform"},
+            },
+            "base": {"sha": "b" * 40},
+            "changed_files": 1,
+        }
+        changed = {
+            "path": "backend/changed.py",
+            "context_hash": "c" * 40,
+            "context_hash_source": "blob",
+            "patch": "@@ -9,2 +9,2 @@\n context\n-old = None\n+enabled = False",
+        }
+        finding = dict(
+            self.finding,
+            rule_id="tenant.missing-scope",
+            category="security",
+            title="Tenant scope omitted",
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "enabled = False",
+                "replacement_text": "enabled = True",
+            },
+        )
+        head = "\n".join(
+            [*(f"line {number}" for number in range(1, 10)), "enabled = False"]
+        )
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=[changed]),
+            patch.object(tools, "_file_at_revision", return_value=head.encode()) as read,
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "run_id": run_id,
+                        "findings": [finding],
+                    }
+                )
+            )
+
+        self.assertEqual(result["suggestions_recorded"], 0)
+        self.assertEqual(
+            result["recorded"][0]["suggestion"]["reason"],
+            "suggestion_high_risk_category",
+        )
+        read.assert_not_called()
+
+    def test_invalid_optional_suggestion_does_not_drop_finding(self):
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {
+                "sha": "a" * 40,
+                "repo": {"full_name": "eneo/platform"},
+            },
+            "base": {"sha": "b" * 40},
+            "changed_files": 1,
+        }
+        changed = {
+            "path": "backend/changed.py",
+            "context_hash": "c" * 40,
+            "context_hash_source": "blob",
+            "patch": "@@ -9,2 +9,2 @@\n context\n-old = None\n+enabled = False",
+        }
+        finding = dict(
+            self.finding,
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "not the head text",
+                "replacement_text": "enabled = True",
+            },
+        )
+        head = "\n".join([*(f"line {number}" for number in range(1, 10)), "enabled = False"])
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=[changed]),
+            patch.object(tools, "_file_at_revision", return_value=head.encode()),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.review_memory_record(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "head_sha": "a" * 40,
+                        "run_id": run_id,
+                        "findings": [finding],
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["suggestions_recorded"], 0)
+        self.assertEqual(result["recorded"][0]["suggestion"]["status"], "omitted")
+        self.assertEqual(
+            result["recorded"][0]["suggestion"]["reason"],
+            "suggestion_expected_text_mismatch",
+        )
+        connection = memory_db.connect_existing(self.db)
+        try:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM finding_observations").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM review_suggestions").fetchone()[0],
+                0,
+            )
+        finally:
+            connection.close()
+
+    def test_overlapping_candidates_keep_higher_priority_patch(self):
+        medium = dict(
+            self.finding,
+            rule_id="correctness.medium-default",
+            severity="Medium",
+            publication_score=8,
+            symbol="medium_default",
+            anchor="medium default",
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "enabled = False",
+                "replacement_text": "enabled = maybe",
+            },
+        )
+        high = dict(
+            self.finding,
+            rule_id="correctness.high-default",
+            severity="High",
+            publication_score=9,
+            symbol="high_default",
+            anchor="high default",
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "enabled = False",
+                "replacement_text": "enabled = True",
+            },
+        )
+
+        count, statuses = self.select_optional_suggestions(
+            [medium, high],
+            patch_text="@@ -9,2 +9,2 @@\n context\n-old = None\n+enabled = False",
+            head_text="\n".join(
+                [*(f"line {number}" for number in range(1, 10)), "enabled = False"]
+            ),
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(statuses[1], "recorded")
+        self.assertEqual(statuses[0], "suggestion_overlaps_higher_priority_patch")
+        connection = memory_db.connect_existing(self.db)
+        try:
+            row = connection.execute(
+                "SELECT fingerprint, replacement_text FROM review_suggestions"
+            ).fetchone()
+            high_fingerprint = connection.execute(
+                "SELECT fingerprint FROM findings WHERE rule_id = ?",
+                ("correctness.high-default",),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(row["fingerprint"], high_fingerprint)
+        self.assertEqual(row["replacement_text"], "enabled = True")
+
+    def test_same_head_canonical_patch_precedes_new_overlap_selection(self):
+        head_text = "\n".join(f"value_{line} = 0" for line in range(1, 21))
+        patch_text = "@@ -0,0 +1,20 @@\n" + "\n".join(
+            f"+value_{line} = 0" for line in range(1, 21)
+        )
+        first_finding = dict(
+            self.finding,
+            rule_id="correctness.canonical-owner",
+            line=10,
+            symbol="canonical_owner",
+            anchor="canonical owner",
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "value_10 = 0",
+                "replacement_text": "value_10 = 1",
+            },
+        )
+
+        first_count, first_statuses = self.select_optional_suggestions(
+            [first_finding], patch_text=patch_text, head_text=head_text
+        )
+        self.assertEqual(first_count, 1)
+        self.assertEqual(first_statuses[0], "recorded")
+
+        connection = memory_db.connect_existing(self.db)
+        try:
+            first_run_id = int(
+                connection.execute(
+                    "SELECT id FROM review_runs WHERE status = 'running'"
+                ).fetchone()[0]
+            )
+            memory_db.complete_run(
+                connection,
+                first_run_id,
+                repository="eneo/platform",
+                pr_number=1,
+                status="generated",
+                findings_count=1,
+            )
+        finally:
+            connection.close()
+
+        repeated_finding = dict(
+            first_finding,
+            line=20,
+            suggestion={
+                "start_line": 20,
+                "end_line": 20,
+                "expected_text": "value_20 = 0",
+                "replacement_text": "value_20 = 1",
+            },
+        )
+        newly_overlapping = dict(
+            self.finding,
+            rule_id="correctness.new-overlap",
+            severity="High",
+            line=10,
+            symbol="new_overlap",
+            anchor="new overlap",
+            suggestion={
+                "start_line": 10,
+                "end_line": 10,
+                "expected_text": "value_10 = 0",
+                "replacement_text": "value_10 = 2",
+            },
+        )
+
+        second_count, second_statuses = self.select_optional_suggestions(
+            [repeated_finding, newly_overlapping],
+            patch_text=patch_text,
+            head_text=head_text,
+        )
+
+        self.assertEqual(second_count, 1)
+        self.assertEqual(second_statuses[0], "recorded")
+        self.assertEqual(
+            second_statuses[1], "suggestion_overlaps_higher_priority_patch"
+        )
+        connection = memory_db.connect_existing(self.db)
+        try:
+            second_run_id = int(
+                connection.execute(
+                    "SELECT id FROM review_runs WHERE status = 'running'"
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """
+                SELECT start_line, end_line, replacement_text
+                FROM review_suggestions
+                WHERE review_run_id = ?
+                """,
+                (second_run_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["start_line"], 10)
+        self.assertEqual(rows[0]["end_line"], 10)
+        self.assertEqual(rows[0]["replacement_text"], "value_10 = 1")
+
+    def test_atomic_suggestion_review_is_capped_at_twelve(self):
+        findings: list[dict[str, object]] = []
+        for line in range(1, 14):
+            findings.append(
+                dict(
+                    self.finding,
+                    rule_id=f"correctness.atomic-{line:02d}",
+                    line=line,
+                    symbol=f"atomic_{line}",
+                    anchor=f"atomic line {line}",
+                    severity="Medium",
+                    publication_score=8,
+                    suggestion={
+                        "start_line": line,
+                        "end_line": line,
+                        "expected_text": f"value_{line} = 0",
+                        "replacement_text": f"value_{line} = 1",
+                    },
+                )
+            )
+        patch_text = "@@ -0,0 +1,13 @@\n" + "\n".join(
+            f"+value_{line} = 0" for line in range(1, 14)
+        )
+        head_text = "\n".join(f"value_{line} = 0" for line in range(1, 14))
+
+        count, statuses = self.select_optional_suggestions(
+            findings, patch_text=patch_text, head_text=head_text
+        )
+
+        self.assertEqual(count, memory_db.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW)
+        self.assertEqual(
+            sum(reason == "suggestion_review_limit" for reason in statuses.values()),
+            1,
+        )
+        connection = memory_db.connect_existing(self.db)
+        try:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM review_suggestions").fetchone()[0],
+                memory_db.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW,
+            )
+        finally:
+            connection.close()
+
+    def test_suppressed_candidates_do_not_consume_the_atomic_patch_limit(self):
+        findings: list[dict[str, object]] = []
+        for line in range(1, 14):
+            findings.append(
+                dict(
+                    self.finding,
+                    rule_id=f"correctness.suppression-{line:02d}",
+                    line=line,
+                    symbol=f"suppression_{line}",
+                    anchor=f"suppression line {line}",
+                    severity="High" if line <= 12 else "Medium",
+                    suggestion={
+                        "start_line": line,
+                        "end_line": line,
+                        "expected_text": f"value_{line} = 0",
+                        "replacement_text": f"value_{line} = 1",
+                    },
+                )
+            )
+        patch_text = "@@ -0,0 +1,13 @@\n" + "\n".join(
+            f"+value_{line} = 0" for line in range(1, 14)
+        )
+        head_text = "\n".join(f"value_{line} = 0" for line in range(1, 14))
+
+        count, statuses = self.select_optional_suggestions(
+            findings,
+            patch_text=patch_text,
+            head_text=head_text,
+            suppressed_indices=frozenset(range(12)),
+        )
+
+        self.assertEqual(count, 1)
+        self.assertTrue(
+            all(statuses[index] == "suggestion_finding_suppressed" for index in range(12))
+        )
+        self.assertEqual(statuses[12], "recorded")
+
+    def test_atomic_patch_limit_stops_additional_head_file_reads(self):
+        findings: list[dict[str, object]] = []
+        changed_by_path: dict[str, dict[str, object]] = {}
+        context_hashes: dict[str, str] = {}
+        for index in range(1, 14):
+            path = f"src/atomic_{index:02d}.py"
+            findings.append(
+                dict(
+                    self.finding,
+                    rule_id=f"correctness.atomic-file-{index:02d}",
+                    path=path,
+                    line=1,
+                    symbol=f"atomic_file_{index}",
+                    anchor=f"atomic file {index}",
+                    severity="Medium",
+                    suggestion={
+                        "start_line": 1,
+                        "end_line": 1,
+                        "expected_text": "value = 0",
+                        "replacement_text": "value = 1",
+                    },
+                )
+            )
+            changed_by_path[path] = {
+                "path": path,
+                "patch": "@@ -0,0 +1 @@\n+value = 0",
+            }
+            context_hashes[path] = "c" * 40
+        run_id = self.start_run()
+        connection = memory_db.connect_existing(self.db)
+        try:
+            recorded = memory_db.record_findings(
+                connection,
+                "eneo/platform",
+                1,
+                "a" * 40,
+                findings,
+                review_run_id=run_id,
+                base_sha="b" * 40,
+                context_hashes=context_hashes,
+            )
+        finally:
+            connection.close()
+        pull = {
+            "head": {
+                "sha": "a" * 40,
+                "repo": {"full_name": "eneo/platform"},
+            }
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(
+                tools,
+                "_file_at_revision",
+                return_value=b"value = 0",
+            ) as read,
+        ):
+            count, statuses = tools._record_optional_suggestions(
+                repository="eneo/platform",
+                pr_number=1,
+                head_sha="a" * 40,
+                pull=pull,
+                findings=findings,
+                recorded=recorded,
+                changed_by_path=changed_by_path,
+            )
+
+        self.assertEqual(count, memory_db.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW)
+        self.assertEqual(read.call_count, memory_db.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW)
+        self.assertEqual(statuses[12], "suggestion_review_limit")
+
     def test_deliver_rejects_stale_head_sha(self):
         pull = {
             "state": "open",
@@ -561,7 +1115,7 @@ class ToolValidationTests(unittest.TestCase):
                 (publication["id"],),
             ).fetchone()["rendered_markdown"]
         self.assertIn(
-            "### F1 · Critical (P0): Tenant scope omitted",
+            "### F1 · Critical (P0): Boolean default remains disabled",
             rendered,
         )
         self.assertIn("Copyable fix brief for a coding agent", rendered)

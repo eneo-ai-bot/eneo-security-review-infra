@@ -56,6 +56,7 @@ class PublishedFinding(TypedDict):
     disproof_checks: str
     impact: str
     smallest_fix: str
+    suggestion_available: bool
 
 
 class UncheckedFinding(TypedDict):
@@ -96,6 +97,7 @@ class ReviewCoverageSummary(TypedDict):
 ReviewBlockKind = Literal[
     "header",
     "finding",
+    "suggestion_help",
     "unchecked_history",
     "closed_history",
     "fix_brief",
@@ -120,6 +122,7 @@ _BLOCK_KINDS = frozenset(
     {
         "header",
         "finding",
+        "suggestion_help",
         "unchecked_history",
         "closed_history",
         "fix_brief",
@@ -231,6 +234,13 @@ def source_link(repository: str, head_sha: str, path: str, line: int) -> str:
     path_part = urllib.parse.quote(path, safe="/")
     label = safe_source_label(f"{path}:{line}", maximum=520)
     return f"[`{label}`](https://github.com/{repository_part}/blob/{head_sha}/{path_part}#L{line})"
+
+
+def pull_files_link(repository: str, pr_number: int) -> str:
+    repository_part = urllib.parse.quote(repository, safe="/")
+    return (
+        f"[Files changed](https://github.com/{repository_part}/pull/{pr_number}/files)"
+    )
 
 
 def severity_label(severity: str) -> str:
@@ -496,6 +506,58 @@ def _finding_ref_range(findings: Sequence[PublishedFinding]) -> str:
     return first if first == last else f"{first}-{last}"
 
 
+def render_suggestion_tip(
+    repository: str,
+    pr_number: int,
+    findings: Sequence[PublishedFinding],
+    *,
+    review_incomplete: bool = False,
+    not_checked_refs: Sequence[str] = (),
+) -> str:
+    suggestion_count = sum(
+        1 for item in findings if bool(item.get("suggestion_available", False))
+    )
+    if suggestion_count == 0:
+        return ""
+
+    coordinated_count = len(findings) - suggestion_count
+    suggestion_label = (
+        "optional GitHub suggestion"
+        if suggestion_count == 1
+        else "optional GitHub suggestions"
+    )
+    coordinated_label = "finding needs" if coordinated_count == 1 else "findings need"
+    files_link = pull_files_link(repository, pr_number)
+    lines = [
+        "> [!TIP]",
+        (
+            f"> **{suggestion_count} {suggestion_label} ready to apply · "
+            f"{coordinated_count} {coordinated_label} coordinated implementation**"
+        ),
+        ">",
+        (
+            f"> Open {files_link} to inspect each patch in context. Apply a patch "
+            "individually, or batch only the selected atomic patches into one commit. "
+            "Run CI, push any remaining fixes, then post `/review` as a new top-level "
+            "PR comment. Applying a patch does not resolve its finding; the fresh "
+            "review re-checks the code."
+        ),
+    ]
+    remaining_actions: list[str] = []
+    if review_incomplete:
+        remaining_actions.append("restore the missing review context")
+    if not_checked_refs:
+        remaining_actions.append(f"recheck {joined_refs(not_checked_refs)}")
+    if remaining_actions:
+        lines.extend(
+            [
+                ">",
+                f"> Before rerunning, {joined_labels(remaining_actions)}.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def render_fix_brief(
     repository: str,
     pr_number: int,
@@ -552,6 +614,12 @@ def render_fix_brief(
         "",
     ]
     for item in findings:
+        fix_path = (
+            "Candidate for an optional atomic GitHub suggestion; otherwise use "
+            "this brief."
+            if bool(item.get("suggestion_available", False))
+            else "Coordinated implementation required; use this brief."
+        )
         lines.extend(
             [
                 (
@@ -560,6 +628,7 @@ def render_fix_brief(
                     f"{safe_fenced_text(item['category'], maximum=80)}"
                 ),
                 f"Location: {safe_fenced_text(item['path'], maximum=500)}:{item['line']}",
+                f"Fix path: {fix_path}",
                 (
                     "Problem: "
                     f"{safe_fenced_text(item['title'], maximum=FINDING_TEXT_LIMITS['title'])}"
@@ -806,6 +875,16 @@ def render_review(
             ),
         ]
         blocks.append(ReviewBlock(kind="finding", markdown="\n".join(finding_lines)))
+
+    suggestion_help = render_suggestion_tip(
+        repository,
+        pr_number,
+        current,
+        review_incomplete=coverage is None or coverage["state"] != "complete",
+        not_checked_refs=not_checked_refs,
+    )
+    if suggestion_help:
+        blocks.append(ReviewBlock(kind="suggestion_help", markdown=suggestion_help))
 
     if closed:
         closed_lines = [

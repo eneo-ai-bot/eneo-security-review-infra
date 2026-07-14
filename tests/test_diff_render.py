@@ -88,6 +88,125 @@ class SynthesizeFileDiffTests(unittest.TestCase):
         self.assertIsNone(out)
 
 
+class SuggestibleRightSideRangeTests(unittest.TestCase):
+    def test_accepts_added_line_with_omitted_hunk_counts(self):
+        patch = "@@ -8 +8 @@\n-old\n+new"
+
+        self.assertTrue(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=8, end_line=8
+            )
+        )
+
+    def test_accepts_insertion_only_hunk(self):
+        patch = "@@ -3,0 +4,2 @@\n+first\n+second"
+
+        self.assertTrue(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=4, end_line=5
+            )
+        )
+
+    def test_accepts_mixed_context_and_added_lines(self):
+        patch = (
+            "@@ -10,4 +10,4 @@ section\n"
+            " unchanged\n"
+            "-old\n"
+            "+new\n"
+            " tail one\n"
+            " tail two"
+        )
+
+        self.assertTrue(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=10, end_line=11
+            )
+        )
+        self.assertFalse(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=12, end_line=13
+            )
+        )
+
+    def test_accepts_added_line_followed_by_no_newline_marker(self):
+        patch = "@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file"
+
+        self.assertTrue(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=1, end_line=1
+            )
+        )
+
+    def test_selects_one_of_multiple_hunks(self):
+        patch = (
+            "@@ -1,2 +1,2 @@\n"
+            " first\n"
+            "-old first\n"
+            "+new first\n"
+            "@@ -20,2 +20,2 @@\n"
+            " second\n"
+            "-old second\n"
+            "+new second"
+        )
+
+        self.assertTrue(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=21, end_line=21
+            )
+        )
+        self.assertFalse(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=2, end_line=20
+            )
+        )
+
+    def test_rejects_deleted_only_hunk(self):
+        patch = "@@ -4,2 +3,0 @@\n-old\n-lines"
+
+        self.assertFalse(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=3, end_line=3
+            )
+        )
+
+    def test_rejects_invalid_ranges(self):
+        patch = "@@ -1 +1 @@\n-old\n+new"
+
+        for start_line, end_line in [(0, 1), (2, 1), (2, 2), (True, 1)]:
+            with self.subTest(start_line=start_line, end_line=end_line):
+                self.assertFalse(
+                    diff_render.is_suggestible_right_side_range(
+                        patch, start_line=start_line, end_line=end_line
+                    )
+                )
+
+    def test_rejects_malformed_hunk_header_or_body(self):
+        malformed = [
+            "@@ -1 +1\n-old\n+new",
+            "@@ -1 +1 @@\n-old",
+            "@@ -1 +1 @@\n-old\n+new\n+extra",
+            "@@ -0 +1 @@\n-old\n+new",
+            "@@ -1 +1 @@\n\\ No newline at end of file\n-old\n+new",
+        ]
+
+        for patch in malformed:
+            with self.subTest(patch=patch):
+                self.assertFalse(
+                    diff_render.is_suggestible_right_side_range(
+                        patch, start_line=1, end_line=1
+                    )
+                )
+
+    def test_rejects_patch_when_another_hunk_is_malformed(self):
+        patch = "@@ -1 +1 @@\n-old\n+new\n@@ -10,2 +10,2 @@\n context"
+
+        self.assertFalse(
+            diff_render.is_suggestible_right_side_range(
+                patch, start_line=1, end_line=1
+            )
+        )
+
+
 class AssembleFallbackDiffTests(unittest.TestCase):
     def test_fully_packed_file_is_exposed_not_truncated_when_more_remain(self):
         a = _cf(path="a.py", patch="@@ " + "x" * 600)

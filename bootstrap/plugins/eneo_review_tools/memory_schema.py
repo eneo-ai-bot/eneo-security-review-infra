@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     )
 
 DEFAULT_DB_NAME = "review_memory.sqlite3"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 OBSERVATION_BACKFILL_VERSION = 3
 REQUIRED_TABLES = frozenset(
     {
@@ -43,6 +43,7 @@ REQUIRED_TABLES = frozenset(
         "coach_candidates",
         "review_subjects",
         "finding_observations",
+        "review_suggestions",
         "pr_finding_references",
         "review_publications",
         "review_publication_comments",
@@ -1028,6 +1029,32 @@ def init_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_observations_fingerprint_seen
             ON finding_observations(fingerprint, observed_at DESC);
 
+        CREATE TABLE IF NOT EXISTS review_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation_id INTEGER NOT NULL UNIQUE,
+            review_run_id INTEGER NOT NULL,
+            repository TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            head_sha TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            path TEXT NOT NULL,
+            start_line INTEGER NOT NULL CHECK (start_line >= 1),
+            end_line INTEGER NOT NULL CHECK (end_line >= start_line),
+            expected_hash TEXT NOT NULL,
+            replacement_text TEXT NOT NULL,
+            suggestion_key TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            FOREIGN KEY (observation_id) REFERENCES finding_observations(id),
+            FOREIGN KEY (review_run_id) REFERENCES review_runs(id),
+            FOREIGN KEY (fingerprint) REFERENCES findings(fingerprint)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_suggestions_run
+            ON review_suggestions(review_run_id, observation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_review_suggestions_key
+            ON review_suggestions(suggestion_key);
+
         CREATE TABLE IF NOT EXISTS review_verification_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             review_run_id INTEGER NOT NULL,
@@ -1131,6 +1158,18 @@ def init_schema(connection: sqlite3.Connection) -> None:
             superseded_by_publication_id INTEGER,
             supersession_rendered_at TEXT,
             supersession_failure_code TEXT NOT NULL DEFAULT '',
+            suggestion_delivery_status TEXT NOT NULL DEFAULT 'none' CHECK (
+                suggestion_delivery_status IN (
+                    'none', 'pending', 'posting', 'posted',
+                    'publish_failed', 'stale'
+                )
+            ),
+            suggestion_review_id INTEGER CHECK (
+                suggestion_review_id IS NULL OR suggestion_review_id > 0
+            ),
+            suggestion_posting_started_at TEXT,
+            suggestion_posted_at TEXT,
+            suggestion_failure_code TEXT NOT NULL DEFAULT '',
             FOREIGN KEY (supersedes_publication_id) REFERENCES review_publications(id),
             FOREIGN KEY (superseded_by_publication_id) REFERENCES review_publications(id),
             FOREIGN KEY (review_run_id) REFERENCES review_runs(id)
@@ -1313,6 +1352,32 @@ def init_schema(connection: sqlite3.Connection) -> None:
         connection,
         "review_publications",
         "supersession_failure_code",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
+        "suggestion_delivery_status",
+        "TEXT NOT NULL DEFAULT 'none' CHECK (suggestion_delivery_status IN "
+        "('none', 'pending', 'posting', 'posted', 'publish_failed', 'stale'))",
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
+        "suggestion_review_id",
+        "INTEGER CHECK (suggestion_review_id IS NULL OR suggestion_review_id > 0)",
+    )
+    _ensure_column(
+        connection,
+        "review_publications",
+        "suggestion_posting_started_at",
+        "TEXT",
+    )
+    _ensure_column(connection, "review_publications", "suggestion_posted_at", "TEXT")
+    _ensure_column(
+        connection,
+        "review_publications",
+        "suggestion_failure_code",
         "TEXT NOT NULL DEFAULT ''",
     )
     if existing_version < 12:
@@ -1522,6 +1587,18 @@ def init_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_candidate_reconciliations_run
             ON candidate_reconciliations(review_run_id, observation_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_suggestions_run
+            ON review_suggestions(review_run_id, observation_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_review_suggestions_key
+            ON review_suggestions(suggestion_key)
         """
     )
     connection.execute(

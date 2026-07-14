@@ -14,8 +14,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .changed_files import ChangedFile
-from .memory_validation import ReviewMemoryError, normalize_path
+try:
+    from .changed_files import ChangedFile
+    from .memory_validation import ReviewMemoryError, normalize_path
+except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from changed_files import ChangedFile
+    from memory_validation import ReviewMemoryError, normalize_path
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,120 @@ class AssembledDiff:
 class _DiffChunk:
     path: str
     text: str
+
+
+@dataclass(frozen=True)
+class _RightSideHunk:
+    start_line: int
+    end_line: int
+    added_lines: frozenset[int]
+
+
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(?P<old_start>[0-9]+)(?:,(?P<old_count>[0-9]+))? "
+    r"\+(?P<new_start>[0-9]+)(?:,(?P<new_count>[0-9]+))? @@(?: .*)?$"
+)
+_NO_NEWLINE_MARKER = "\\ No newline at end of file"
+
+
+def _parse_right_side_hunks(patch: str) -> list[_RightSideHunk] | None:
+    """Parse GitHub's per-file patch, rejecting incomplete or malformed hunks."""
+    lines = patch.splitlines()
+    if not lines:
+        return None
+
+    hunks: list[_RightSideHunk] = []
+    index = 0
+    while index < len(lines):
+        header = _HUNK_HEADER_RE.fullmatch(lines[index])
+        if header is None:
+            return None
+
+        old_start = int(header.group("old_start"))
+        old_count = int(header.group("old_count") or "1")
+        new_start = int(header.group("new_start"))
+        new_count = int(header.group("new_count") or "1")
+        if (old_count > 0 and old_start == 0) or (
+            new_count > 0 and new_start == 0
+        ):
+            return None
+
+        index += 1
+        old_seen = 0
+        new_seen = 0
+        new_line = new_start
+        added_lines: set[int] = set()
+        previous_was_content = False
+
+        while index < len(lines) and not lines[index].startswith("@@"):
+            line = lines[index]
+            if line == _NO_NEWLINE_MARKER:
+                if not previous_was_content:
+                    return None
+                previous_was_content = False
+                index += 1
+                continue
+            if not line or line[0] not in {" ", "+", "-"}:
+                return None
+
+            prefix = line[0]
+            if prefix in {" ", "-"}:
+                old_seen += 1
+            if prefix in {" ", "+"}:
+                if prefix == "+":
+                    added_lines.add(new_line)
+                new_seen += 1
+                new_line += 1
+            if old_seen > old_count or new_seen > new_count:
+                return None
+
+            previous_was_content = True
+            index += 1
+
+        if old_seen != old_count or new_seen != new_count:
+            return None
+
+        hunks.append(
+            _RightSideHunk(
+                start_line=new_start,
+                end_line=new_start + new_count - 1,
+                added_lines=frozenset(added_lines),
+            )
+        )
+
+    return hunks or None
+
+
+def is_suggestible_right_side_range(
+    patch: str | None, *, start_line: int, end_line: int
+) -> bool:
+    """Return whether a RIGHT-side range is safe to anchor as a suggestion.
+
+    The inclusive range must be fully contained in one valid hunk and touch at
+    least one added line. Context-only ranges are intentionally ineligible.
+    ``patch`` is the hunk-only per-file patch returned by GitHub's PR-files API.
+    """
+    if (
+        patch is None
+        or isinstance(start_line, bool)
+        or isinstance(end_line, bool)
+        or start_line < 1
+        or end_line < start_line
+    ):
+        return False
+
+    hunks = _parse_right_side_hunks(patch)
+    if hunks is None:
+        return False
+
+    matches = [
+        hunk
+        for hunk in hunks
+        if hunk.start_line <= start_line and end_line <= hunk.end_line
+    ]
+    if len(matches) != 1:
+        return False
+    return any(start_line <= line <= end_line for line in matches[0].added_lines)
 
 
 _GIT_ESCAPE_BYTES = {
