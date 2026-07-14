@@ -162,8 +162,8 @@ Protect the workflow with CODEOWNERS or a ruleset, for example:
 /.github/workflows/ai-review-request.yml @<org>/<maintainer-team>
 ```
 
-The workflow grants `issues: write` and `pull-requests: write` only so its
-built-in token can add the non-blocking eyes reaction to an accepted PR comment.
+The workflow grants only `issues: write` so its built-in token can add the
+non-blocking eyes reaction to an accepted PR comment.
 Webhook secrets are scoped to the dispatch step and are not inherited by the
 reaction step. The workflow does not check out PR code. It sends only repository
 name, PR number, requester, and request id to Hermes. The workflow must exist on
