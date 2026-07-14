@@ -242,9 +242,13 @@ ENEO_REVIEW_MEMORY_RECORD = {
                             "type": "string",
                             "maxLength": memory_contract.FINDING_TEXT_LIMITS["evidence"],
                             "description": (
-                                "Exact changed behavior and concrete failure path, "
-                                "including the guard or caller/callee relationship that "
-                                "proves the claim. Do not repeat the impact or fix."
+                                "Exact changed behavior and primary executed failure "
+                                "path, including branch conditions and the guard or "
+                                "caller/callee relationship that proves the claim. Do "
+                                "not include a fallback or secondary path unless it is "
+                                "independently traced through its branch conditions to "
+                                "the same failing consumer. Do not repeat the impact or "
+                                "fix."
                             ),
                         },
                         "disproof_checks": {
@@ -272,8 +276,14 @@ ENEO_REVIEW_MEMORY_RECORD = {
                                 "smallest_fix"
                             ],
                             "description": (
-                                "Smallest safe owner-aligned remediation, including the "
-                                "focused behavior check that proves the failure is closed."
+                                "One lowest-risk owner-aligned remediation that covers "
+                                "every proven sibling lifecycle path required to close "
+                                "the stated impact, including a focused check at the "
+                                "real behavior boundary implicated by the finding. For "
+                                "protocol or framework findings, exercise the actual "
+                                "downstream consumer rather than only a helper property. "
+                                "Offer alternatives only when an external contract "
+                                "requires a developer decision."
                             ),
                         },
                         "introduced_by_diff": {"type": "boolean", "const": True},

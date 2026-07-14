@@ -150,6 +150,35 @@ class ToolValidationTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertEqual(finding_properties[field]["maxLength"], maximum)
 
+    def test_schema_describes_demonstrated_paths_and_complete_remediation(self):
+        finding_properties = schemas.ENEO_REVIEW_MEMORY_RECORD["parameters"][
+            "properties"
+        ]["findings"]["items"]["properties"]
+
+        evidence_contract = finding_properties["evidence"]["description"]
+        remediation_contract = finding_properties["smallest_fix"]["description"]
+
+        self.assertIn("primary executed failure path", evidence_contract)
+        self.assertIn(
+            "fallback or secondary path unless it is independently traced",
+            evidence_contract,
+        )
+        self.assertIn("every proven sibling lifecycle path", remediation_contract)
+        self.assertIn("One lowest-risk owner-aligned remediation", remediation_contract)
+        self.assertIn(
+            "real behavior boundary implicated by the finding",
+            remediation_contract,
+        )
+        self.assertIn(
+            "actual downstream consumer rather than only a helper property",
+            remediation_contract,
+        )
+        self.assertIn(
+            "Offer alternatives only when an external contract requires a developer "
+            "decision",
+            remediation_contract,
+        )
+
     def test_schema_prior_verdicts_come_from_memory_owner(self):
         deliver_verdict_schema = schemas.ENEO_REVIEW_DELIVER["parameters"]["properties"][
             "previous_verdicts"

@@ -131,6 +131,7 @@ class DocsContractTests(unittest.TestCase):
     def test_skeptical_gate_pins_falsification_and_quality_rules(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
+        canonical_words = words(canonical)
         self.assertIn("cheapest falsifier", canonical)
         self.assertIn("challenge each candidate under AGENTS.md", skill)
         self.assertIn("would have passed before this change", canonical)
@@ -139,6 +140,34 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("fix; call out careful or risky remediation", skill)
         self.assertIn("why it exists", skill)
         self.assertIn("reason no longer applies", skill)
+        self.assertIn("primary demonstrated path", canonical)
+        self.assertIn(
+            "Include a secondary path in evidence only when it is independently "
+            "traced through its own branch conditions to the same failing consumer; "
+            "otherwise omit it",
+            canonical_words,
+        )
+        self.assertIn(
+            "sibling lifecycle operations that create, mutate, restore, retry, or "
+            "delete the same state",
+            canonical_words,
+        )
+        self.assertIn(
+            "make the remediation and behavior checks cover every proven path needed "
+            "to close the stated impact",
+            canonical_words,
+        )
+        self.assertIn(
+            "name one lowest-risk representation or behavior that satisfies the "
+            "actual consumer contract",
+            canonical_words,
+        )
+        self.assertIn(
+            "Offer alternatives only when an external contract truly requires a "
+            "developer decision",
+            canonical_words,
+        )
+        self.assertIn("Test the consumer boundary", canonical)
 
     def test_runtime_contract_forbids_merge_gate_language(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
