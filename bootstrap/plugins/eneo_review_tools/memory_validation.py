@@ -18,6 +18,15 @@ SEVERITY_SCORE_GATES = {
 SEVERITIES = set(SEVERITY_ORDER)
 LOWER_PRIORITY_SEVERITIES = {"Medium", "Low"}
 MAX_FINDINGS_PER_REVIEW = 200
+FINDING_TEXT_LIMITS = {
+    "title": 160,
+    "evidence": 900,
+    "disproof_checks": 600,
+    "impact": 700,
+    "smallest_fix": 700,
+}
+PRIOR_VERDICT_EVIDENCE_MAX = 320
+PRIOR_VERDICTS_REQUIRING_EVIDENCE = frozenset({"resolved", "invalidated"})
 PriorFindingVerdictValue = Literal[
     "resolved",
     "still_present",

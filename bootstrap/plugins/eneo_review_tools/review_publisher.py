@@ -439,21 +439,34 @@ def _publication_blocks(
     return content_blocks
 
 
-def _continuation_prefix(part_number: int, total_parts: int) -> str:
+def _publication_heading(body: str) -> str:
+    default = f"## {REVIEW_COMMENT_TITLE}"
+    first_line = body.splitlines()[0].strip() if body.strip() else ""
+    return first_line if first_line.startswith(default) else default
+
+
+def _part_heading(heading: str, part_number: int, total_parts: int) -> str:
+    return f"{heading} · Part {part_number} of {total_parts}"
+
+
+def _continuation_prefix(
+    heading: str, part_number: int, total_parts: int
+) -> str:
     if part_number == 1:
         return ""
     return (
-        f"## {REVIEW_COMMENT_TITLE} - {part_number} of {total_parts}\n\n"
+        f"{_part_heading(heading, part_number, total_parts)}\n\n"
         f"{CONTINUATION_LEAD}\n\n"
     )
 
 
-def _with_part_heading(body: str, part_number: int, total_parts: int) -> str:
+def _with_part_heading(
+    body: str, heading: str, part_number: int, total_parts: int
+) -> str:
     if part_number != 1:
-        return _continuation_prefix(part_number, total_parts) + body
-    heading = f"## {REVIEW_COMMENT_TITLE}"
-    replacement = f"## {REVIEW_COMMENT_TITLE} - 1 of {total_parts}"
-    return body.replace(heading, replacement, 1) if body.startswith(heading) else body
+        return _continuation_prefix(heading, part_number, total_parts) + body
+    replacement = _part_heading(heading, part_number, total_parts)
+    return replacement + body[len(heading) :] if body.startswith(heading) else body
 
 
 def split_publication_body(
@@ -466,8 +479,9 @@ def split_publication_body(
     if _body_size(body) <= max_comment_bytes:
         return [PublicationPart(part_number=1, body=body)]
 
+    heading = _publication_heading(body)
     reserved = _body_size(
-        _continuation_prefix(9999, 9999)
+        _continuation_prefix(heading, 9999, 9999)
         + "\n\n<!-- "
         + _part_marker(publication_key, 9999, 9999)
         + " -->\n"
@@ -485,7 +499,9 @@ def split_publication_body(
     total_parts = len(chunks)
     parts: list[PublicationPart] = []
     for index, chunk in enumerate(chunks, start=1):
-        part_body = _with_part_heading(chunk.rstrip(), index, total_parts)
+        part_body = _with_part_heading(
+            chunk.rstrip(), heading, index, total_parts
+        )
         part_body = f"{part_body.rstrip()}\n\n<!-- {_part_marker(publication_key, index, total_parts)} -->\n"
         if _body_size(part_body) > max_comment_bytes:
             raise GitHubPublicationError("body_too_large")
@@ -580,7 +596,7 @@ def _historical_content_blocks(
         content = [
             block.markdown.replace(marker, "").strip()
             for block in blocks
-            if block.kind not in {"feedback_help", "metadata"}
+            if block.kind not in {"fix_brief", "feedback_help", "metadata"}
         ]
     else:
         content = [publication["rendered_markdown"].replace(marker, "").strip()]
@@ -1018,7 +1034,9 @@ def _failure_status_body(
         f"- Reason: {reason}\n"
         f"- Status code: `{failure_code}`\n\n"
         "This is an automated status, not a review result; deterministic CI remains "
-        "the merge gate. The review will retry on the next request.\n\n"
+        "the merge gate. After correcting the cause, post `/review` again as a new "
+        "top-level PR comment. If it fails again, share the status code with the "
+        "reviewer operator.\n\n"
         f"{_failure_status_marker(run_id, head_sha)}\n"
     )
 

@@ -321,6 +321,42 @@ class ReviewMemoryTests(unittest.TestCase):
         )
         self.assertEqual(context["repeat_review_findings"][0]["pr_number"], 17)
 
+    def test_repeat_finding_survives_changed_path_filter_until_explicitly_closed(self):
+        self.record_many([self.finding])
+        self.publish(self.finalize())
+
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            ["frontend/new-path.ts"],
+            pr_number=17,
+        )
+        self.assertEqual(
+            [item["local_reference"] for item in context["repeat_review_findings"]],
+            ["F1"],
+        )
+
+        self.record_many([], head_sha="b" * 40, context_hashes={})
+        closed = self.finalize(
+            head_sha="b" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "resolved",
+                    "evidence": "The reverted path no longer contains the failing behavior.",
+                }
+            ],
+        )
+        self.publish(closed)
+
+        next_context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            ["frontend/new-path.ts"],
+            pr_number=17,
+        )
+        self.assertEqual(next_context["repeat_review_findings"], [])
+
     def test_same_fingerprint_in_other_pr_does_not_overwrite_repeat_candidate(self):
         same_pr = self.record(line=42, pr_number=17, context_hash="d" * 40)
         other_pr = self.record(line=99, pr_number=99, context_hash="e" * 40)
@@ -383,16 +419,20 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("### F1 · Critical (P0): Document creation omits tenant scope", markdown)
         self.assertIn("### F2 · Medium (P2): Regression test misses tenant failure path", markdown)
         self.assertIn("**Impact:**", markdown)
-        self.assertIn("**Reviewer checks:**", markdown)
+        self.assertIn("**Smallest safe fix:**", markdown)
+        self.assertNotIn("**Reviewer checks:**", markdown)
         self.assertNotIn("Required outcome:", markdown)
         self.assertNotIn("Verification:", markdown)
         self.assertIn("Copyable fix brief for a coding agent", markdown)
+        self.assertIn("Observed behavior:", markdown)
+        self.assertIn("Return to the developer:", markdown)
+        self.assertIn("post `/review` as a new top-level", markdown)
         self.assertIn("Give feedback on this review", markdown)
         self.assertIn("Post one command as a new top-level PR comment", markdown)
         self.assertIn("Scope feedback records review-quality feedback", markdown)
-        self.assertIn("```text\n/review false-positive F1 because <what code, guard, or invariant disproves it>\n```", markdown)
+        self.assertIn("```text\n/review false-positive <F-reference> because <what code, guard, or invariant disproves it>\n```", markdown)
         self.assertIn(
-            "```text\n/review feedback scope F1 because <why this finding is in the diff but outside the intended PR scope>\n```",
+            "```text\n/review feedback scope <F-reference> because <why this finding is in the diff but outside the intended PR scope>\n```",
             markdown,
         )
         self.assertIn("```text\n/review feedback missed because <what concrete issue was missed and where>\n```", markdown)
@@ -966,7 +1006,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("F2 still present", result["markdown"])
         self.assertIn("Previous findings not rechecked", result["markdown"])
         self.assertIn(
-            "These prior findings were not observed in this run and are not counted as current findings.",
+            "Their status is unknown. Absence from this run is not evidence of resolution",
             result["markdown"],
         )
         self.assertIn(
@@ -1028,8 +1068,9 @@ class ReviewMemoryTests(unittest.TestCase):
         )[1]
         self.assertNotIn("F1 - Critical (P0) - security", visible_brief)
         self.assertIn("F2 - Medium (P2) - tests", visible_brief)
-        self.assertNotIn("/review false-positive F1", result["markdown"])
-        self.assertIn("/review false-positive F2", result["markdown"])
+        self.assertIn(
+            "/review false-positive <F-reference>", result["markdown"]
+        )
         self.publish(result)
         context = memory_db.memory_context(
             self.connection,
@@ -1086,12 +1127,47 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(result["resolved_count"], 0)
         self.assertEqual(result["closed_count"], 1)
         self.assertIn("F1 withdrawn after recheck", result["markdown"])
-        self.assertIn("I did not identify any current in-scope findings in this review.", result["markdown"])
+        self.assertNotIn(
+            "I did not identify any current in-scope findings in this review.",
+            result["markdown"],
+        )
+        self.assertIn("finding-free result is inconclusive", result["markdown"])
         self.assertNotIn("Copyable fix brief for a coding agent", result["markdown"])
         self.assertIn("Give feedback on this review", result["markdown"])
         self.assertIn("/review feedback missed because <what concrete issue was missed and where>", result["markdown"])
         self.assertNotIn("/review feedback scope", result["markdown"])
         self.assertNotIn("/review false-positive", result["markdown"])
+
+    def test_closing_verdict_requires_auditable_evidence(self):
+        self.record_many([self.finding])
+        self.publish(self.finalize())
+        self.record_many([], head_sha="b" * 40, context_hashes={})
+
+        with self.assertRaisesRegex(
+            memory_db.ReviewMemoryError,
+            r"previous_verdicts\[0\]\.evidence is required",
+        ):
+            self.finalize(
+                head_sha="b" * 40,
+                previous_verdicts=[
+                    {"local_reference": "F1", "verdict": "resolved"}
+                ],
+            )
+
+    def test_finding_text_limits_accept_boundary_and_reject_overflow(self):
+        for index, (field, maximum) in enumerate(
+            memory_db.FINDING_TEXT_LIMITS.items(), start=1
+        ):
+            with self.subTest(field=field, case="boundary"):
+                accepted = dict(self.finding, **{field: "x" * maximum})
+                self.record_many([accepted], pr_number=100 + index * 2)
+            with self.subTest(field=field, case="overflow"):
+                rejected = dict(self.finding, **{field: "x" * (maximum + 1)})
+                with self.assertRaisesRegex(
+                    memory_db.ReviewMemoryError,
+                    rf"{field} exceeds {maximum} characters",
+                ):
+                    self.record_many([rejected], pr_number=101 + index * 2)
 
     def test_finalize_no_findings_without_coverage_ledger_is_not_clean(self):
         self.record_many([], context_hashes={})
@@ -1099,9 +1175,12 @@ class ReviewMemoryTests(unittest.TestCase):
         result = self.finalize()
 
         self.assertEqual(result["findings_count"], 0)
-        self.assertIn("Review context incomplete", result["markdown"])
-        self.assertIn("not a clean result", result["markdown"])
-        self.assertNotIn("No current findings", result["markdown"])
+        self.assertIn("review context was incomplete", result["markdown"])
+        self.assertIn("finding-free result is inconclusive", result["markdown"])
+        self.assertNotIn(
+            "I did not identify any current in-scope findings in this review.",
+            result["markdown"],
+        )
 
     def test_finalize_review_closes_prior_finding_with_human_suppression(self):
         recorded = self.record_many([self.finding])[0]
@@ -1166,7 +1245,11 @@ class ReviewMemoryTests(unittest.TestCase):
             self.finalize(
                 head_sha="b" * 40,
                 previous_verdicts=[
-                    {"local_reference": "F1", "verdict": "resolved"}
+                    {
+                        "local_reference": "F1",
+                        "verdict": "resolved",
+                        "evidence": "Claimed fixed despite a current observation.",
+                    }
                 ],
             )
 
@@ -1194,9 +1277,9 @@ class ReviewMemoryTests(unittest.TestCase):
             [second["path"]],
             pr_number=17,
         )
-        self.assertEqual(
+        self.assertCountEqual(
             [item["local_reference"] for item in context["repeat_review_findings"]],
-            ["F2"],
+            ["F1", "F2"],
         )
         self.record_many(
             [second],
@@ -1213,7 +1296,7 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertIn("F1 not rechecked", result["markdown"])
         self.assertIn("F2 still present", result["markdown"])
 
-    def test_carried_reference_is_not_reused_by_new_finding(self):
+    def test_not_checked_reference_remains_pending_until_explicitly_resolved(self):
         first = self.finding
         second = dict(
             self.finding,
@@ -1257,20 +1340,83 @@ class ReviewMemoryTests(unittest.TestCase):
         result = self.finalize(head_sha="c" * 40)
 
         self.assertIn("F2 still present", result["markdown"])
-        self.assertNotIn("F1 not rechecked", result["markdown"])
+        self.assertIn("F1 not rechecked", result["markdown"])
         self.assertIn("F3 is new", result["markdown"])
         self.assertIn(
             "### F3 · High (P1): Migration job can run without bounded retries",
+            result["markdown"],
+        )
+        self.publish(result)
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            [first["path"]],
+            pr_number=17,
+        )
+        self.assertCountEqual(
+            [item["local_reference"] for item in context["repeat_review_findings"]],
+            ["F1", "F2", "F3"],
+        )
+
+        self.record_many([], head_sha="d" * 40, context_hashes={})
+        resolved = self.finalize(
+            head_sha="d" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "resolved",
+                    "evidence": "The worker now uses the tenant-scoped lookup.",
+                }
+            ],
+        )
+
+        self.assertIn("F1 resolved", resolved["markdown"])
+
+    def test_closed_finding_that_reappears_is_returned_not_new(self):
+        self.record_many([self.finding])
+        self.publish(self.finalize())
+        self.record_many([], head_sha="b" * 40, context_hashes={})
+        self.publish(
+            self.finalize(
+                head_sha="b" * 40,
+                previous_verdicts=[
+                    {
+                        "local_reference": "F1",
+                        "verdict": "resolved",
+                        "evidence": "The scoped query replaced the global lookup.",
+                    }
+                ],
+            )
+        )
+        self.record_many(
+            [self.finding],
+            head_sha="c" * 40,
+            context_hashes={self.finding["path"]: "d" * 40},
+        )
+
+        result = self.finalize(head_sha="c" * 40)
+
+        self.assertIn("F1 returned", result["markdown"])
+        self.assertNotIn("F1 is new", result["markdown"])
+        self.assertIn(
+            "### F1 · Critical (P0): Document creation omits tenant scope",
             result["markdown"],
         )
 
     def test_finalize_review_escapes_model_text_in_markdown_layout(self):
         malicious = dict(
             self.finding,
-            title="Break </details> <!-- hidden --> ``` fence",
-            evidence="Evidence tries </details> and <!-- hidden --> plus ```fence.",
-            impact="Impact closes </details> and starts <!-- hidden -->.",
-            smallest_fix="Fix uses ```not a fence``` plus List<T> and a && b.",
+            path="backend/api/docu]ments.py",
+            title="Break </details> <!-- hidden --> ``` fence @eneo-ai/security",
+            evidence=(
+                "![pixel](https://evil.invalid/p.gif) [click](https://evil.invalid) "
+                "@eneo-ai/security plus ```fence."
+            ),
+            impact="# heading > quote </details> <!-- hidden -->.",
+            smallest_fix=(
+                "Visit www.evil.invalid or @all; use ```not a fence``` plus "
+                "List<T> and a && b."
+            ),
             disproof_checks="Verify </details> is escaped and ``` is neutralized.",
         )
         self.record_many(
@@ -1283,15 +1429,23 @@ class ReviewMemoryTests(unittest.TestCase):
         rendered_prose = visible.split("```text\nTask:", 1)[0]
 
         self.assertIn("&lt;/details&gt;", rendered_prose)
-        self.assertIn("&lt;!-- hidden --&gt;", rendered_prose)
+        self.assertIn("&lt;\\!-- hidden --&gt;", rendered_prose)
         self.assertIn(
-            "[`backend/api/documents.py:42`](https://github.com/eneo/platform/blob/"
+            "[`backend/api/docu%5Dments.py:42`](https://github.com/eneo/platform/blob/"
             + "a" * 40
-            + "/backend/api/documents.py#L42)",
+            + "/backend/api/docu%5Dments.py#L42)",
             rendered_prose,
         )
         self.assertNotIn("<!-- hidden", rendered_prose)
         self.assertNotIn("```fence", rendered_prose)
+        self.assertNotIn("![pixel](", rendered_prose)
+        self.assertNotIn("[click](", rendered_prose)
+        self.assertNotIn("@eneo-ai/security", rendered_prose)
+        self.assertNotIn("https://evil.invalid", rendered_prose)
+        self.assertNotIn("www.evil.invalid", rendered_prose)
+        self.assertIn("&#64;eneo-ai/security", rendered_prose)
+        self.assertIn("https:&#8203;//evil.invalid", rendered_prose)
+        self.assertIn("www&#8203;.evil.invalid", rendered_prose)
         self.assertEqual(result["markdown"].count("```"), 8)
         brief = result["markdown"].split("```text\nTask:", 1)[1].split("\n```", 1)[0]
         self.assertIn("List<T>", brief)
@@ -1330,6 +1484,40 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(len(context["repeat_review_findings"]), 35)
         self.assertNotIn("evidence", context["repeat_review_findings"][0])
         self.assertIn("prior_claim", context["repeat_review_findings"][0])
+
+    def test_finalize_rejects_silent_pending_finding_overflow(self):
+        findings = []
+        context_hashes = {}
+        for index in range(memory_db.MAX_FINDINGS_PER_REVIEW):
+            path = f"backend/api/pending_{index}.py"
+            findings.append(
+                dict(
+                    self.finding,
+                    path=path,
+                    anchor=f"pending route {index}",
+                    line=index + 1,
+                )
+            )
+            context_hashes[path] = f"{index:040x}"[-40:]
+        self.record_many(findings, context_hashes=context_hashes)
+        self.publish(self.finalize())
+
+        extra = dict(
+            self.finding,
+            path="backend/api/new_pending.py",
+            anchor="new pending route",
+        )
+        self.record_many(
+            [extra],
+            head_sha="b" * 40,
+            context_hashes={extra["path"]: "e" * 40},
+        )
+
+        with self.assertRaisesRegex(
+            memory_db.ReviewMemoryError,
+            r"review would leave 201 pending findings; the reviewer limit is 200",
+        ):
+            self.finalize(head_sha="b" * 40)
 
     def test_repeat_review_findings_keep_latest_observation_per_fingerprint(self):
         first = self.record(line=42, context_hash="d" * 40, head_sha="a" * 40)

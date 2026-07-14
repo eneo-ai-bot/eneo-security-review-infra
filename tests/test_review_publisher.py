@@ -21,6 +21,11 @@ from eneo_review_tools import (  # noqa: E402
 )
 
 
+# Large enough for one atomic coding-agent brief, but small enough to force a
+# representative review into deterministic continuation comments.
+SPLIT_BUDGET = 2_500
+
+
 class FakeHTTPResponse:
     def __init__(self, payload: object) -> None:
         self._body = json.dumps(payload).encode("utf-8")
@@ -303,6 +308,7 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(github.updated[0][0], first_publish["comment_id"])
         self.assertIn("Review 1 · Superseded", github.updated[0][1])
         self.assertIn("Superseded by [Review 2]", github.updated[0][1])
+        self.assertNotIn("Copyable fix brief for a coding agent", github.updated[0][1])
         self.assertNotIn("Give feedback on this review", github.updated[0][1])
         previous = self.connection.execute(
             """
@@ -381,7 +387,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(second["publication_id"]),
             review_run_id=int(second_run["id"]),
             github=github,
-            max_comment_bytes=1300,
+            max_comment_bytes=SPLIT_BUDGET,
         )
 
         self.assertTrue(second_publish["published"])
@@ -391,7 +397,7 @@ class ReviewPublisherTests(unittest.TestCase):
             for comment_id, body in github.updated
             if comment_id == first_publish["comment_id"]
         ][0]
-        self.assertLessEqual(len(updated_old.encode("utf-8")), 1300)
+        self.assertLessEqual(len(updated_old.encode("utf-8")), SPLIT_BUDGET)
         self.assertIn("Historical details were shortened", updated_old)
         self.assertIn("part=1/1", updated_old)
         previous = self.connection.execute(
@@ -458,7 +464,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(publication["publication_id"]),
             review_run_id=int(run["id"]),
             github=github,
-            max_comment_bytes=1300,
+            max_comment_bytes=SPLIT_BUDGET,
         )
 
         self.assertTrue(result["published"])
@@ -469,10 +475,14 @@ class ReviewPublisherTests(unittest.TestCase):
         self.assertEqual(comment_ids, result["comment_ids"])
         self.assertEqual(comment_ids[0], result["comment_id"])
         for index, body in enumerate(github.created, start=1):
-            self.assertLessEqual(len(body.encode("utf-8")), 1300)
+            self.assertLessEqual(len(body.encode("utf-8")), SPLIT_BUDGET)
             self.assertIn(f"part={index}/{result['parts']}", body)
-        self.assertIn("AI code & security review - 1 of", github.created[0])
-        self.assertIn("· Review 1", github.created[0])
+            self.assertTrue(
+                body.startswith(
+                    "## AI code & security review · Review 1 "
+                    f"· Part {index} of {result['parts']}"
+                )
+            )
 
     def test_split_keeps_findings_and_details_whole(self) -> None:
         publication_key = "sha256:" + ("1" * 64)
@@ -581,7 +591,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(first["publication_id"]),
             review_run_id=int(first_run["id"]),
             github=github,
-            max_comment_bytes=1300,
+            max_comment_bytes=SPLIT_BUDGET,
         )
         self.assertGreater(first_result["parts"], 1)
         first_comment_ids = list(first_result["comment_ids"])
@@ -614,7 +624,7 @@ class ReviewPublisherTests(unittest.TestCase):
         split_parts = review_publisher.split_publication_body(
             str(publication["markdown"]),
             publication_key=str(publication["publication_key"]),
-            max_comment_bytes=1300,
+            max_comment_bytes=SPLIT_BUDGET,
             rendered_blocks_json=str(publication["rendered_blocks_json"]),
         )
         self.assertGreater(len(split_parts), 1)
@@ -652,7 +662,7 @@ class ReviewPublisherTests(unittest.TestCase):
             publication_id=int(first["publication_id"]),
             review_run_id=int(first_run["id"]),
             github=github,
-            max_comment_bytes=1300,
+            max_comment_bytes=SPLIT_BUDGET,
         )
         first_comment_ids = list(first_result["comment_ids"])
         self.assertGreater(len(first_comment_ids), 1)

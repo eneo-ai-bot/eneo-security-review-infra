@@ -60,7 +60,7 @@ class DocsContractTests(unittest.TestCase):
             "[`backend/src/intric/jobs/service.py:142`](https://github.com/eneo-ai/eneo/blob/"
             "a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/service.py#L142) · security"
         )
-        heading = "### F1 · High (P1): Tenant context is dropped before the background job"
+        heading = "### F1 · High (P1): Tenant authorization is lost before the background job"
 
         self.assertIn("linked `path:line` · category", canonical)
         self.assertIn("`### F1 · High (P1): Title`", canonical)
@@ -74,30 +74,30 @@ class DocsContractTests(unittest.TestCase):
     def test_examples_show_all_findings_review_shape(self):
         body = read("examples/comments/example-review.md")
         self.assertIn(
-            "There are 2 current findings: 1 High (P1) and 1 Medium (P2).",
+            "There is 1 current finding: 1 High (P1).",
             body,
         )
         self.assertNotIn("| Severity | Category | Location | Finding | ID |", body)
-        self.assertIn("### F2 · Medium (P2): Regression test misses", body)
+        self.assertNotIn("### F2", body)
         self.assertNotIn("<summary>Medium / P2", body)
         self.assertIn("Copyable fix brief for a coding agent", body)
         self.assertIn("Give feedback on this review", body)
         self.assertIn("```text\nTask:", body)
         self.assertIn("Findings:", body)
         self.assertIn("**Impact:**", body)
-        self.assertIn("**Reviewer checks:**", body)
-        self.assertNotIn("**Verify:**", body)
+        self.assertIn("**Smallest safe fix:**", body)
+        self.assertNotIn("**Reviewer checks:**", body)
         self.assertIn("F1 - High (P1)", body)
-        self.assertIn("F2 - Medium (P2)", body)
-        self.assertIn("Review and address all current findings from this PR review.", body)
-        self.assertNotIn("Review and address all current findings from the Eneo PR review.", body)
+        self.assertIn("Fix every current finding on the latest PR head", body)
+        self.assertIn("Observed behavior:", body)
         self.assertIn("Impact:", body)
-        self.assertIn("Reviewer checks:", body)
-        self.assertNotIn("Required outcome:", body)
-        self.assertNotIn("Verification:", body)
+        self.assertIn("Smallest safe fix:", body)
+        self.assertNotIn("Reviewer checks:", body)
         self.assertIn("Re-check every finding against the current PR head", body)
-        self.assertIn("/review false-positive F1 because", body)
-        self.assertIn("/review feedback scope F1 because", body)
+        self.assertIn("One line per F reference: fixed, skipped, or blocked", body)
+        self.assertIn("must post /review as a new top-level PR comment", body)
+        self.assertIn("/review false-positive <F-reference> because", body)
+        self.assertIn("/review feedback scope <F-reference> because", body)
         self.assertIn("/review feedback missed because", body)
         self.assertNotIn("@review false-positive", body)
         self.assertNotIn("/review intentional", body)
@@ -125,7 +125,8 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("not counted as current findings", skill)
         self.assertIn("invalidated, suppressed, still-present", canonical)
         self.assertIn("classify it as `not_checked`", canonical)
-        self.assertIn("shown as not rechecked, not as current", canonical)
+        self.assertIn("remains pending across later review rounds", canonical)
+        self.assertIn("returned,", canonical)
 
     def test_skeptical_gate_pins_falsification_and_quality_rules(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
@@ -158,6 +159,7 @@ class DocsContractTests(unittest.TestCase):
     def test_all_surviving_findings_are_publishable(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
+        canonical_words = re.sub(r"\s+", " ", canonical)
         skill_words = re.sub(r"\s+", " ", skill)
         self.assertIn("**Medium / P2**", canonical)
         self.assertIn("**Low / P3**", canonical)
@@ -171,8 +173,9 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("Render every published finding as a normal expanded `###` section", canonical)
         self.assertIn("Lower severity controls priority and ordering", canonical)
         self.assertIn("not\n  visibility", canonical)
-        self.assertIn("The only allowed collapsed sections", canonical)
-        self.assertIn("one complete brief in a single `text` fenced code block", canonical)
+        self.assertIn("The only allowed collapsed sections", canonical_words)
+        self.assertIn("single `text` fenced code block", canonical)
+        self.assertIn("more than ten findings", canonical)
         self.assertIn("include every published finding", canonical)
         self.assertIn("Give feedback on this review", canonical)
         self.assertIn("Do not advertise feedback commands that are not", canonical)

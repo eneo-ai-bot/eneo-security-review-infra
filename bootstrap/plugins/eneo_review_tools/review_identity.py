@@ -4,8 +4,14 @@
 # review comments, but identity matching uses the hidden publication marker.
 # Keep it as a per-bundle constant, not runtime environment.
 REVIEW_COMMENT_TITLE = "AI code & security review"
-FIX_BRIEF_TASK = "Review and address all current findings from this PR review."
-FIX_BRIEF_PROJECT_CONSTRAINT = "- Reuse existing project abstractions where they fit."
+FIX_BRIEF_TASK = (
+    "Fix every current finding on the latest PR head with the smallest safe, "
+    "behavior-tested change."
+)
+FIX_BRIEF_PROJECT_CONSTRAINT = (
+    "- Reuse the canonical owner or an existing project abstraction; do not create "
+    "a parallel path."
+)
 CONTINUATION_LEAD = "Continued from the previous review comment."
 FEEDBACK_COMMAND_NOT_RECOGNIZED = "AI review command not recognized."
 FEEDBACK_NO_CURRENT_REVIEW = (
