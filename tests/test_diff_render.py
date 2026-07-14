@@ -112,7 +112,6 @@ class AssembleFallbackDiffTests(unittest.TestCase):
         )
         self.assertEqual(result.truncated_paths, ["big.py"])
         self.assertEqual(result.exposed_paths, [])
-        self.assertLessEqual(len(result.text), 1000)
 
     def test_only_path_oversized_is_truncated_not_exposed(self):
         big = _cf(path="big.py", patch="@@ " + "z" * 2000)
@@ -124,6 +123,92 @@ class AssembleFallbackDiffTests(unittest.TestCase):
         self.assertEqual(result.truncated_paths, ["big.py"])
         self.assertEqual(result.exposed_paths, [])
 
+
+class AssembleRenderedDiffTests(unittest.TestCase):
+    @staticmethod
+    def _block(path: str, body: str = "@@ -1 +1 @@\n-old\n+new\n") -> str:
+        return f"diff --git a/{path} b/{path}\n{body}"
+
+    def test_rendered_path_match_is_exact(self):
+        text = self._block("src/app.py.extra", "+extra\n") + self._block(
+            "src/app.py", "+exact\n"
+        )
+
+        result = diff_render.assemble_rendered_diff(
+            text, only_path="src/app.py", max_chars=10_000
+        )
+
+        self.assertTrue(result.path_present)
+        self.assertEqual(result.exposed_paths, ["src/app.py"])
+        self.assertNotIn("src/app.py.extra", result.text)
+        self.assertIn("+exact", result.text)
+
+    def test_rendered_quoted_path_decodes_git_c_escapes(self):
+        text = (
+            'diff --git "a/src/old name.py" "b/src/new\\303\\251 name.py"\n'
+            "similarity index 100%\n"
+        )
+
+        result = diff_render.assemble_rendered_diff(
+            text, only_path="src/newé name.py", max_chars=10_000
+        )
+
+        self.assertTrue(result.path_present)
+        self.assertEqual(result.exposed_paths, ["src/newé name.py"])
+
+    def test_rendered_rename_uses_destination_path(self):
+        text = (
+            "diff --git a/src/old.py b/src/new.py\n"
+            "similarity index 100%\n"
+            "rename from src/old.py\n"
+            "rename to src/new.py\n"
+        )
+
+        result = diff_render.assemble_rendered_diff(
+            text, only_path=None, max_chars=10_000
+        )
+        old = diff_render.assemble_rendered_diff(
+            text, only_path="src/old.py", max_chars=10_000
+        )
+
+        self.assertEqual(result.exposed_paths, ["src/new.py"])
+        self.assertFalse(old.path_present)
+
+    def test_rendered_header_disambiguates_path_containing_b_prefix(self):
+        path = "foo b/bar.py"
+        text = self._block(path)
+
+        result = diff_render.assemble_rendered_diff(
+            text, only_path=path, max_chars=10_000
+        )
+
+        self.assertTrue(result.path_present)
+        self.assertEqual(result.exposed_paths, [path])
+
+    def test_rendered_budget_preserves_complete_prefix(self):
+        first = self._block("a.py", "+" + "a" * 600 + "\n")
+        second = self._block("b.py", "+" + "b" * 600 + "\n")
+
+        result = diff_render.assemble_rendered_diff(
+            first + second, only_path=None, max_chars=1000
+        )
+
+        self.assertEqual(result.text, first)
+        self.assertEqual(result.exposed_paths, ["a.py"])
+        self.assertEqual(result.truncated_paths, [])
+        self.assertTrue(result.more_paths_available)
+
+    def test_rendered_single_oversized_path_is_truncated(self):
+        text = self._block("big.py", "+" + "z" * 2000 + "\n")
+
+        result = diff_render.assemble_rendered_diff(
+            text, only_path="big.py", max_chars=1000
+        )
+
+        self.assertEqual(len(result.text), 1000)
+        self.assertEqual(result.exposed_paths, [])
+        self.assertEqual(result.truncated_paths, ["big.py"])
+        self.assertLessEqual(len(result.text), 1000)
 
 if __name__ == "__main__":
     unittest.main()

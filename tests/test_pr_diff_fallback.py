@@ -124,6 +124,30 @@ class PrDiffFallbackTests(unittest.TestCase):
         self.assertIn("diff --git a/backend/api.py b/backend/api.py", result["diff"])
         self.assertIn("@@ -1,2 +1,3 @@\n-old\n+new", result["diff"])
 
+    def test_transport_truncation_uses_per_file_fallback_for_exact_path(self):
+        run_id = self._begin_run(["src/first.py", "src/target.py"])
+        partial = b"diff --git a/src/first.py b/src/first.py\n@@ -1 +1 @@\n-old\n+new\n"
+        target = _cf(path="src/target.py")
+        with (
+            patch.object(tools, "_pr", return_value=_pull()),
+            patch.object(tools, "_request", return_value=(partial, True, {})),
+            patch.object(tools, "_changed_file_index", return_value=_index([target])),
+        ):
+            result = json.loads(
+                tools.pr_diff(
+                    {
+                        "repository": "eneo-ai/eneo",
+                        "pr_number": 12,
+                        "run_id": run_id,
+                        "path": "src/target.py",
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["diff_source"], "per_file_patch")
+        self.assertIn("b/src/target.py", result["diff"])
+
     def test_pr_diff_unavailable_path_points_to_pr_file_on_406(self):
         run_id = self._begin_run()
         index = _index([_cf(patch=None, patch_available=False, patch_state="missing")])
