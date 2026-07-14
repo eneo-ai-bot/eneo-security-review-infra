@@ -216,7 +216,14 @@ ENEO_REVIEW_MEMORY_RECORD = {
                         "line": {"type": "integer", "minimum": 1},
                         "symbol": {"type": "string"},
                         "anchor": {"type": "string"},
-                        "title": {"type": "string"},
+                        "title": {
+                            "type": "string",
+                            "maxLength": memory_contract.FINDING_TEXT_LIMITS["title"],
+                            "description": (
+                                "Concrete developer-facing root-cause title; do not "
+                                "repeat severity, path, or generic advice."
+                            ),
+                        },
                         "severity": {
                             "type": "string",
                             "enum": sorted(memory_contract.SEVERITIES),
@@ -231,10 +238,44 @@ ENEO_REVIEW_MEMORY_RECORD = {
                             "minimum": memory_contract.MIN_CONFIDENCE,
                             "maximum": 1.0,
                         },
-                        "evidence": {"type": "string"},
-                        "disproof_checks": {"type": "string"},
-                        "impact": {"type": "string"},
-                        "smallest_fix": {"type": "string"},
+                        "evidence": {
+                            "type": "string",
+                            "maxLength": memory_contract.FINDING_TEXT_LIMITS["evidence"],
+                            "description": (
+                                "Exact changed behavior and concrete failure path, "
+                                "including the guard or caller/callee relationship that "
+                                "proves the claim. Do not repeat the impact or fix."
+                            ),
+                        },
+                        "disproof_checks": {
+                            "type": "string",
+                            "maxLength": memory_contract.FINDING_TEXT_LIMITS[
+                                "disproof_checks"
+                            ],
+                            "description": (
+                                "Cheapest falsifiers actually checked before accepting "
+                                "the finding. This is internal skeptical-gate evidence, "
+                                "not remediation prose."
+                            ),
+                        },
+                        "impact": {
+                            "type": "string",
+                            "maxLength": memory_contract.FINDING_TEXT_LIMITS["impact"],
+                            "description": (
+                                "Concrete developer, user, data, security, reliability, "
+                                "or maintenance consequence only; do not restate evidence."
+                            ),
+                        },
+                        "smallest_fix": {
+                            "type": "string",
+                            "maxLength": memory_contract.FINDING_TEXT_LIMITS[
+                                "smallest_fix"
+                            ],
+                            "description": (
+                                "Smallest safe owner-aligned remediation, including the "
+                                "focused behavior check that proves the failure is closed."
+                            ),
+                        },
                         "introduced_by_diff": {"type": "boolean", "const": True},
                     },
                     "required": [
@@ -309,10 +350,13 @@ ENEO_REVIEW_DELIVER = {
                         },
                         "evidence": {
                             "type": "string",
+                            "maxLength": memory_contract.PRIOR_VERDICT_EVIDENCE_MAX,
                             "description": (
-                                "Short reason for resolved, invalidated, suppressed, or "
-                                "partially resolved verdicts. Keep empty when omitted or "
-                                "not checked."
+                                "Required short reason for resolved or invalidated "
+                                "verdicts. Describe what fixed or disproved the "
+                                "demonstrated path. Keep empty for current, partially "
+                                "resolved, or not-checked findings; suppression uses the "
+                                "matching human decision."
                             ),
                         },
                     },

@@ -173,20 +173,17 @@ shorten the review by omitting a surviving finding.
   iterations; resolved references are not recycled for different findings.
 - Use a `###` heading in the form `### F1 · High (P1): Title`, then one compact
   metadata line in the form: linked `path:line` · category. Use the same lower-case
-  category you record for the finding. Follow with at most two short paragraphs:
-  first the verified behavior and its concrete consequence, then **Impact:**,
-  **Suggested change:**, and **Reviewer checks:** lines from the structured
-  finding fields. A dedicated **Verify:** line is allowed only when the finding
-  evidence names a concrete regression test, migration check, or operational
-  check. Do not split one root cause into a second finding just because it also
-  needs a test.
+  category you record for the finding. Follow with one short evidence paragraph,
+  then **Impact:** and **Smallest safe fix:** lines. Evidence states the exact
+  changed behavior and failure path; impact states only the concrete consequence;
+  the fix names the smallest owner-aligned remediation and focused behavior check.
+  Keep skeptical `disproof_checks` in review memory rather than repeating them in
+  the public comment. Do not split one root cause into a second finding just
+  because it also needs a test.
 - Suggested changes should choose the lowest-risk remediation: prefer a safe
   local fix, call out careful or risky remediation only when unavoidable, and do
   not recommend deletion unless you can explain why the code exists and why that
   reason no longer applies.
-- When it sharpens the point, include one short fenced code block (about ten lines
-  at most) showing the exact offending lines or the minimal fix. Quote real code
-  only; never present invented or paraphrased code as a quote.
 - Separate findings with a blank line and keep headings and metadata consistent so
   the comment reads as one coherent, scannable review.
 - Use ordinary developer language. Do not repeat the same point as "evidence",
@@ -211,24 +208,35 @@ shorten the review by omitting a surviving finding.
 - Never claim tests passed or code executed unless a trusted deterministic job
   supplied that evidence. This phase does not execute contributor code.
 
-After the visible review, add one collapsed `<details>` section titled
-`Copyable fix brief for a coding agent` only when findings exist. Keep it compact
-and put one complete brief in a single `text` fenced code block so GitHub shows
-one copy button. The only allowed collapsed sections are this fix brief and the
-deterministic `Give feedback on this review` help section. The
-brief must include every published finding by local reference, severity, file,
-problem, impact, suggested approach, and reviewer checks. It must tell the
-coding agent to re-check every finding against the current PR head and skip
-anything already fixed. Keep it self-contained so the author can paste it into
-Codex or Claude Code. Do not attach a file or create a second artifact in phase
-one.
+After the visible findings, add an always-visible next step: address the current
+findings, push the fixes, then post `/review` as a new top-level PR comment. State
+that later reviews keep F references and report resolved, remaining, returned,
+and new findings.
+
+Then add a collapsed `<details>` section titled `Copyable fix brief for a coding
+agent` only when findings exist. Keep it compact and put the complete brief in a
+single `text` fenced code block so GitHub shows one copy button. For an exceptional
+review with more than ten findings, split the brief into deterministic F-reference
+parts; each part remains a complete fenced block. The only allowed collapsed
+sections are these fix-brief parts and the deterministic `Give feedback on this
+review` help section. The brief must include every published finding by local
+reference, severity, file, problem, observed behavior, impact, and smallest safe
+fix. It must tell the coding agent to re-check the current PR head, preserve every
+F reference in its completion report, report exact validation commands and
+results, and explain anything skipped or blocked. State whether changed-file
+diff context was available for all registered paths; do not overstate that as
+proof every path was semantically deep-reviewed. If prior references were not
+rechecked, name them as status unknown and do not present them as actionable
+current findings. Keep the brief self-contained so the author can paste it into
+a coding agent. Do not attach a file or create a second artifact in phase one.
 
 After the fix brief, add the deterministic `Give feedback on this review`
 section. It must be rendered by code, not invented by the model. Document `/review`
 as the canonical command and keep `@review` only as a compatibility alias. Use
 one single-line fenced block per deployed feedback command so each command has
-its own copy button. Tell the developer to copy one command, replace the text in
-angle brackets, and post it as a new top-level PR comment; it does not need
+its own copy button. Use `<F-reference>` rather than preselecting the first
+finding. Tell the developer to copy one command, replace every angle-bracket
+placeholder, and post it as a new top-level PR comment; it does not need
 to reply to the bot comment. Do not advertise feedback commands that are not
 deployed. Feedback is recorded for future reviews and private
 reviewer-improvement analysis; do not claim it automatically teaches or rewrites
@@ -239,17 +247,23 @@ form. Scope feedback is review-quality feedback, not a false-positive decision.
 If the final review would exceed the delivery budget, never silently truncate or
 hide findings. Keep each finding concise and, when needed, split the output into
 deterministic continuation comments using the configured review title plus
-`- 1 of 2`, `- 2 of 2`, and so on. This should be exceptional, not the normal
-format.
+the same review number and `Part 1 of 2`, `Part 2 of 2`, and so on. This should
+be exceptional, not the normal format.
 
 On a repeated review, show the current state first. Summarize resolved,
-invalidated, suppressed, still-present, partially-resolved, not-rechecked, and
-new findings when those groups exist. Do not infer resolution from absence in
-the new observation set; a prior current finding remains active only when it is
-observed again or explicitly marked still-present. If the reviewer
+invalidated, suppressed, still-present, partially-resolved, returned,
+not-rechecked, and new findings when those groups exist. A returned finding has
+the same stable F reference as an earlier posted finding but was not current in
+the immediately previous review. Do not infer resolution from absence in
+the new observation set; a prior finding remains pending until it receives an
+explicit closing verdict, but it is counted as current only when it is observed
+again or explicitly marked still-present. If the reviewer
 cannot confidently re-check a previous finding, classify it as `not_checked` so
-it is shown as not rechecked, not as current. Do not say "approved", "safe to merge", or "ready for
-production" when no current finding survives.
+it remains pending across later review rounds and is shown visibly as status
+unknown, not as current or resolved. Never use the clean finding-free sentence
+when coverage is incomplete or a prior finding was not rechecked. Do not say
+"approved", "safe to merge", or "ready for production" when no current finding
+survives.
 
 Use respectful language. Prefer “This path can…” and “A minimal fix is…” over
 “You did…” or “You forgot…”.

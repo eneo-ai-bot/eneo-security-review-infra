@@ -138,6 +138,107 @@ class RunToolTests(unittest.TestCase):
         self.assertIsNotNone(coverage)
         self.assertEqual(coverage["changed_paths"], 1)
 
+    def test_begin_failure_after_run_creation_does_not_block_immediate_retry(self):
+        pull = self.pull_with_repositories()
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(
+                tools,
+                "_changed_files",
+                side_effect=tools.ToolInputError("changed-file enumeration failed"),
+            ),
+        ):
+            failed = self.call(
+                tools.review_begin,
+                {"repository": "eneo-ai/eneo", "pr_number": 501},
+            )
+
+        self.assertEqual(failed["error"], "changed-file enumeration failed")
+        with closing(memory_db.connect()) as connection:
+            runs = memory_db.list_runs(connection, repository="eneo-ai/eneo")
+        failed_run = next(run for run in runs if run["pr_number"] == 501)
+        self.assertEqual(failed_run["status"], "failed")
+        self.assertEqual(failed_run["phase"], "failed")
+        self.assertEqual(failed_run["failure_code"], "review_failed")
+
+        retry = self.begin(pr=501)
+
+        self.assertEqual(retry["status"], "running")
+        self.assertNotEqual(retry["run_id"], failed_run["id"])
+
+    def test_begin_marks_registration_failure_terminal(self):
+        pull = self.pull_with_repositories()
+        changed_files = [
+            {
+                "path": "backend/api.py",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3,
+                "patch_available": True,
+                "context_hash": "d" * 40,
+                "context_hash_source": "blob",
+            }
+        ]
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files", return_value=changed_files),
+            patch.object(
+                memory_db,
+                "register_changed_files",
+                side_effect=memory_db.ReviewMemoryError("registration failed"),
+            ),
+        ):
+            result = self.call(
+                tools.review_begin,
+                {"repository": "eneo-ai/eneo", "pr_number": 502},
+            )
+
+        self.assertEqual(result["error"], "registration failed")
+        with closing(memory_db.connect()) as connection:
+            runs = memory_db.list_runs(connection, repository="eneo-ai/eneo")
+        failed_run = next(run for run in runs if run["pr_number"] == 502)
+        self.assertEqual(failed_run["status"], "failed")
+        self.assertEqual(failed_run["failure_code"], "review_failed")
+
+    def test_begin_marks_unexpected_snapshot_failure_terminal(self):
+        pull = self.pull_with_repositories()
+        with (
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(
+                tools,
+                "_changed_files",
+                return_value=[
+                    {
+                        "path": "backend/api.py",
+                        "status": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                        "changes": 3,
+                        "patch_available": True,
+                        "context_hash": "d" * 40,
+                        "context_hash_source": "blob",
+                    }
+                ],
+            ),
+            patch.object(
+                tools,
+                "_validate_run_snapshot_from_pull",
+                side_effect=RuntimeError("database unavailable"),
+            ),
+        ):
+            result = self.call(
+                tools.review_begin,
+                {"repository": "eneo-ai/eneo", "pr_number": 503},
+            )
+
+        self.assertEqual(result["error"], "unexpected review-begin failure")
+        with closing(memory_db.connect()) as connection:
+            runs = memory_db.list_runs(connection, repository="eneo-ai/eneo")
+        failed_run = next(run for run in runs if run["pr_number"] == 503)
+        self.assertEqual(failed_run["status"], "failed")
+        self.assertEqual(failed_run["failure_code"], "review_failed")
+
     def test_begin_persists_trigger_comment_context(self):
         start = self.begin(
             extra={"trigger_comment_id": 4903308824, "trigger_user": "CCimen"}
@@ -575,6 +676,54 @@ class RunToolTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertEqual(summary["context_paths_read"], 1)
         self.assertEqual(summary["context_ranges_read"], 1)
+
+    def test_whole_diff_budget_keeps_complete_prefix_untruncated(self):
+        changed_files = [
+            {
+                "path": path,
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+                "patch_available": True,
+                "context_hash": character * 40,
+                "context_hash_source": "blob",
+            }
+            for path, character in (("a.py", "a"), ("b.py", "b"))
+        ]
+        start = self.begin(pr=504, changed_files=changed_files)
+        run_id = int(start["run_id"])
+        first = "diff --git a/a.py b/a.py\n+" + "a" * 600 + "\n"
+        second = "diff --git a/b.py b/b.py\n+" + "b" * 600 + "\n"
+
+        with (
+            patch.object(tools, "_pr", return_value=self.pull_with_repositories()),
+            patch.object(
+                tools,
+                "_request",
+                return_value=((first + second).encode("utf-8"), False, {}),
+            ),
+        ):
+            result = self.call(
+                tools.pr_diff,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 504,
+                    "run_id": run_id,
+                    "max_chars": 1000,
+                },
+            )
+
+        self.assertEqual(result["diff"], first)
+        self.assertFalse(result["truncated"])
+        self.assertTrue(result["more_paths_available"])
+        with closing(memory_db.connect()) as connection:
+            summary = memory_db.coverage_summary(connection, run_id=run_id)
+        assert summary is not None
+        self.assertEqual(summary["state"], "incomplete")
+        self.assertEqual(summary["diff_exposed"], 1)
+        self.assertEqual(summary["diff_truncated"], 0)
+        self.assertEqual(summary["truncated_paths"], [])
 
 
 if __name__ == "__main__":

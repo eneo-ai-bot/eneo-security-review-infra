@@ -328,6 +328,13 @@ class FeedbackIngestionTests(unittest.TestCase):
                 assert parsed is not None
                 self.assertNotRegex(parsed.reason, r"(?i)^because\b")
 
+    def test_generic_usage_requires_replacing_the_finding_reference(self) -> None:
+        usage = "\n".join(memory_db.usage_lines())
+
+        self.assertIn("/review false-positive <F-reference> because", usage)
+        self.assertIn("including `<F-reference>`", usage)
+        self.assertNotIn("/review false-positive F2 because", usage)
+
     def test_authorization_uses_numeric_actor_id_and_fails_closed(self) -> None:
         self.assertEqual(
             memory_db.authorize_feedback_actor(12345, allowed_actor_ids="12345,678").actor_user_id,

@@ -75,11 +75,12 @@ def feedback_templates(
 
 
 def usage_lines() -> tuple[str, ...]:
-    templates = feedback_templates("F2")
+    templates = feedback_templates("<F-reference>")
     return (
         "Use `/review` alone to request a review, or:",
         "",
         *(f"- `{template.command}`" for template in templates),
         "",
+        "Replace every angle-bracket placeholder, including `<F-reference>`.",
         "Post feedback as a new top-level PR comment. Do not edit an old command.",
     )

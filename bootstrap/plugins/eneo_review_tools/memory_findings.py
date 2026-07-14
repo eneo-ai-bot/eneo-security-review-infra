@@ -18,6 +18,7 @@ try:
     from .memory_validation import (
         HASH_RE,
         CATEGORIES,
+        FINDING_TEXT_LIMITS,
         MAX_FINDINGS_PER_REVIEW,
         MIN_CONFIDENCE,
         SEVERITIES,
@@ -46,6 +47,7 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
     from memory_validation import (
         HASH_RE,
         CATEGORIES,
+        FINDING_TEXT_LIMITS,
         MAX_FINDINGS_PER_REVIEW,
         MIN_CONFIDENCE,
         SEVERITIES,
@@ -165,15 +167,23 @@ def _review_run_for_observation(
     return int(review_run_id), base_sha or run_base_sha
 
 
-def _latest_publication_current_fingerprints(
+def active_publication_findings(
     connection: sqlite3.Connection,
     repository: str,
     pr_number: int,
-) -> set[str] | None:
+) -> list[dict[str, Any]] | None:
+    """Return the latest recorded active state for every finding on a posted PR.
+
+    A publication that omits a not-rechecked finding records no lifecycle
+    transition for it. Reading the latest row per fingerprint across all posted
+    rounds therefore keeps that finding active until a later `resolved` row or a
+    new current observation explicitly changes its state.
+    """
+
     publication = connection.execute(
         """
-        SELECT id FROM review_publications
-        WHERE repository = ? AND pr_number = ? AND superseded_at IS NULL
+        SELECT 1 FROM review_publications
+        WHERE repository = ? AND pr_number = ?
           AND delivery_status = 'posted'
           AND comment_id IS NOT NULL
         ORDER BY id DESC
@@ -185,12 +195,21 @@ def _latest_publication_current_fingerprints(
         return None
     rows = connection.execute(
         """
-        SELECT fingerprint FROM publication_findings
-        WHERE publication_id = ? AND status = 'current'
+        SELECT pf.*, rp.id AS source_publication_id
+        FROM publication_findings pf
+        JOIN review_publications rp ON rp.id = pf.publication_id
+        WHERE rp.repository = ? AND rp.pr_number = ?
+          AND rp.delivery_status = 'posted'
+          AND rp.comment_id IS NOT NULL
+        ORDER BY rp.id DESC, pf.id DESC
         """,
-        (int(publication["id"]),),
+        (repository, pr_number),
     ).fetchall()
-    return {str(row["fingerprint"]) for row in rows}
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        latest.setdefault(str(item["fingerprint"]), item)
+    return [item for item in latest.values() if item["status"] == "current"]
 
 
 def assign_local_reference(
@@ -278,7 +297,9 @@ def _validated_finding(repository: str, raw: Mapping[str, Any]) -> dict[str, Any
     path = normalize_path(str(raw.get("path", "")))
     symbol = clean_text(raw.get("symbol"), field="symbol", maximum=200, required=False)
     anchor = clean_text(raw.get("anchor"), field="anchor", maximum=240)
-    title = clean_text(raw.get("title"), field="title", maximum=180)
+    title = clean_text(
+        raw.get("title"), field="title", maximum=FINDING_TEXT_LIMITS["title"]
+    )
     severity = str(raw.get("severity", "")).strip().title()
     if severity not in SEVERITIES:
         raise ReviewMemoryError(
@@ -328,13 +349,25 @@ def _validated_finding(repository: str, raw: Mapping[str, Any]) -> dict[str, Any
     if line < 1:
         raise ReviewMemoryError("line must be positive")
 
-    evidence = clean_multiline(raw.get("evidence"), field="evidence", maximum=4000)
-    disproof_checks = clean_multiline(
-        raw.get("disproof_checks"), field="disproof_checks", maximum=2500
+    evidence = clean_multiline(
+        raw.get("evidence"),
+        field="evidence",
+        maximum=FINDING_TEXT_LIMITS["evidence"],
     )
-    impact = clean_multiline(raw.get("impact"), field="impact", maximum=2000)
+    disproof_checks = clean_multiline(
+        raw.get("disproof_checks"),
+        field="disproof_checks",
+        maximum=FINDING_TEXT_LIMITS["disproof_checks"],
+    )
+    impact = clean_multiline(
+        raw.get("impact"),
+        field="impact",
+        maximum=FINDING_TEXT_LIMITS["impact"],
+    )
     smallest_fix = clean_multiline(
-        raw.get("smallest_fix"), field="smallest_fix", maximum=2500
+        raw.get("smallest_fix"),
+        field="smallest_fix",
+        maximum=FINDING_TEXT_LIMITS["smallest_fix"],
     )
 
     fingerprint = compute_fingerprint(repository, rule_id, path, symbol, anchor)
@@ -692,10 +725,24 @@ def memory_context(
 
     repeat_review_findings: list[dict[str, Any]] = []
     if pr_number is not None:
-        active_publication_fingerprints = _latest_publication_current_fingerprints(
+        active_findings = active_publication_findings(
             connection,
             repository,
             pr_number,
+        )
+        if (
+            active_findings is not None
+            and len(active_findings) > MAX_FINDINGS_PER_REVIEW
+        ):
+            raise ReviewMemoryError(
+                f"pull request has {len(active_findings)} pending findings; the "
+                f"reviewer limit is {MAX_FINDINGS_PER_REVIEW}. Close pending "
+                "findings before requesting another review."
+            )
+        active_publication_fingerprints = (
+            None
+            if active_findings is None
+            else {str(item["fingerprint"]) for item in active_findings}
         )
         repeat_items: list[dict[str, Any]] = []
         if active_publication_fingerprints is None or active_publication_fingerprints:
@@ -706,10 +753,6 @@ def memory_context(
                 placeholders = ",".join("?" for _ in fingerprints)
                 repeat_where += f" AND fingerprint IN ({placeholders})"
                 repeat_params.extend(fingerprints)
-            if clean_paths:
-                placeholders = ",".join("?" for _ in clean_paths)
-                repeat_where += f" AND path IN ({placeholders})"
-                repeat_params.extend(clean_paths)
             repeat_rows = connection.execute(
                 f"""
                 SELECT fo.fingerprint, fo.rule_id, fo.path, fo.line, fo.symbol, fo.anchor,

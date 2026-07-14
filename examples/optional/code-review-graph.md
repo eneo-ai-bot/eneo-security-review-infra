@@ -108,9 +108,11 @@ recurring problem. It cannot fix coverage honesty, evidence quality, or publish
 gating.
 
 Note on the large-PR compaction noise (resolved separately, not via a read budget):
-the root cause was a mis-set `compression.threshold`. `codex_gpt55_autoraise: false`
-had dropped the gpt-5.5/Codex trigger from 85% back to the global 50% (~136K of the
-272K window), so even medium reviews compacted mid-run and emitted noisy
+the root cause was a mis-set `compression.threshold`. Hermes's legacy
+`codex_gpt55_autoraise: false` compatibility switch (the upstream key name; it does
+not select GPT-5.5) had dropped the Codex-route trigger from 85% back to the global
+50% (~136K of the 272K window), so even medium reviews compacted mid-run and emitted
+noisy
 "Compacting context" / "Session compressed" status comments. Fixed by setting
 `compression.threshold: 0.80` (~218K). A hard read-budget is therefore NOT needed to
 prevent compaction, and genuinely huge PRs are allowed to compact (the desired

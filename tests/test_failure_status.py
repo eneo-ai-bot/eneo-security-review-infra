@@ -117,6 +117,8 @@ class FailureStatusTests(unittest.TestCase):
         body = fake.created[0][1]
         self.assertIn(f"eneo-review:failure-status run={run_id}", body)
         self.assertIn("PR too large for GitHub to render a diff", body)
+        self.assertIn("post `/review` again as a new top-level PR comment", body)
+        self.assertIn("share the status code with the reviewer operator", body)
         with closing(memory_db.connect_existing(self.db)) as conn:
             run = memory_db.get_run(conn, run_id)
         assert run is not None

@@ -62,13 +62,20 @@ class VerificationReconciliationTests(unittest.TestCase):
             context_hashes={self.finding["path"]: "d" * 40},
         )[0]
 
-    def finalize(self, run_id: int, *, head_sha: str = "a" * 40) -> dict[str, object]:
+    def finalize(
+        self,
+        run_id: int,
+        *,
+        head_sha: str = "a" * 40,
+        previous_verdicts: object = None,
+    ) -> dict[str, object]:
         return memory_db.finalize_review(
             self.connection,
             "eneo/platform",
             17,
             head_sha,
             review_run_id=run_id,
+            previous_verdicts=previous_verdicts,
         )
 
     def test_no_verification_preserves_publish_all_behavior(self) -> None:
@@ -186,10 +193,17 @@ class VerificationReconciliationTests(unittest.TestCase):
             verification_run_id=int(verifier["id"]),
         )
 
-        second_publication = self.finalize(second_run_id, head_sha=second_head)
+        second_publication = self.finalize(
+            second_run_id,
+            head_sha=second_head,
+            previous_verdicts=[
+                {"local_reference": "F1", "verdict": "still_present"}
+            ],
+        )
 
         self.assertEqual(second_publication["findings_count"], 0)
-        self.assertNotIn(self.finding["title"], str(second_publication["markdown"]))
+        self.assertNotIn("### F1", str(second_publication["markdown"]))
+        self.assertIn("F1 withdrawn after recheck", str(second_publication["markdown"]))
         rows = self.connection.execute(
             """
             SELECT status
@@ -198,7 +212,28 @@ class VerificationReconciliationTests(unittest.TestCase):
             """,
             (second_publication["publication_id"],),
         ).fetchall()
-        self.assertEqual(rows, [])
+        self.assertEqual([row["status"] for row in rows], ["resolved"])
+
+        memory_db.mark_publication_posted(
+            self.connection,
+            publication_id=int(second_publication["publication_id"]),
+            review_run_id=second_run_id,
+            comment_id=902,
+        )
+        memory_db.complete_run(
+            self.connection,
+            second_run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            findings_count=0,
+        )
+        context = memory_db.memory_context(
+            self.connection,
+            "eneo/platform",
+            ["backend/api/documents.py"],
+            pr_number=17,
+        )
+        self.assertEqual(context["repeat_review_findings"], [])
 
     def test_reconciliation_publish_records_provenance_without_changing_output(self) -> None:
         run_id = self.start_run()

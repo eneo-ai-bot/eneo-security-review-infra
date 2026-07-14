@@ -141,6 +141,15 @@ class ToolValidationTests(unittest.TestCase):
         ]["items"]["properties"]["severity"]
         self.assertEqual(severity_schema["enum"], sorted(memory_db.SEVERITIES))
 
+    def test_schema_finding_text_limits_come_from_validation_owner(self):
+        finding_properties = schemas.ENEO_REVIEW_MEMORY_RECORD["parameters"][
+            "properties"
+        ]["findings"]["items"]["properties"]
+
+        for field, maximum in memory_db.FINDING_TEXT_LIMITS.items():
+            with self.subTest(field=field):
+                self.assertEqual(finding_properties[field]["maxLength"], maximum)
+
     def test_schema_prior_verdicts_come_from_memory_owner(self):
         deliver_verdict_schema = schemas.ENEO_REVIEW_DELIVER["parameters"]["properties"][
             "previous_verdicts"

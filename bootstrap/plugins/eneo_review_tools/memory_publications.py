@@ -12,7 +12,7 @@ from typing import Any, Literal, TypedDict, cast
 try:
     from .memory_decisions import active_suppression
     from .memory_coverage import coverage_summary
-    from .memory_findings import assign_local_reference
+    from .memory_findings import active_publication_findings, assign_local_reference
     from .memory_verification import (
         candidate_reconciliations_for_run,
         latest_verification_status_by_run,
@@ -21,9 +21,12 @@ try:
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
         PRIOR_FINDING_VERDICTS,
+        PRIOR_VERDICT_EVIDENCE_MAX,
+        PRIOR_VERDICTS_REQUIRING_EVIDENCE,
         PriorFindingVerdictValue,
         ReviewMemoryError,
         clean_text,
+        compact_text,
         current_policy_revision,
         isoformat,
         local_reference_number,
@@ -44,7 +47,7 @@ try:
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     from memory_decisions import active_suppression
     from memory_coverage import coverage_summary
-    from memory_findings import assign_local_reference
+    from memory_findings import active_publication_findings, assign_local_reference
     from memory_verification import (
         candidate_reconciliations_for_run,
         latest_verification_status_by_run,
@@ -53,9 +56,12 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
         HASH_RE,
         MAX_FINDINGS_PER_REVIEW,
         PRIOR_FINDING_VERDICTS,
+        PRIOR_VERDICT_EVIDENCE_MAX,
+        PRIOR_VERDICTS_REQUIRING_EVIDENCE,
         PriorFindingVerdictValue,
         ReviewMemoryError,
         clean_text,
+        compact_text,
         current_policy_revision,
         isoformat,
         local_reference_number,
@@ -374,18 +380,21 @@ def list_publications(
     return publications
 
 
-def _publication_findings(
-    connection: sqlite3.Connection, publication_id: int
-) -> list[dict[str, Any]]:
+def _published_fingerprints(
+    connection: sqlite3.Connection, repository: str, pr_number: int
+) -> set[str]:
     rows = connection.execute(
         """
-        SELECT * FROM publication_findings
-        WHERE publication_id = ?
-        ORDER BY id
+        SELECT DISTINCT pf.fingerprint
+        FROM publication_findings pf
+        JOIN review_publications rp ON rp.id = pf.publication_id
+        WHERE rp.repository = ? AND rp.pr_number = ?
+          AND rp.delivery_status = 'posted'
+          AND rp.comment_id IS NOT NULL
         """,
-        (publication_id,),
+        (repository, pr_number),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return {str(row["fingerprint"]) for row in rows}
 
 
 def verification_export_source(
@@ -590,6 +599,8 @@ def _prior_verdict_value(value: str, *, field: str) -> PriorFindingVerdictValue:
 
 def _normalize_previous_verdicts(
     previous_verdicts: object,
+    *,
+    ignored_references: set[str] | None = None,
 ) -> dict[str, PriorFindingVerdict]:
     if previous_verdicts is None:
         return {}
@@ -602,6 +613,7 @@ def _normalize_previous_verdicts(
         raise ReviewMemoryError("previous_verdicts contains too many items")
 
     verdicts: dict[str, PriorFindingVerdict] = {}
+    ignored = ignored_references or set()
     for index, raw_item in enumerate(verdict_items):
         if not isinstance(raw_item, Mapping):
             raise ReviewMemoryError(
@@ -617,6 +629,8 @@ def _normalize_previous_verdicts(
             raise ReviewMemoryError(
                 f"previous_verdicts[{index}].local_reference must be F1, F2, ..."
             )
+        if local_reference in ignored:
+            continue
         if local_reference in verdicts:
             raise ReviewMemoryError(f"duplicate previous verdict for {local_reference}")
 
@@ -626,17 +640,18 @@ def _normalize_previous_verdicts(
             maximum=40,
         ).lower()
 
+        verdict = _prior_verdict_value(
+            raw_verdict,
+            field=f"previous_verdicts[{index}].verdict",
+        )
         verdicts[local_reference] = {
             "local_reference": local_reference,
-            "verdict": _prior_verdict_value(
-                raw_verdict,
-                field=f"previous_verdicts[{index}].verdict",
-            ),
+            "verdict": verdict,
             "evidence": clean_text(
                 item.get("evidence"),
                 field=f"previous_verdicts[{index}].evidence",
-                maximum=500,
-                required=False,
+                maximum=PRIOR_VERDICT_EVIDENCE_MAX,
+                required=verdict in PRIOR_VERDICTS_REQUIRING_EVIDENCE,
             ),
         }
     return verdicts
@@ -859,14 +874,33 @@ def finalize_review(
         previous = _latest_publication(connection, repository, pr_number)
         review_number = _next_review_number(connection, repository, pr_number)
         previous_items = (
-            _publication_findings(connection, previous["id"]) if previous else []
-        )
+            active_publication_findings(connection, repository, pr_number)
+            if previous
+            else None
+        ) or []
         previous_current = {
             item["fingerprint"]: item
             for item in previous_items
             if item.get("status") == "current"
-            and item["fingerprint"] not in dropped_fingerprints
         }
+        dropped_previous = {
+            str(previous_current[fingerprint]["local_reference"]): reconciliation
+            for fingerprint, reconciliation in candidate_reconciliations.items()
+            if fingerprint in previous_current
+            and reconciliation.get("final_decision") == "drop"
+        }
+        normalized_previous_verdicts = _normalize_previous_verdicts(
+            previous_verdicts,
+            ignored_references=set(dropped_previous),
+        )
+        for local_reference, drop in dropped_previous.items():
+            normalized_previous_verdicts[local_reference] = {
+                "local_reference": local_reference,
+                "verdict": "invalidated",
+                "evidence": compact_text(
+                    drop.get("reason"), maximum=PRIOR_VERDICT_EVIDENCE_MAX
+                ),
+            }
         current_by_fingerprint = {item["fingerprint"]: item for item in current}
         suppressed_previous = {
             fingerprint
@@ -880,9 +914,18 @@ def finalize_review(
         reconciliation = _reconcile_prior_findings(
             previous_current,
             current_by_fingerprint,
-            _normalize_previous_verdicts(previous_verdicts),
+            normalized_previous_verdicts,
             suppressed_previous,
         )
+        pending_fingerprints = set(current_by_fingerprint) | set(
+            reconciliation["not_checked"]
+        )
+        if len(pending_fingerprints) > MAX_FINDINGS_PER_REVIEW:
+            raise ReviewMemoryError(
+                f"review would leave {len(pending_fingerprints)} pending findings; "
+                f"the reviewer limit is {MAX_FINDINGS_PER_REVIEW}. Recheck and close "
+                "prior findings before publishing new ones."
+            )
         closed = reconciliation["closed"]
         for item in closed:
             latest = _latest_observation_for_pr(
@@ -909,10 +952,20 @@ def finalize_review(
 
         still_present = reconciliation["still_present"]
         partially_resolved = reconciliation["partially_resolved"]
+        published_fingerprints = _published_fingerprints(
+            connection, repository, pr_number
+        )
         new_refs = [
             item["local_reference"]
             for fingerprint, item in current_by_fingerprint.items()
-            if previous and fingerprint not in previous_current
+            if previous and fingerprint not in published_fingerprints
+        ]
+        returned_refs = [
+            item["local_reference"]
+            for fingerprint, item in current_by_fingerprint.items()
+            if previous
+            and fingerprint in published_fingerprints
+            and fingerprint not in previous_current
         ]
 
         rendered = render_review(
@@ -925,6 +978,7 @@ def finalize_review(
             still_present=still_present,
             partially_resolved=partially_resolved,
             new_refs=new_refs,
+            returned_refs=returned_refs,
             not_checked_refs=not_checked_refs,
             feedback_enabled=_feedback_enabled(),
             coverage=cast(
