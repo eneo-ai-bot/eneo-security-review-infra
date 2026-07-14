@@ -1,6 +1,13 @@
 group_sessions_per_user: true
 context_file_max_chars: 24000
 
+# The repository owns the production route. Authentication remains in Hermes'
+# separate auth store, but mutable `hermes model` selections must not survive a
+# redeploy and silently keep the reviewer on an older model.
+model:
+  provider: openai-codex
+  default: gpt-5.6-sol
+
 # Webhook delivery must post ONLY the agent's final review. Suppress tool-progress
 # bubbles and interim/mid-turn assistant messages (e.g. the "Working — iteration
 # N/24" heartbeat and one-off provider notices such as the Codex auto-compaction
@@ -11,14 +18,15 @@ display:
   busy_ack_enabled: false
   long_running_notifications: false
 
-# gpt-5.5 on the Codex OAuth route is hard-capped at a 272K context window, and the
+# gpt-5.6 on the Codex OAuth route is hard-capped at a 272K context window, and the
 # global compression default (0.50) compacts at ~136K — half the usable window. That
 # caused frequent mid-review compaction and its noisy "Compacting context" /
 # "Session compressed" PR comments on larger PRs. Set the trigger to 0.80 (~218K) so
 # normal and medium reviews never compact; only genuinely huge PRs (>~218K) compact,
 # which is acceptable for them and keeps more context (less lossy). Keep
-# codex_gpt55_autoraise off so its per-review "raised to 85%" notice never posts as a
-# comment — this explicit threshold gives the same high trigger without that notice.
+# legacy codex_gpt55_autoraise setting off so its per-review "raised to 85%" notice
+# never posts as a comment — this explicit threshold gives the same high trigger
+# without that notice.
 # (The gateway session-hygiene safety net stays fixed at 85%.)
 compression:
   threshold: 0.80

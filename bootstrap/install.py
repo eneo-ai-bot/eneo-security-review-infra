@@ -81,8 +81,8 @@ def main() -> int:
     (HERMES_HOME / "workspace").mkdir(parents=True, exist_ok=True)
     (HERMES_HOME / "review-memory").mkdir(parents=True, exist_ok=True)
 
-    # Merge the managed security and webhook settings without deleting model/provider
-    # settings written by `hermes model`.
+    # Preserve unrelated operator settings while the managed profile remains
+    # authoritative for the reviewer route, model, and security boundaries.
     config_path = HERMES_HOME / "config.yaml"
     existing = load_yaml(config_path)
     managed = load_yaml(SOURCE / "config.yaml")
@@ -141,7 +141,10 @@ def main() -> int:
             return result.returncode
 
     print(f"Installed review profile into {HERMES_HOME}")
-    print("Next: run `hermes model`, choose OpenAI Codex, then restart the gateway.")
+    print(
+        "Next: authenticate with `hermes auth add openai-codex` if needed, "
+        "then restart the gateway."
+    )
     return 0
 
 

@@ -140,6 +140,29 @@ class DockerfileToolsTests(unittest.TestCase):
             self.assertFalse((target / "old_module.py").exists())
             self.assertFalse((target / "__pycache__").exists())
 
+    def test_managed_model_overrides_stale_selection_without_losing_other_config(self) -> None:
+        install = _load_install_module()
+        existing = {
+            "model": {
+                "provider": "openai-codex",
+                "default": "gpt-5.5",
+                "operator_note": "preserve",
+            },
+            "agent": {"reasoning_effort": "medium", "custom_setting": True},
+        }
+        managed = {
+            "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+            "agent": {"reasoning_effort": "xhigh"},
+        }
+
+        merged = install.deep_merge(existing, managed)
+
+        self.assertEqual("gpt-5.6-sol", merged["model"]["default"])
+        self.assertEqual("openai-codex", merged["model"]["provider"])
+        self.assertEqual("preserve", merged["model"]["operator_note"])
+        self.assertEqual("xhigh", merged["agent"]["reasoning_effort"])
+        self.assertTrue(merged["agent"]["custom_setting"])
+
     def test_installed_memory_cli_imports_support_modules(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             install_dir = Path(temp)

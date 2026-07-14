@@ -10,7 +10,7 @@ commands for the Hermes GitHub PR review agent.
 - An HTTPS route to the review webhook service.
 - A second HTTPS route to the feedback webhook service.
 - A GitHub account or bot with repository-scoped fine-grained tokens.
-- A ChatGPT/Codex subscription account for `hermes model`.
+- A ChatGPT/Codex subscription account for `hermes auth add openai-codex`.
 - Permission to add one GitHub Actions workflow, Actions secrets, and an Actions
   variable to each reviewed repository.
 
@@ -107,14 +107,17 @@ Inside the `hermes-review` container:
 
 ```bash
 hermes plugins list
-hermes model
+hermes auth add openai-codex
+/opt/eneo-bootstrap/install.sh
 ```
 
-Choose OpenAI Codex and complete the ChatGPT device-code login with the intended
-subscription account. Restart the service and verify:
+Complete the ChatGPT device-code login with the intended subscription account.
+The managed profile, rather than the interactive model picker, owns
+`openai-codex`, `gpt-5.6-sol`, and `xhigh`. Restart the service and verify:
 
 ```bash
 curl -fsS http://127.0.0.1:8644/health
+hermes status
 hermes doctor
 hermes plugins list
 ```
@@ -159,10 +162,12 @@ Protect the workflow with CODEOWNERS or a ruleset, for example:
 /.github/workflows/ai-review-request.yml @<org>/<maintainer-team>
 ```
 
-The workflow has `permissions: {}` and does not check out PR code. It sends only
-repository name, PR number, requester, and request id to Hermes. The workflow
-must exist on the repository's default branch before an `issue_comment` event can
-start it.
+The workflow grants `issues: write` and `pull-requests: write` only so its
+built-in token can add the non-blocking eyes reaction to an accepted PR comment.
+Webhook secrets are scoped to the dispatch step and are not inherited by the
+reaction step. The workflow does not check out PR code. It sends only repository
+name, PR number, requester, and request id to Hermes. The workflow must exist on
+the repository's default branch before an `issue_comment` event can start it.
 
 Set `ENEO_REVIEW_FEEDBACK_ENABLED=true` in Dokploy if the rendered review comment
 should show the copyable feedback commands documented below.
@@ -175,10 +180,10 @@ On an open, non-draft pull request, an allowlisted maintainer comments:
 /review
 ```
 
-After fixing findings, push the fix commit and comment `/review` again. A changed
-base/head snapshot creates a new chronological review round such as `Review 2`.
-If the snapshot and reviewer policy are already current, the run is not started
-again.
+After fixing findings, push the fix commit and comment `/review` again. Every
+explicit request after the previous run reaches a terminal state creates a new
+chronological review round such as `Review 2`, including a deliberate rerun of
+the same base/head snapshot.
 
 Different PRs may run concurrently. A second `/review` on the same PR is treated
 as a duplicate while a run is active.
@@ -372,8 +377,17 @@ or repository text, so scrub them before committing or sharing.
 
 ## Updating And Validation
 
-`HERMES_IMAGE` is pinned to an immutable digest in `.env.example`,
-`compose.yaml`, and `Dockerfile`. Update it through a reviewed dependency bump.
+`HERMES_IMAGE` is pinned to the Hermes 0.18.2 release tag and its immutable
+multi-platform digest in `.env.example`, `compose.yaml`, and `Dockerfile`.
+Update both the human-readable tag and digest through a reviewed dependency
+bump. Never replace this with the moving `latest` or `main` tag.
+
+Hermes 0.18.2 predates GPT-5.6 in its offline Codex picker, but its Codex route
+accepts an explicitly configured model and uses live model discovery when the
+OAuth endpoint is available. The managed profile therefore configures
+`gpt-5.6-sol` directly instead of depending on the picker. A controlled review
+after deployment is the final proof that the subscription is entitled to the
+model and the OAuth route accepts it.
 
 After a source update, redeploy. The `review-memory-init` service refreshes the
 managed `/opt/data` profile and migrates SQLite before the gateway starts.

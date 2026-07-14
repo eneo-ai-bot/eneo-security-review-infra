@@ -1,4 +1,4 @@
-ARG HERMES_IMAGE=nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973
 FROM ${HERMES_IMAGE}
 
 USER root

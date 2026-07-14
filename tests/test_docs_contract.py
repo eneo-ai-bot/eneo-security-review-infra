@@ -105,9 +105,12 @@ class DocsContractTests(unittest.TestCase):
     def test_repeated_reviews_reexamine_prior_findings(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
         skill = read("bootstrap/skills/eneo-pr-review/SKILL.md")
+        operations = read("docs/OPERATIONS.md")
         self.assertIn("re-check each prior unresolved finding", skill)
         self.assertIn("`repeat_review_findings`", skill)
         self.assertIn("same-path history", skill)
+        self.assertIn("including a deliberate rerun of\nthe same base/head snapshot", operations)
+        self.assertIn("as a duplicate while a run is active", operations)
         self.assertIn("Repeated reviews should not vary findings for novelty", canonical)
         self.assertIn("Treat the previous", canonical)
         self.assertIn("unresolved findings as review candidates", canonical)
@@ -399,7 +402,7 @@ class DocsContractTests(unittest.TestCase):
         operations = read("docs/OPERATIONS.md")
         dockerfile = read("Dockerfile")
 
-        digest = "nousresearch/hermes-agent@sha256:cd5d617d794b86ac7ac6ea084359aab53797b87ececcc19db4de210ec1e49cdc"
+        digest = "nousresearch/hermes-agent:v2026.7.7.2@sha256:9c841866021c54c4596849f6135717e8a4d52ba510b7f52c50aef1de1a283973"
         self.assertIn(digest, compose)
         self.assertIn(digest, env_example)
         self.assertIn(digest, dockerfile)
@@ -411,6 +414,18 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("eneo-review-memory migrate-volume", operations)
         self.assertIn("SQLite's backup API", operations)
         self.assertIn("`ENEO_REVIEW_DB` is not a public `.env` setting", operations)
+
+    def test_managed_profile_owns_the_codex_model(self):
+        config = read("bootstrap/config.yaml")
+        installer = read("bootstrap/install.py")
+        operations = read("docs/OPERATIONS.md")
+
+        self.assertIn("model:\n  provider: openai-codex\n  default: gpt-5.6-sol\n", config)
+        self.assertIn("  reasoning_effort: xhigh\n", config)
+        self.assertIn("hermes auth add openai-codex", installer)
+        self.assertIn("hermes auth add openai-codex", operations)
+        self.assertNotIn("hermes model", installer)
+        self.assertNotIn("hermes model", operations)
 
     def test_plugin_manifest_lists_registered_tools(self):
         manifest = read("bootstrap/plugins/eneo_review_tools/plugin.yaml")
