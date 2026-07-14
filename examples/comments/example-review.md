@@ -1,26 +1,32 @@
 ## AI code & security review
 
-There is 1 current finding: 1 High (P1).
+There is 1 current finding: 1 Medium (P2).
 
 <sub>Review context: textual diff content was available for all 2 registered
 changed paths. Additional source context was read from 1 changed path and 1
 supporting file.</sub>
 
-### F1 · High (P1): Tenant authorization is lost before the background job
-[`backend/src/intric/jobs/service.py:142`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/service.py#L142) · security
+### F1 · Medium (P2): Retry delay uses milliseconds as seconds
+[`backend/src/intric/jobs/retry.py:87`](https://github.com/eneo-ai/eneo/blob/a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/retry.py#L87) · correctness
 
-The new enqueue path places the caller-supplied document ID on the queue before
-a tenant-scoped document lookup. The worker later loads that ID through the
-global repository method, so the request's tenant authorization no longer
-protects the asynchronous read.
+The new retry setting is named and documented in milliseconds, but the changed
+scheduler call passes it directly to an API that waits in seconds. A configured
+5,000 ms delay therefore becomes 5,000 seconds instead of 5 seconds.
 
-**Impact:** a tenant can enqueue another tenant's document ID and make the worker
-process data outside the caller's authorization scope.
+**Impact:** transient failures can leave jobs stalled for more than an hour,
+delaying user-visible processing and recovery.
 
-**Smallest safe fix:** resolve the document through the existing tenant-scoped
-repository before enqueueing, carry the trusted tenant ID in the job payload,
-and scope the worker lookup by both values. Add a two-tenant regression test that
-proves a tenant A job cannot load tenant B's document.
+**Smallest safe fix:** convert the millisecond value to seconds at the scheduler
+boundary and add a focused test that proves 5,000 ms schedules a 5-second delay.
+
+> [!TIP]
+> **1 optional GitHub suggestion ready to apply · 0 findings need coordinated implementation**
+>
+> Open [Files changed](https://github.com/eneo-ai/eneo/pull/123/files) to inspect
+> each patch in context. Apply a patch individually, or batch only the selected
+> atomic patches into one commit. Run CI, push any remaining fixes, then post
+> `/review` as a new top-level PR comment. Applying a patch does not resolve its
+> finding; the fresh review re-checks the code.
 
 **Next:** Address the current findings. Push the fixes, then post `/review` as a
 new top-level PR comment. The next review keeps the F references and reports what
@@ -49,15 +55,15 @@ Before changing code:
 
 Findings:
 
-F1 - High (P1) - security
-Location: backend/src/intric/jobs/service.py:142
-Problem: Tenant authorization is lost before the background job
-Observed behavior: The enqueue path queues the caller-supplied document ID before
-a tenant-scoped load, and the worker later uses the global repository lookup.
-Impact: A tenant can make the worker process another tenant's document.
-Smallest safe fix: Validate through the existing tenant-scoped repository, carry
-the trusted tenant ID, scope the worker lookup, and add a two-tenant regression
-test.
+F1 - Medium (P2) - correctness
+Location: backend/src/intric/jobs/retry.py:87
+Fix path: Candidate for an optional atomic GitHub suggestion; otherwise use this brief.
+Problem: Retry delay uses milliseconds as seconds
+Observed behavior: The changed scheduler call passes a millisecond setting to an
+API that interprets the value as seconds.
+Impact: Failed jobs can wait 1,000 times longer than configured.
+Smallest safe fix: Convert milliseconds to seconds at the scheduler boundary and
+add a focused delay-unit regression test.
 
 Constraints:
 - Reuse the canonical owner or an existing project abstraction; do not create a

@@ -57,10 +57,10 @@ class DocsContractTests(unittest.TestCase):
         canonical = read("bootstrap/workspace/AGENTS.md")
         example = read("examples/comments/example-review.md")
         metadata = (
-            "[`backend/src/intric/jobs/service.py:142`](https://github.com/eneo-ai/eneo/blob/"
-            "a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/service.py#L142) · security"
+            "[`backend/src/intric/jobs/retry.py:87`](https://github.com/eneo-ai/eneo/blob/"
+            "a1b2c3d4e5f678901234567890abcdef12345678/backend/src/intric/jobs/retry.py#L87) · correctness"
         )
-        heading = "### F1 · High (P1): Tenant authorization is lost before the background job"
+        heading = "### F1 · Medium (P2): Retry delay uses milliseconds as seconds"
 
         self.assertIn("linked `path:line` · category", canonical)
         self.assertIn("`### F1 · High (P1): Title`", canonical)
@@ -74,7 +74,7 @@ class DocsContractTests(unittest.TestCase):
     def test_examples_show_all_findings_review_shape(self):
         body = read("examples/comments/example-review.md")
         self.assertIn(
-            "There is 1 current finding: 1 High (P1).",
+            "There is 1 current finding: 1 Medium (P2).",
             body,
         )
         self.assertNotIn("| Severity | Category | Location | Finding | ID |", body)
@@ -87,7 +87,13 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("**Impact:**", body)
         self.assertIn("**Smallest safe fix:**", body)
         self.assertNotIn("**Reviewer checks:**", body)
-        self.assertIn("F1 - High (P1)", body)
+        self.assertIn("F1 - Medium (P2)", body)
+        self.assertIn("> [!TIP]", body)
+        self.assertIn("1 optional GitHub suggestion ready to apply", body)
+        self.assertIn("0 findings need coordinated implementation", body)
+        self.assertIn("batch only the selected", body)
+        self.assertIn("Applying a patch does not resolve its", body)
+        self.assertIn("Fix path: Candidate for an optional atomic", body)
         self.assertIn("Fix every current finding on the latest PR head", body)
         self.assertIn("Observed behavior:", body)
         self.assertIn("Impact:", body)
@@ -184,6 +190,37 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("Do not include a top-level per-finding table", canonical)
         self.assertIn("Long paths and memory", canonical)
         self.assertNotIn("summary table listing every finding", canonical)
+
+    def test_atomic_suggestions_are_optional_independent_and_github_native(self):
+        canonical = words(read("bootstrap/workspace/AGENTS.md"))
+        skill = words(read("bootstrap/skills/eneo-pr-review/SKILL.md"))
+        operations = words(read("docs/OPERATIONS.md"))
+
+        self.assertIn("at most one suggestion per finding", canonical)
+        self.assertIn("expected_text", canonical)
+        self.assertIn("replacement_text", canonical)
+        self.assertIn("safe when applied alone", canonical)
+        self.assertIn(
+            "Multiple eligible findings may have suggestions in different files",
+            canonical,
+        )
+        for excluded in [
+            "migrations",
+            "public API or persisted-data contracts",
+            "authentication, authorization, or tenant boundaries",
+            "multi-file fixes",
+            "behavior test",
+        ]:
+            with self.subTest(excluded=excluded):
+                self.assertIn(excluded, canonical)
+        self.assertIn("one non-blocking GitHub `COMMENT` review", canonical)
+        self.assertIn("never as separate timeline comments", canonical)
+        self.assertIn("selected independent patches", canonical)
+        self.assertIn("Applying a suggestion is not a resolution verdict", canonical)
+        self.assertIn("one compact GitHub `TIP` alert", canonical)
+        self.assertIn("Omit it when the patch is uncertain", skill)
+        self.assertIn("suggestion-publication failure must not hide the finding", skill)
+        self.assertIn("grouped in one non-blocking `COMMENT` review", operations)
 
     def test_all_surviving_findings_are_publishable(self):
         canonical = read("bootstrap/workspace/AGENTS.md")
@@ -379,7 +416,11 @@ class DocsContractTests(unittest.TestCase):
         env_example = read(".env.example")
 
         self.assertIn("Contents read, Pull requests read, Metadata read", operations)
-        self.assertIn("Issues read/write, Metadata read, Pull requests read", operations)
+        self.assertIn(
+            "Metadata read, Pull requests read/write",
+            operations,
+        )
+        self.assertIn("does not need Contents write", operations)
         self.assertIn("exact permission matrix", security)
         self.assertNotIn("Contents read, Pull requests read, Metadata read", security)
         self.assertNotIn("| `GITHUB_READ_TOKEN` | no |", security)

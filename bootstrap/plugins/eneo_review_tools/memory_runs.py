@@ -250,6 +250,29 @@ def mark_stale_runs_failed(
                 """,
                 [completed, completed, *params],
             )
+            run_ids = [int(row["id"]) for row in rows]
+            placeholders = ",".join("?" for _ in run_ids)
+            connection.execute(
+                f"""
+                UPDATE review_publications
+                SET delivery_status = 'publish_failed',
+                    publish_failed_at = ?,
+                    failure_code = 'stale_timeout',
+                    suggestion_delivery_status = CASE
+                        WHEN suggestion_delivery_status = 'posting'
+                        THEN 'publish_failed'
+                        ELSE suggestion_delivery_status
+                    END,
+                    suggestion_failure_code = CASE
+                        WHEN suggestion_delivery_status = 'posting'
+                        THEN 'stale_timeout'
+                        ELSE suggestion_failure_code
+                    END
+                WHERE review_run_id IN ({placeholders})
+                  AND delivery_status = 'posting'
+                """,
+                (completed, *run_ids),
+            )
 
     for row in rows:
         row["status"] = "failed"

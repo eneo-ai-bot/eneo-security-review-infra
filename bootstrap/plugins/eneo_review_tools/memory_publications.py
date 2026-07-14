@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Literal, TypedDict, cast
 
 try:
+    from . import memory_suggestions
     from .memory_decisions import active_suppression
     from .memory_coverage import coverage_summary
     from .memory_findings import active_publication_findings, assign_local_reference
@@ -45,6 +46,7 @@ try:
         review_markdown_from_blocks,
     )
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    import memory_suggestions  # type: ignore[no-redef]
     from memory_decisions import active_suppression
     from memory_coverage import coverage_summary
     from memory_findings import active_publication_findings, assign_local_reference
@@ -347,7 +349,10 @@ def list_publications(
                comment_id, failure_code, generated_at, posting_started_at,
                posted_at, publish_failed_at, superseded_at, base_sha, head_sha,
                supersedes_publication_id, superseded_by_publication_id,
-               supersession_rendered_at, supersession_failure_code
+               supersession_rendered_at, supersession_failure_code,
+               suggestion_delivery_status, suggestion_review_id,
+               suggestion_posting_started_at, suggestion_posted_at,
+               suggestion_failure_code
         FROM review_publications
         {where}
         ORDER BY generated_at DESC, id DESC
@@ -480,6 +485,9 @@ def _publication_result(
     markdown = str(publication.get("rendered_markdown") or "")
     if not markdown:
         raise ReviewMemoryError("stored publication is missing rendered_markdown")
+    suggestions = memory_suggestions.suggestions_for_publication(
+        connection, int(publication["id"])
+    )
     return {
         "publication_id": int(publication["id"]),
         "review_number": (
@@ -516,6 +524,10 @@ def _publication_result(
             else None
         ),
         "findings_count": int(current[0] if current else 0),
+        "suggestions_count": len(suggestions),
+        "suggestion_delivery_status": str(
+            publication.get("suggestion_delivery_status") or "none"
+        ),
         "resolved_count": int(closed[0] if closed else 0),
         "closed_count": int(closed[0] if closed else 0),
         "rendered_blocks_json": str(publication.get("rendered_blocks_json") or ""),
@@ -530,6 +542,7 @@ def _finding_payload(
     local_reference: str,
     context_hash: str,
     observation_id: int | None = None,
+    suggestion_available: bool = False,
 ) -> PublishedFinding:
     if observation_id is None and item.get("id") is not None:
         observation_id = int(item["id"])
@@ -549,6 +562,7 @@ def _finding_payload(
         "disproof_checks": str(item["disproof_checks"]),
         "impact": str(item["impact"]),
         "smallest_fix": str(item["smallest_fix"]),
+        "suggestion_available": bool(suggestion_available),
     }
 
 
@@ -841,6 +855,17 @@ def finalize_review(
         base_sha = str(subject.get("base_sha") or "")
 
         observed = _observations_for_run(connection, review_run_id)
+        suggested_observation_ids = {
+            int(row["observation_id"])
+            for row in connection.execute(
+                """
+                SELECT observation_id
+                FROM review_suggestions
+                WHERE review_run_id = ?
+                """,
+                (review_run_id,),
+            )
+        }
         candidate_reconciliations = candidate_reconciliations_for_run(
             connection, review_run_id
         )
@@ -868,6 +893,11 @@ def finalize_review(
                     local_reference=local_reference,
                     context_hash=context_hash,
                     observation_id=int(item["id"]) if item.get("id") is not None else None,
+                    suggestion_available=(
+                        int(item["id"]) in suggested_observation_ids
+                        if item.get("id") is not None
+                        else False
+                    ),
                 )
             )
 
@@ -1072,6 +1102,9 @@ def finalize_review(
                     item["context_hash"],
                 ),
             )
+        suggestions_count = memory_suggestions.prepare_publication_suggestions(
+            connection, int(publication_id)
+        )
         connection.commit()
     except Exception:
         connection.rollback()
@@ -1089,6 +1122,8 @@ def finalize_review(
         "publication_key": key,
         "delivery_status": "generated",
         "findings_count": len(current),
+        "suggestions_count": suggestions_count,
+        "suggestion_delivery_status": "pending" if suggestions_count else "none",
         "resolved_count": sum(1 for item in closed if item["verdict"] == "resolved"),
         "closed_count": len(closed),
         "rendered_blocks_json": rendered_blocks_json,

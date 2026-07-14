@@ -1,5 +1,5 @@
 name: eneo-review-tools
-version: 2.0.0
+version: 2.1.0
 description: Bounded GitHub PR context plus human-curated SQLite finding memory
 provides_tools:
   - eneo_review_begin
@@ -17,5 +17,5 @@ requires_env:
     description: Fine-grained GitHub token for bounded PR reads
     secret: true
   - name: ENEO_REVIEW_PUBLISH_GH_TOKEN
-    description: Fine-grained GitHub token for deterministic PR review comment publication
+    description: Fine-grained GitHub token for deterministic summaries and native review suggestions
     secret: true

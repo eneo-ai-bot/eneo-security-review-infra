@@ -15,7 +15,14 @@ import urllib.parse
 import urllib.request
 from typing import Any, Literal, cast
 
-from . import changed_files, diff_render, failure_codes, memory_db, review_publisher
+from . import (
+    changed_files,
+    diff_render,
+    failure_codes,
+    memory_db,
+    memory_suggestions,
+    review_publisher,
+)
 
 _API_ROOT = "https://api.github.com"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -266,6 +273,17 @@ def _pull_head_sha(pull: dict[str, Any]) -> str:
     return head_sha
 
 
+def _pull_head_repository(pull: dict[str, Any]) -> str:
+    head = _json_object_or_empty(pull.get("head"))
+    repository = str(_json_object_or_empty(head.get("repo")).get("full_name", ""))
+    try:
+        return _repository_name(repository)
+    except ToolInputError as exc:
+        raise ToolInputError(
+            "GitHub did not provide a valid pull-request head repository"
+        ) from exc
+
+
 def _validate_run_snapshot_from_pull(
     connection: sqlite3.Connection,
     *,
@@ -371,6 +389,8 @@ def _changed_files(
                 "deletions": entry["deletions"],
                 "changes": entry["changes"],
                 "patch_available": bool(patch_text),
+                "patch": entry["patch"],
+                "patch_state": entry["patch_state"],
                 "context_hash": context_hash,
                 "context_hash_source": "blob" if is_blob else "patch",
             }
@@ -981,6 +1001,192 @@ def review_memory_context(args: dict[str, Any], **_: Any) -> str:
         return _error("unexpected memory read failure")
 
 
+def _suggestion_rank(finding: JsonObject, index: int) -> tuple[int, int, str, int]:
+    severity = str(finding.get("severity", "")).strip().title()
+    try:
+        publication_score = int(finding.get("publication_score", 0))
+    except (TypeError, ValueError):
+        publication_score = 0
+    return (
+        int(memory_db.SEVERITY_PRIORITY.get(severity, 99)),
+        -publication_score,
+        str(finding.get("rule_id", "")),
+        index,
+    )
+
+
+def _ranges_overlap(
+    first: memory_suggestions.ValidatedSuggestion,
+    second: memory_suggestions.ValidatedSuggestion,
+) -> bool:
+    return first["path"] == second["path"] and not (
+        first["end_line"] < second["start_line"]
+        or second["end_line"] < first["start_line"]
+    )
+
+
+def _record_optional_suggestions(
+    *,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    pull: JsonObject,
+    findings: list[JsonObject],
+    recorded: list[dict[str, Any]],
+    changed_by_path: dict[str, JsonObject],
+) -> tuple[int, dict[int, str]]:
+    """Validate and store optional patches without making findings depend on them."""
+    requested = [
+        index for index, finding in enumerate(findings) if "suggestion" in finding
+    ]
+    if not requested:
+        # A repeated record call is authoritative for the observation. Clear any
+        # previously offered candidate when the model now deliberately omits it.
+        with closing(memory_db.connect_existing()) as connection, connection:
+            for item in recorded:
+                memory_suggestions.replace_observation_suggestion(
+                    connection,
+                    observation_id=int(item["observation_id"]),
+                    suggestion=None,
+                )
+        return 0, {}
+
+    statuses: dict[int, str] = {}
+    ordered = sorted(requested, key=lambda value: _suggestion_rank(findings[value], value))
+    try:
+        key_by_index = {
+            index: memory_suggestions.suggestion_key(
+                repository,
+                pr_number,
+                head_sha,
+                str(recorded[index]["fingerprint"]),
+            )
+            for index in requested
+        }
+        with closing(memory_db.connect_existing()) as connection:
+            canonical_by_key = memory_suggestions.canonical_suggestions(
+                connection, key_by_index.values()
+            )
+    except (memory_db.ReviewMemoryError, sqlite3.Error):
+        return 0, {index: "suggestion_storage_failed" for index in requested}
+
+    try:
+        source_repository = _pull_head_repository(pull)
+    except ToolInputError:
+        source_repository = ""
+        statuses.update(
+            {index: "suggestion_head_repository_unavailable" for index in requested}
+        )
+
+    head_files: dict[str, str | None] = {}
+    selected: dict[int, memory_suggestions.ValidatedSuggestion] = {}
+    for index in ordered:
+        if bool(recorded[index].get("suppressed", False)):
+            statuses[index] = "suggestion_finding_suppressed"
+            continue
+        finding = findings[index]
+        eligibility_rejection = memory_suggestions.suggestion_eligibility_rejection(
+            rule_id=str(finding.get("rule_id", "")),
+            category=str(finding.get("category", "")),
+            path=str(recorded[index]["path"]),
+            symbol=str(finding.get("symbol", "")),
+            anchor=str(finding.get("anchor", "")),
+            title=str(finding.get("title", "")),
+            evidence=str(finding.get("evidence", "")),
+            impact=str(finding.get("impact", "")),
+            smallest_fix=str(finding.get("smallest_fix", "")),
+        )
+        if eligibility_rejection:
+            statuses[index] = eligibility_rejection
+            continue
+        if len(selected) >= memory_suggestions.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW:
+            statuses[index] = "suggestion_review_limit"
+            continue
+        path = str(recorded[index]["path"])
+        canonical = canonical_by_key.get(key_by_index[index])
+        if canonical is not None:
+            if canonical["path"] != path:
+                statuses[index] = "suggestion_validation_failed"
+                continue
+            if any(
+                _ranges_overlap(canonical, existing)
+                for existing in selected.values()
+            ):
+                statuses[index] = "suggestion_overlaps_higher_priority_patch"
+                continue
+            selected[index] = canonical
+            statuses[index] = "recorded"
+            continue
+
+        if not source_repository:
+            continue
+        raw_suggestion = finding.get("suggestion")
+        if not isinstance(raw_suggestion, dict):
+            statuses[index] = "suggestion_must_be_an_object"
+            continue
+        if path not in head_files:
+            try:
+                raw = _file_at_revision(source_repository, path, head_sha)
+                if b"\x00" in raw[:8192]:
+                    head_files[path] = None
+                else:
+                    head_files[path] = raw.decode("utf-8")
+            except (ToolInputError, UnicodeDecodeError):
+                head_files[path] = None
+        head_text = head_files[path]
+        if head_text is None:
+            statuses[index] = "suggestion_head_file_unavailable"
+            continue
+
+        file_info = changed_by_path[path]
+        patch_value = file_info.get("patch")
+        patch_text = patch_value if isinstance(patch_value, str) else None
+        try:
+            validation = memory_suggestions.validate_suggestion(
+                cast(dict[str, object], raw_suggestion),
+                repository=repository,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                fingerprint=str(recorded[index]["fingerprint"]),
+                path=path,
+                finding_line=int(finding["line"]),
+                patch=patch_text,
+                head_text=head_text,
+            )
+        except memory_db.ReviewMemoryError:
+            statuses[index] = "suggestion_validation_failed"
+            continue
+        if validation.suggestion is None:
+            statuses[index] = validation.rejection_reason
+            continue
+        candidate = validation.suggestion
+        if any(_ranges_overlap(candidate, existing) for existing in selected.values()):
+            statuses[index] = "suggestion_overlaps_higher_priority_patch"
+            continue
+        selected[index] = candidate
+        statuses[index] = "recorded"
+
+    try:
+        with closing(memory_db.connect_existing()) as connection, connection:
+            for item in recorded:
+                memory_suggestions.replace_observation_suggestion(
+                    connection,
+                    observation_id=int(item["observation_id"]),
+                    suggestion=None,
+                )
+            for index, suggestion in selected.items():
+                memory_suggestions.replace_observation_suggestion(
+                    connection,
+                    observation_id=int(recorded[index]["observation_id"]),
+                    suggestion=suggestion,
+                )
+    except (memory_db.ReviewMemoryError, sqlite3.Error):
+        for index in requested:
+            statuses[index] = "suggestion_storage_failed"
+        return 0, statuses
+    return len(selected), statuses
+
+
 def review_memory_record(args: dict[str, Any], **_: Any) -> str:
     try:
         repository = _allowlisted_repository(args.get("repository"))
@@ -1043,13 +1249,31 @@ def review_memory_record(args: dict[str, Any], **_: Any) -> str:
                 base_sha=base_sha,
                 context_hashes=context_hashes,
             )
+        suggestions_recorded, suggestion_statuses = _record_optional_suggestions(
+            repository=repository,
+            pr_number=number,
+            head_sha=head_sha,
+            pull=pull,
+            findings=finding_objects,
+            recorded=recorded,
+            changed_by_path=changed_files,
+        )
+        for index, reason in suggestion_statuses.items():
+            recorded[index]["suggestion"] = (
+                {"status": "recorded"}
+                if reason == "recorded"
+                else {"status": "omitted", "reason": reason}
+            )
         return _output(
             {
                 "recorded": recorded,
+                "suggestions_recorded": suggestions_recorded,
                 "instruction": (
                     "Omit every item whose suppressed field is true. Use fingerprint_short "
                     "only in hidden review metadata for each published item; do not put "
-                    "fingerprints in the visible review body."
+                    "fingerprints in the visible review body. An omitted optional suggestion "
+                    "does not invalidate its finding; continue to delivery and leave that "
+                    "finding in the coding-agent brief."
                 ),
             }
         )
@@ -1166,6 +1390,16 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                         "comment_id": comment_id,
                         "comment_ids": published.get("comment_ids", [comment_id]),
                         "findings_count": findings_count,
+                        "suggestions_count": published.get("suggestions_count", 0),
+                        "suggestions_published": published.get(
+                            "suggestions_published", False
+                        ),
+                        "suggestion_delivery_status": published.get(
+                            "suggestion_delivery_status", "none"
+                        ),
+                        "suggestion_failure_code": published.get(
+                            "suggestion_failure_code", ""
+                        ),
                         "resolved_count": finalized["resolved_count"],
                     }
                 )

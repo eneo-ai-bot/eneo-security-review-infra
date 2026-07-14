@@ -488,6 +488,15 @@ def print_publications(publications: Sequence[JsonObject]) -> None:
             f"posted={item.get('posted_at') or '-'}  "
             f"failed={item.get('publish_failed_at') or '-'}"
         )
+        suggestion_status = item.get("suggestion_delivery_status") or "none"
+        if suggestion_status != "none":
+            print(
+                f"       suggestions={suggestion_status}  "
+                f"review={item.get('suggestion_review_id') or '-'}  "
+                f"started={item.get('suggestion_posting_started_at') or '-'}  "
+                f"posted={item.get('suggestion_posted_at') or '-'}  "
+                f"failure={item.get('suggestion_failure_code') or '-'}"
+            )
         verification_status = item.get("verification_status") or "-"
         if verification_status != "-":
             print(

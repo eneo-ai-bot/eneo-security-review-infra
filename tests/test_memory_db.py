@@ -613,8 +613,16 @@ class ReviewMemoryTests(unittest.TestCase):
             self.assertIn("review_run_id", observation_columns)
             self.assertIn("review_run_id", publication_columns)
             self.assertIn("superseded_at", publication_columns)
+            self.assertIn("suggestion_delivery_status", publication_columns)
+            self.assertIn("suggestion_posting_started_at", publication_columns)
+            self.assertIn("suggestion_review_id", publication_columns)
             self.assertIn("is_changed_path", run_file_columns)
             self.assertIn("diff_state", run_file_columns)
+            self.assertIsNotNone(
+                migrated.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_suggestions'"
+                ).fetchone()
+            )
             observation_indexes = {
                 str(row["name"])
                 for row in migrated.execute(

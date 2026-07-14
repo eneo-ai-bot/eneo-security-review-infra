@@ -3,7 +3,8 @@
 This repository packages a locked-down Hermes + Codex reviewer for GitHub pull
 requests. A trusted developer comments `/review`, GitHub Actions sends a signed
 webhook, Hermes reviews the current PR snapshot through bounded read tools, and
-the deterministic publisher posts a structured PR comment.
+the deterministic publisher posts a structured PR summary and, when safe, native
+GitHub suggested changes.
 
 The reusable part is the review engine: webhook routing, bounded GitHub reads,
 SQLite finding memory, human feedback, deterministic publication, and operational
@@ -22,6 +23,9 @@ can only review Eneo repositories.
 - Publishes every evidence-backed finding that survives the skeptical review
   gate; there is no fixed cap such as three findings.
 - Re-checks previous unresolved findings on repeated reviews.
+- Offers small local patch candidates that pass exact range and current-content
+  checks through GitHub's native suggestion UI, grouped into one non-blocking
+  review; coordinated changes stay in the copyable coding-agent brief.
 - Stores findings, review runs, publication state, and human feedback in SQLite.
 - Can show deterministic `/review ...` feedback commands so allowlisted
   developers can report false positives, scope confusion, and missed issues.
@@ -57,7 +61,7 @@ flowchart TD
     D --> E["Bounded GitHub PR tools"]
     D --> F["SQLite review memory"]
     D --> G["Deterministic renderer + publisher"]
-    G --> H["Structured GitHub PR review comment"]
+    G --> H["Structured summary + optional native suggestions"]
     H --> I["Developer feedback commands"]
     I --> F
 ```
@@ -107,6 +111,12 @@ Request a review with a new top-level PR comment:
 After fixing findings, push a commit and request another review. A changed PR
 snapshot creates a new review round. The previous round is kept as historical
 context after the new one posts successfully.
+
+When the summary reports optional suggestions, open **Files changed** to inspect
+the patches in context. Apply one directly or add selected independent patches to
+GitHub's suggestion batch. Use the coding-agent brief for coordinated work, run
+CI after either path, and request a fresh `/review`. Applying a suggestion alone
+does not resolve the finding.
 
 Give feedback with a new top-level PR comment:
 

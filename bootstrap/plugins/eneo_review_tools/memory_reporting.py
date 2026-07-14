@@ -93,6 +93,10 @@ def export_state(connection: sqlite3.Connection) -> dict[str, Any]:
         dict(row)
         for row in connection.execute("SELECT * FROM finding_observations ORDER BY id")
     ]
+    suggestions = [
+        dict(row)
+        for row in connection.execute("SELECT * FROM review_suggestions ORDER BY id")
+    ]
     decisions = [
         dict(row) for row in connection.execute("SELECT * FROM decisions ORDER BY id")
     ]
@@ -142,6 +146,7 @@ def export_state(connection: sqlite3.Connection) -> dict[str, Any]:
         "findings": findings,
         "review_subjects": subjects,
         "finding_observations": observations,
+        "review_suggestions": suggestions,
         "decisions": decisions,
         "pr_finding_references": references,
         "review_publications": publications,

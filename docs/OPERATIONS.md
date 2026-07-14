@@ -22,14 +22,18 @@ reviewed repository, for example `<org>/<repo>`.
 | Token env var | Required permissions | Purpose |
 | --- | --- | --- |
 | `GITHUB_READ_TOKEN` | Contents read, Pull requests read, Metadata read | PR metadata, diff, and file reads. |
-| `ENEO_REVIEW_PUBLISH_GH_TOKEN` | Issues read/write, Metadata read, Pull requests read | Create, update, and delete review comments. |
+| `ENEO_REVIEW_PUBLISH_GH_TOKEN` | Metadata read, Pull requests read/write | Create, update, and delete PR summary comments and publish native suggested changes. |
 | `ENEO_FEEDBACK_GH_TOKEN` | Issues read/write, Metadata read, Pull requests read | Add feedback reactions and read PR/comment state. |
 
 The publisher tries `GITHUB_READ_TOKEN` for read paths first and uses
-`ENEO_REVIEW_PUBLISH_GH_TOKEN` for comment writes. Endpoint-specific failures
-such as `github_403_get_pull_request`, `github_403_list_issue_comments`, or
-`github_403_create_issue_comment` identify the missing permission or org
-approval path.
+`ENEO_REVIEW_PUBLISH_GH_TOKEN` for comment and review writes. The publisher token
+does not need Contents write or Issues write: GitHub accepts Pull requests write
+for comments on pull requests, and only the developer's GitHub action creates a
+commit from a proposed patch. Endpoint-specific failures such as
+`github_403_get_pull_request`, `github_403_list_issue_comments`,
+`github_403_create_issue_comment`, or
+`github_403_create_pull_request_review` identify the
+missing permission or org approval path.
 
 ## Environment
 
@@ -188,6 +192,16 @@ After fixing findings, push the fix commit and comment `/review` again. Every
 explicit request after the previous run reaches a terminal state creates a new
 chronological review round such as `Review 2`, including a deliberate rerun of
 the same base/head snapshot.
+
+For an exact, independently safe local fix, the reviewer may publish a native
+GitHub suggestion in **Files changed**. All suggestions for one review round are
+grouped in one non-blocking `COMMENT` review instead of separate timeline
+comments. Review and apply them individually, or add only the patches you want to
+GitHub's suggestion batch and commit that selection together. Coordinated fixes
+remain in the copyable coding-agent brief. After either path, run CI and post a
+fresh top-level `/review`; applying a suggestion does not mark its finding
+resolved. To keep the native review scannable, one round publishes at most 12
+highest-priority, non-overlapping atomic patches.
 
 Different PRs may run concurrently. A second `/review` on the same PR is treated
 as a duplicate while a run is active.

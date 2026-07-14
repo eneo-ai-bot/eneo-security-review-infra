@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 import os
 import sqlite3
@@ -14,21 +14,24 @@ import urllib.request
 from typing import Any, Literal, Protocol, cast
 
 try:
-    from . import memory_publications, memory_runs
+    from . import memory_publications, memory_runs, memory_suggestions
     from .memory_validation import ReviewMemoryError, isoformat, utc_now
     from .review_renderer import (
         ReviewBlock,
         review_blocks_from_json,
+        review_blocks_to_json,
         review_markdown_from_blocks,
     )
     from .review_identity import CONTINUATION_LEAD, REVIEW_COMMENT_TITLE
 except ImportError:  # pragma: no cover - supports direct module imports in tests.
     import memory_publications  # type: ignore[no-redef]
     import memory_runs  # type: ignore[no-redef]
+    import memory_suggestions  # type: ignore[no-redef]
     from memory_validation import ReviewMemoryError, isoformat, utc_now
     from review_renderer import (  # type: ignore[no-redef]
         ReviewBlock,
         review_blocks_from_json,
+        review_blocks_to_json,
         review_markdown_from_blocks,
     )
     from review_identity import (  # type: ignore[no-redef]
@@ -39,13 +42,24 @@ except ImportError:  # pragma: no cover - supports direct module imports in test
 _API_ROOT = "https://api.github.com"
 _MAX_ATTEMPTS = 3
 _RETRYABLE_STATUS = frozenset({502, 503, 504})
+_RETRYABLE_METHODS = frozenset({"GET", "PATCH"})
 _READ_TOKEN_FALLBACK_STATUS = frozenset({401, 403, 404})
+_AMBIGUOUS_REVIEW_CREATE_CODES = frozenset(
+    {
+        "github_unreachable",
+        "github_response_too_large",
+        "github_invalid_json",
+        "github_bad_review_response",
+    }
+)
 DEFAULT_MAX_COMMENT_BYTES = 60_000
+_SUGGESTION_RECOVERY_SCAN_PAGES = 10
 _HISTORICAL_TRUNCATION_NOTICE = (
     "_Historical details were shortened to fit GitHub comment limits; "
     "the full review text remains in review memory._\n\n"
 )
 GitHubAuthPurpose = Literal["read", "write"]
+ReviewCommentSide = Literal["LEFT", "RIGHT"]
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,41 @@ class IssueComment:
     comment_id: int
     body: str
     author_login: str = ""
+
+
+@dataclass(frozen=True)
+class InlineReviewComment:
+    """One line or contiguous line range in a pull-request review."""
+
+    path: str
+    body: str
+    line: int
+    side: ReviewCommentSide
+    start_line: int | None = None
+    start_side: ReviewCommentSide | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestReview:
+    review_id: int
+    body: str
+    author_login: str
+    commit_id: str
+    state: str
+
+
+@dataclass(frozen=True)
+class PullRequestReviewComment:
+    comment_id: int
+    review_id: int
+    body: str
+    author_login: str
+    path: str
+    commit_id: str
+    line: int | None
+    side: ReviewCommentSide | None
+    start_line: int | None
+    start_side: ReviewCommentSide | None
 
 
 @dataclass(frozen=True)
@@ -87,6 +136,20 @@ class GitHubPublicationGateway(Protocol):
     ) -> IssueComment: ...
 
     def delete_issue_comment(self, repository: str, comment_id: int) -> None: ...
+
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[InlineReviewComment],
+    ) -> PullRequestReview: ...
+
+    def list_pull_request_review_comments(
+        self, repository: str, pr_number: int, *, max_pages: int = 3
+    ) -> list[PullRequestReviewComment]: ...
 
 
 class GitHubPublicationError(RuntimeError):
@@ -115,11 +178,92 @@ def _json_list(value: Any, code: str) -> list[Any]:
     return cast(list[Any], value)
 
 
+def _positive_int(value: object, code: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise GitHubPublicationError(code)
+    return value
+
+
+def _nonempty_string(value: object, code: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise GitHubPublicationError(code)
+    return value
+
+
+def _optional_positive_int(value: object, code: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, code)
+
+
+def _optional_review_side(value: object, code: str) -> ReviewCommentSide | None:
+    if value is None:
+        return None
+    if value not in {"LEFT", "RIGHT"}:
+        raise GitHubPublicationError(code)
+    return cast(ReviewCommentSide, value)
+
+
 def _github_failure_code(status: int, operation: str) -> str:
     suffix = f"_{operation}" if operation else ""
     if status in {401, 403, 404}:
         return f"github_{status}{suffix}"
     return f"github_http_{status}{suffix}"
+
+
+def _ambiguous_review_create_failure(error: GitHubPublicationError) -> bool:
+    return error.operation == "create_pull_request_review" and (
+        error.status in _RETRYABLE_STATUS
+        or error.code in _AMBIGUOUS_REVIEW_CREATE_CODES
+    )
+
+
+def _inline_review_comment_payload(
+    comment: InlineReviewComment,
+) -> dict[str, object]:
+    if not comment.path.strip() or comment.path != comment.path.strip():
+        raise GitHubPublicationError("invalid_review_comment_path")
+    if not comment.body.strip():
+        raise GitHubPublicationError("invalid_review_comment_body")
+    line = _positive_int(comment.line, "invalid_review_comment_line")
+    if comment.side not in {"LEFT", "RIGHT"}:
+        raise GitHubPublicationError("invalid_review_comment_side")
+
+    payload: dict[str, object] = {
+        "path": comment.path,
+        "body": comment.body,
+        "line": line,
+        "side": comment.side,
+    }
+    if comment.start_line is None:
+        if comment.start_side is not None:
+            raise GitHubPublicationError("invalid_review_comment_range")
+        return payload
+
+    start_line = _positive_int(comment.start_line, "invalid_review_comment_start_line")
+    if start_line >= line or comment.start_side not in {"LEFT", "RIGHT"}:
+        raise GitHubPublicationError("invalid_review_comment_range")
+    payload["start_line"] = start_line
+    payload["start_side"] = comment.start_side
+    return payload
+
+
+def _review_comment_from_json(value: object) -> PullRequestReviewComment:
+    code = "github_bad_review_comments_response"
+    root = _json_object(value, code)
+    user = _json_object(root.get("user"), code)
+    return PullRequestReviewComment(
+        comment_id=_positive_int(root.get("id"), code),
+        review_id=_positive_int(root.get("pull_request_review_id"), code),
+        body=_nonempty_string(root.get("body"), code),
+        author_login=_nonempty_string(user.get("login"), code),
+        path=_nonempty_string(root.get("path"), code),
+        commit_id=_nonempty_string(root.get("commit_id"), code),
+        line=_optional_positive_int(root.get("line"), code),
+        side=_optional_review_side(root.get("side"), code),
+        start_line=_optional_positive_int(root.get("start_line"), code),
+        start_side=_optional_review_side(root.get("start_side"), code),
+    )
 
 
 class GitHubIssueCommentGateway:
@@ -168,7 +312,7 @@ class GitHubIssueCommentGateway:
                 raise
         if last_error is not None:
             raise last_error
-        raise GitHubPublicationError("github_unreachable")
+        raise GitHubPublicationError("github_unreachable", operation=operation)
 
     def _request_json_with_token(
         self,
@@ -198,7 +342,11 @@ class GitHubIssueCommentGateway:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     data = response.read(max_bytes + 1)
             except urllib.error.HTTPError as exc:
-                if exc.code in _RETRYABLE_STATUS and attempt + 1 < _MAX_ATTEMPTS:
+                if (
+                    method in _RETRYABLE_METHODS
+                    and exc.code in _RETRYABLE_STATUS
+                    and attempt + 1 < _MAX_ATTEMPTS
+                ):
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise GitHubPublicationError(
@@ -206,17 +354,23 @@ class GitHubIssueCommentGateway:
                     status=exc.code,
                     operation=operation,
                 ) from exc
-            except urllib.error.URLError as exc:
-                raise GitHubPublicationError("github_unreachable") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                raise GitHubPublicationError(
+                    "github_unreachable", operation=operation
+                ) from exc
             if len(data) > max_bytes:
-                raise GitHubPublicationError("github_response_too_large")
+                raise GitHubPublicationError(
+                    "github_response_too_large", operation=operation
+                )
             if method == "DELETE" and not data:
                 return {}
             try:
                 return json.loads(data.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise GitHubPublicationError("github_invalid_json") from exc
-        raise GitHubPublicationError("github_unreachable")
+                raise GitHubPublicationError(
+                    "github_invalid_json", operation=operation
+                ) from exc
+        raise GitHubPublicationError("github_unreachable", operation=operation)
 
     def get_pull_request(self, repository: str, pr_number: int) -> PullRequestState:
         root = _json_object(
@@ -342,6 +496,89 @@ class GitHubIssueCommentGateway:
             operation="delete_issue_comment",
         )
 
+    def create_pull_request_review(
+        self,
+        repository: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[InlineReviewComment],
+    ) -> PullRequestReview:
+        if not commit_id.strip() or commit_id != commit_id.strip():
+            raise GitHubPublicationError("invalid_review_commit_id")
+        if not body.strip():
+            raise GitHubPublicationError("invalid_review_body")
+        if not comments:
+            raise GitHubPublicationError("review_comments_required")
+        comment_payloads = [
+            _inline_review_comment_payload(comment) for comment in comments
+        ]
+        operation = "create_pull_request_review"
+        try:
+            root = _json_object(
+                self._request_json(
+                    "POST",
+                    f"/repos/{_owner_repo(repository)}/pulls/{pr_number}/reviews",
+                    payload={
+                        "commit_id": commit_id,
+                        "body": body,
+                        "event": "COMMENT",
+                        "comments": comment_payloads,
+                    },
+                    auth="write",
+                    operation=operation,
+                ),
+                "github_bad_review_response",
+            )
+            user = _json_object(root.get("user"), "github_bad_review_response")
+            response_body = _nonempty_string(
+                root.get("body"), "github_bad_review_response"
+            )
+            response_commit_id = _nonempty_string(
+                root.get("commit_id"), "github_bad_review_response"
+            )
+            if (
+                response_body != body
+                or response_commit_id.casefold() != commit_id.casefold()
+            ):
+                raise GitHubPublicationError("github_bad_review_response")
+            return PullRequestReview(
+                review_id=_positive_int(root.get("id"), "github_bad_review_response"),
+                body=response_body,
+                author_login=_nonempty_string(
+                    user.get("login"), "github_bad_review_response"
+                ),
+                commit_id=response_commit_id,
+                state=_nonempty_string(root.get("state"), "github_bad_review_response"),
+            )
+        except GitHubPublicationError as exc:
+            if exc.operation:
+                raise
+            raise GitHubPublicationError(
+                exc.code, status=exc.status, operation=operation
+            ) from exc
+
+    def list_pull_request_review_comments(
+        self, repository: str, pr_number: int, *, max_pages: int = 3
+    ) -> list[PullRequestReviewComment]:
+        comments: list[PullRequestReviewComment] = []
+        for page in range(1, max_pages + 1):
+            page_items = _json_list(
+                self._request_json(
+                    "GET",
+                    f"/repos/{_owner_repo(repository)}/pulls/{pr_number}/comments"
+                    f"?per_page=100&page={page}&sort=created&direction=desc",
+                    auth="read",
+                    operation="list_pull_request_review_comments",
+                ),
+                "github_bad_review_comments_response",
+            )
+            comments.extend(_review_comment_from_json(item) for item in page_items)
+            if len(page_items) < 100:
+                break
+        return comments
+
 
 def _max_comment_bytes() -> int:
     raw = os.environ.get("ENEO_REVIEW_PUBLISH_MAX_BYTES", "").strip()
@@ -350,7 +587,9 @@ def _max_comment_bytes() -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ReviewMemoryError("ENEO_REVIEW_PUBLISH_MAX_BYTES must be an integer") from exc
+        raise ReviewMemoryError(
+            "ENEO_REVIEW_PUBLISH_MAX_BYTES must be an integer"
+        ) from exc
     return max(1_000, min(value, 65_000))
 
 
@@ -423,7 +662,9 @@ def _publication_blocks(
     marker = memory_publications.publication_marker_html(publication_key)
     if rendered_blocks_json:
         try:
-            blocks = review_blocks_from_json(rendered_blocks_json, fallback_markdown=body)
+            blocks = review_blocks_from_json(
+                rendered_blocks_json, fallback_markdown=body
+            )
         except ValueError as exc:
             raise GitHubPublicationError("rendered_blocks_invalid") from exc
         if review_markdown_from_blocks(blocks) != body:
@@ -449,14 +690,11 @@ def _part_heading(heading: str, part_number: int, total_parts: int) -> str:
     return f"{heading} · Part {part_number} of {total_parts}"
 
 
-def _continuation_prefix(
-    heading: str, part_number: int, total_parts: int
-) -> str:
+def _continuation_prefix(heading: str, part_number: int, total_parts: int) -> str:
     if part_number == 1:
         return ""
     return (
-        f"{_part_heading(heading, part_number, total_parts)}\n\n"
-        f"{CONTINUATION_LEAD}\n\n"
+        f"{_part_heading(heading, part_number, total_parts)}\n\n{CONTINUATION_LEAD}\n\n"
     )
 
 
@@ -499,9 +737,7 @@ def split_publication_body(
     total_parts = len(chunks)
     parts: list[PublicationPart] = []
     for index, chunk in enumerate(chunks, start=1):
-        part_body = _with_part_heading(
-            chunk.rstrip(), heading, index, total_parts
-        )
+        part_body = _with_part_heading(chunk.rstrip(), heading, index, total_parts)
         part_body = f"{part_body.rstrip()}\n\n<!-- {_part_marker(publication_key, index, total_parts)} -->\n"
         if _body_size(part_body) > max_comment_bytes:
             raise GitHubPublicationError("body_too_large")
@@ -564,7 +800,9 @@ def _publish_parts(
             comment = (
                 target
                 if target.body == part.body
-                else github.update_issue_comment(repository, target.comment_id, part.body)
+                else github.update_issue_comment(
+                    repository, target.comment_id, part.body
+                )
             )
         else:
             comment = github.create_issue_comment(repository, pr_number, part.body)
@@ -596,7 +834,8 @@ def _historical_content_blocks(
         content = [
             block.markdown.replace(marker, "").strip()
             for block in blocks
-            if block.kind not in {"fix_brief", "feedback_help", "metadata"}
+            if block.kind
+            not in {"suggestion_help", "fix_brief", "feedback_help", "metadata"}
         ]
     else:
         content = [publication["rendered_markdown"].replace(marker, "").strip()]
@@ -798,7 +1037,11 @@ def _render_superseded_publication(
                     publication["repository"], target.comment_id, body
                 )
     except (GitHubPublicationError, ValueError) as exc:
-        code = exc.code if isinstance(exc, GitHubPublicationError) else "supersession_failed"
+        code = (
+            exc.code
+            if isinstance(exc, GitHubPublicationError)
+            else "supersession_failed"
+        )
         _mark_supersession_failure(connection, publication["publication_id"], code)
         return {
             "superseded_publication_id": publication["publication_id"],
@@ -814,6 +1057,281 @@ def _render_superseded_publication(
     }
 
 
+def _suggestion_review_body(review_number: int | None, count: int) -> str:
+    label = f"Review {review_number}" if review_number is not None else "this review"
+    patch_label = "patch" if count == 1 else "patches"
+    return (
+        f"## Optional atomic patches · {label}\n\n"
+        f"GitHub grouped {count} proposed atomic {patch_label} here so each can be "
+        "inspected in context. Apply a patch only after confirming it fits the "
+        "surrounding invariants, or add selected suggestions to a batch. Run the "
+        "relevant checks, push the result, then post `/review` again. Applying a "
+        "patch does not itself mark the finding resolved."
+    )
+
+
+def _inline_suggestion_body(
+    suggestion: memory_suggestions.PublicationSuggestion,
+) -> str:
+    replacement = suggestion["replacement_text"]
+    return (
+        f"**{suggestion['local_reference']} · Optional atomic patch**\n\n"
+        "This is a small patch candidate intended to stand on its own. Confirm it "
+        "fits the surrounding invariants and run the relevant checks after applying "
+        "it.\n\n"
+        "```suggestion\n"
+        f"{replacement}\n"
+        "```\n\n"
+        f"{memory_suggestions.suggestion_marker(suggestion['suggestion_key'])}"
+    )
+
+
+def _inline_suggestion_comment(
+    suggestion: memory_suggestions.PublicationSuggestion,
+) -> InlineReviewComment:
+    multiline = suggestion["start_line"] != suggestion["end_line"]
+    return InlineReviewComment(
+        path=suggestion["path"],
+        body=_inline_suggestion_body(suggestion),
+        line=suggestion["end_line"],
+        side="RIGHT",
+        start_line=suggestion["start_line"] if multiline else None,
+        start_side="RIGHT" if multiline else None,
+    )
+
+
+def _recovered_suggestion_comments(
+    comments: Sequence[PullRequestReviewComment],
+    *,
+    author_login: str,
+    head_sha: str,
+    suggestions: Sequence[memory_suggestions.PublicationSuggestion],
+) -> dict[str, PullRequestReviewComment]:
+    expected_author = author_login.casefold()
+    expected = {item["suggestion_key"]: item for item in suggestions}
+    recovered: dict[str, PullRequestReviewComment] = {}
+    for comment in comments:
+        if comment.author_login.casefold() != expected_author:
+            continue
+        key = memory_suggestions.extract_suggestion_key(comment.body)
+        suggestion = expected.get(key or "")
+        if suggestion is None or comment.commit_id.lower() != head_sha.lower():
+            continue
+        expected_start = (
+            suggestion["start_line"]
+            if suggestion["start_line"] != suggestion["end_line"]
+            else None
+        )
+        if (
+            comment.path != suggestion["path"]
+            or comment.line != suggestion["end_line"]
+            or comment.side != "RIGHT"
+            or comment.start_line != expected_start
+            or comment.start_side != ("RIGHT" if expected_start is not None else None)
+        ):
+            continue
+        recovered.setdefault(suggestion["suggestion_key"], comment)
+    return recovered
+
+
+def _publish_suggestions(
+    connection: sqlite3.Connection,
+    *,
+    publication: memory_publications.PublicationForPosting,
+    github: GitHubPublicationGateway,
+) -> dict[str, object]:
+    suggestions = memory_suggestions.suggestions_for_publication(
+        connection, publication["publication_id"]
+    )[: memory_suggestions.MAX_ATOMIC_SUGGESTIONS_PER_REVIEW]
+    if not suggestions:
+        return {
+            "suggestions_published": False,
+            "suggestions_count": 0,
+            "suggestion_delivery_status": "none",
+        }
+
+    claim = memory_suggestions.claim_suggestions_for_posting(
+        connection, publication["publication_id"]
+    )
+    if claim["suggestion_delivery_status"] == "posted":
+        return {
+            "suggestions_published": True,
+            "suggestions_count": len(suggestions),
+            "suggestion_delivery_status": "posted",
+            "suggestion_review_id": claim["suggestion_review_id"],
+            "suggestions_idempotent": True,
+        }
+    if not claim["claimed"]:
+        return {
+            "suggestions_published": False,
+            "suggestions_count": len(suggestions),
+            "suggestion_delivery_status": claim["suggestion_delivery_status"],
+            "suggestion_failure_code": claim["suggestion_failure_code"],
+        }
+
+    claim_started_at = claim["suggestion_posting_started_at"]
+    try:
+        if claim_started_at is None:
+            raise ReviewMemoryError("suggestion delivery claim has no lease timestamp")
+        author_login = github.current_user_login()
+        review_comments = github.list_pull_request_review_comments(
+            publication["repository"],
+            publication["pr_number"],
+            max_pages=_SUGGESTION_RECOVERY_SCAN_PAGES,
+        )
+        recovered = _recovered_suggestion_comments(
+            review_comments,
+            author_login=author_login,
+            head_sha=publication["head_sha"],
+            suggestions=suggestions,
+        )
+        missing = [
+            item for item in suggestions if item["suggestion_key"] not in recovered
+        ]
+        if missing:
+            stale_code = _verify_pr_target(
+                publication,
+                github.get_pull_request(
+                    publication["repository"], publication["pr_number"]
+                ),
+            )
+            if stale_code:
+                memory_suggestions.mark_suggestions_failed(
+                    connection,
+                    publication_id=publication["publication_id"],
+                    failure_code=stale_code,
+                    stale=True,
+                    claim_started_at=claim_started_at,
+                )
+                return {
+                    "suggestions_published": False,
+                    "suggestions_count": len(suggestions),
+                    "suggestion_delivery_status": "stale",
+                    "suggestion_failure_code": stale_code,
+                }
+            claim_started_at = memory_suggestions.renew_suggestion_claim(
+                connection,
+                publication_id=publication["publication_id"],
+                claim_started_at=claim_started_at,
+            )
+            try:
+                review = github.create_pull_request_review(
+                    publication["repository"],
+                    publication["pr_number"],
+                    commit_id=publication["head_sha"],
+                    body=_suggestion_review_body(
+                        publication["review_number"], len(missing)
+                    ),
+                    comments=tuple(
+                        _inline_suggestion_comment(item) for item in missing
+                    ),
+                )
+                review_id = review.review_id
+            except GitHubPublicationError as exc:
+                if _ambiguous_review_create_failure(exc):
+                    reconciled_comments = github.list_pull_request_review_comments(
+                        publication["repository"],
+                        publication["pr_number"],
+                        max_pages=_SUGGESTION_RECOVERY_SCAN_PAGES,
+                    )
+                    reconciled = _recovered_suggestion_comments(
+                        reconciled_comments,
+                        author_login=author_login,
+                        head_sha=publication["head_sha"],
+                        suggestions=suggestions,
+                    )
+                    if len(reconciled) == len(suggestions):
+                        review_id = max(
+                            comment.review_id for comment in reconciled.values()
+                        )
+                    else:
+                        raise
+                else:
+                    raise
+        else:
+            review_id = max(comment.review_id for comment in recovered.values())
+        claim_started_at = memory_suggestions.renew_suggestion_claim(
+            connection,
+            publication_id=publication["publication_id"],
+            claim_started_at=claim_started_at,
+        )
+        memory_suggestions.mark_suggestions_posted(
+            connection,
+            publication_id=publication["publication_id"],
+            review_id=review_id,
+            claim_started_at=claim_started_at,
+        )
+        return {
+            "suggestions_published": True,
+            "suggestions_count": len(suggestions),
+            "suggestion_delivery_status": "posted",
+            "suggestion_review_id": review_id,
+            "suggestions_recovered": len(recovered),
+            "suggestions_created": len(missing),
+        }
+    except (GitHubPublicationError, ReviewMemoryError) as exc:
+        failure_code = (
+            exc.code
+            if isinstance(exc, GitHubPublicationError)
+            else "suggestion_state_failed"
+        )
+        if claim_started_at is not None:
+            try:
+                memory_suggestions.mark_suggestions_failed(
+                    connection,
+                    publication_id=publication["publication_id"],
+                    failure_code=failure_code,
+                    claim_started_at=claim_started_at,
+                )
+            except ReviewMemoryError:
+                delivery = memory_suggestions.suggestion_delivery_status(
+                    connection, publication["publication_id"]
+                )
+                state = delivery["suggestion_delivery_status"]
+                result: dict[str, object] = {
+                    "suggestions_published": state == "posted",
+                    "suggestions_count": len(suggestions),
+                    "suggestion_delivery_status": state,
+                }
+                if delivery["suggestion_review_id"] is not None:
+                    result["suggestion_review_id"] = delivery["suggestion_review_id"]
+                if delivery["suggestion_failure_code"]:
+                    result["suggestion_failure_code"] = delivery[
+                        "suggestion_failure_code"
+                    ]
+                return result
+        return {
+            "suggestions_published": False,
+            "suggestions_count": len(suggestions),
+            "suggestion_delivery_status": "publish_failed",
+            "suggestion_failure_code": failure_code,
+        }
+
+
+def _publication_parts_for_suggestion_state(
+    publication: memory_publications.PublicationForPosting,
+    *,
+    suggestions_published: bool,
+    max_comment_bytes: int,
+) -> list[PublicationPart]:
+    body = publication["rendered_markdown"]
+    blocks_json = publication["rendered_blocks_json"]
+    if blocks_json and not suggestions_published:
+        try:
+            blocks = review_blocks_from_json(blocks_json, fallback_markdown=body)
+        except ValueError as exc:
+            raise GitHubPublicationError("rendered_blocks_invalid") from exc
+        filtered = tuple(block for block in blocks if block.kind != "suggestion_help")
+        body = review_markdown_from_blocks(filtered)
+        blocks_json = review_blocks_to_json(filtered)
+    return split_publication_body(
+        body,
+        publication_key=publication["publication_key"],
+        max_comment_bytes=max_comment_bytes,
+        rendered_blocks_json=blocks_json,
+    )
+
+
 def publish_review(
     connection: sqlite3.Connection,
     *,
@@ -825,47 +1343,46 @@ def publish_review(
     publication = memory_publications.claim_publication_for_posting(
         connection, publication_id=publication_id, review_run_id=review_run_id
     )
-    if publication["delivery_status"] == "posted":
-        return {
-            "published": True,
-            "publication_id": publication["publication_id"],
-            "comment_id": publication["comment_id"],
-            "delivery_status": "posted",
-            "idempotent": True,
-        }
-
-    body = publication["rendered_markdown"]
-    budget = max_comment_bytes if max_comment_bytes is not None else _max_comment_bytes()
-    try:
-        parts = split_publication_body(
-            body,
-            publication_key=publication["publication_key"],
-            max_comment_bytes=budget,
-            rendered_blocks_json=publication["rendered_blocks_json"],
-        )
-    except GitHubPublicationError as exc:
-        memory_publications.mark_publication_failed(
-            connection,
-            publication_id=publication_id,
-            review_run_id=review_run_id,
-            failure_code=exc.code,
-        )
-        return {
-            "published": False,
-            "publication_id": publication_id,
-            "delivery_status": "publish_failed",
-            "failure_code": exc.code,
-            "body_bytes": _body_size(body),
-            "max_comment_bytes": budget,
-        }
+    already_posted = publication["delivery_status"] == "posted"
+    budget = (
+        max_comment_bytes if max_comment_bytes is not None else _max_comment_bytes()
+    )
 
     try:
         github = github or _default_gateway()
         stale_code = _verify_pr_target(
             publication,
-            github.get_pull_request(publication["repository"], publication["pr_number"]),
+            github.get_pull_request(
+                publication["repository"], publication["pr_number"]
+            ),
         )
         if stale_code:
+            suggestion_delivery = memory_suggestions.suggestion_delivery_status(
+                connection, publication_id
+            )
+            if suggestion_delivery["suggestion_delivery_status"] in {
+                "pending",
+                "posting",
+                "posted",
+                "publish_failed",
+            }:
+                memory_suggestions.mark_suggestions_failed(
+                    connection,
+                    publication_id=publication_id,
+                    failure_code=stale_code,
+                    stale=True,
+                )
+            if already_posted:
+                return {
+                    "published": True,
+                    "publication_id": publication["publication_id"],
+                    "comment_id": publication["comment_id"],
+                    "delivery_status": "posted",
+                    "idempotent": True,
+                    "suggestions_published": False,
+                    "suggestion_delivery_status": "stale",
+                    "suggestion_failure_code": stale_code,
+                }
             memory_publications.mark_publication_failed(
                 connection,
                 publication_id=publication_id,
@@ -880,6 +1397,46 @@ def publish_review(
                 "failure_code": stale_code,
             }
 
+        suggestion_result = _publish_suggestions(
+            connection, publication=publication, github=github
+        )
+        try:
+            parts = _publication_parts_for_suggestion_state(
+                publication,
+                suggestions_published=bool(
+                    suggestion_result.get("suggestions_published", False)
+                ),
+                max_comment_bytes=budget,
+            )
+        except GitHubPublicationError as exc:
+            if already_posted:
+                result: dict[str, object] = {
+                    "published": True,
+                    "publication_id": publication["publication_id"],
+                    "comment_id": publication["comment_id"],
+                    "delivery_status": "posted",
+                    "idempotent": True,
+                    "summary_refresh_failure_code": exc.code,
+                }
+                result.update(suggestion_result)
+                return result
+            memory_publications.mark_publication_failed(
+                connection,
+                publication_id=publication_id,
+                review_run_id=review_run_id,
+                failure_code=exc.code,
+            )
+            result = {
+                "published": False,
+                "publication_id": publication_id,
+                "delivery_status": "publish_failed",
+                "failure_code": exc.code,
+                "body_bytes": _body_size(publication["rendered_markdown"]),
+                "max_comment_bytes": budget,
+            }
+            result.update(suggestion_result)
+            return result
+
         comments = _comments_by_author(
             github.list_issue_comments(
                 publication["repository"], publication["pr_number"]
@@ -887,6 +1444,74 @@ def publish_review(
             github.current_user_login(),
         )
         current_parts = _publication_comments(comments, publication["publication_key"])
+        stale_code = _verify_pr_target(
+            publication,
+            github.get_pull_request(
+                publication["repository"], publication["pr_number"]
+            ),
+        )
+        if stale_code:
+            suggestion_delivery = memory_suggestions.suggestion_delivery_status(
+                connection, publication_id
+            )
+            if suggestion_delivery["suggestion_delivery_status"] not in {
+                "none",
+                "stale",
+            }:
+                memory_suggestions.mark_suggestions_failed(
+                    connection,
+                    publication_id=publication_id,
+                    failure_code=stale_code,
+                    stale=True,
+                )
+            if already_posted:
+                return {
+                    "published": True,
+                    "publication_id": publication["publication_id"],
+                    "comment_id": publication["comment_id"],
+                    "delivery_status": "posted",
+                    "idempotent": True,
+                    "suggestions_published": False,
+                    "suggestion_delivery_status": "stale",
+                    "suggestion_failure_code": stale_code,
+                }
+            memory_publications.mark_publication_failed(
+                connection,
+                publication_id=publication_id,
+                review_run_id=review_run_id,
+                failure_code=stale_code,
+                status="stale",
+            )
+            return {
+                "published": False,
+                "publication_id": publication_id,
+                "delivery_status": "stale",
+                "failure_code": stale_code,
+            }
+        if already_posted:
+            comment_ids = (
+                _publish_parts(
+                    github=github,
+                    repository=publication["repository"],
+                    pr_number=publication["pr_number"],
+                    parts=parts,
+                    existing_parts=current_parts,
+                )
+                if current_parts
+                else [int(publication["comment_id"] or 0)]
+            )
+            result = {
+                "published": True,
+                "publication_id": publication["publication_id"],
+                "comment_id": publication["comment_id"],
+                "comment_ids": [value for value in comment_ids if value > 0],
+                "delivery_status": "posted",
+                "idempotent": True,
+                "summary_refreshed": bool(current_parts),
+            }
+            result.update(suggestion_result)
+            return result
+
         if current_parts:
             comment_ids = _publish_parts(
                 github=github,
@@ -905,7 +1530,7 @@ def publish_review(
             _cleanup_prior_failure_status(
                 connection, github, publication["repository"], publication["pr_number"]
             )
-            return {
+            result = {
                 "published": True,
                 "publication_id": publication_id,
                 "comment_id": comment_ids[0],
@@ -914,6 +1539,8 @@ def publish_review(
                 "delivery_status": posted["delivery_status"],
                 "recovered": True,
             }
+            result.update(suggestion_result)
+            return result
 
         comment_ids = _publish_parts(
             github=github,
@@ -951,8 +1578,18 @@ def publish_review(
         }
         if supersession is not None:
             result.update(supersession)
+        result.update(suggestion_result)
         return result
     except GitHubPublicationError as exc:
+        if already_posted:
+            return {
+                "published": True,
+                "publication_id": publication["publication_id"],
+                "comment_id": publication["comment_id"],
+                "delivery_status": "posted",
+                "idempotent": True,
+                "summary_refresh_failure_code": exc.code,
+            }
         memory_publications.mark_publication_failed(
             connection,
             publication_id=publication_id,
@@ -1097,7 +1734,9 @@ def publish_run_failure_status(
             None,
         )
         if existing is not None:
-            comment = gateway.update_issue_comment(repository, existing.comment_id, body)
+            comment = gateway.update_issue_comment(
+                repository, existing.comment_id, body
+            )
         else:
             comment = gateway.create_issue_comment(repository, pr_number, body)
 

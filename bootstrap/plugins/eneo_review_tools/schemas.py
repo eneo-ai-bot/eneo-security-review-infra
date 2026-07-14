@@ -1,6 +1,7 @@
 """JSON schemas exposed to the review model."""
 
 from . import memory_validation as memory_contract
+from . import memory_suggestions as suggestion_contract
 
 ENEO_REVIEW_BEGIN = {
     "name": "eneo_review_begin",
@@ -285,6 +286,44 @@ ENEO_REVIEW_MEMORY_RECORD = {
                                 "Offer alternatives only when an external contract "
                                 "requires a developer decision."
                             ),
+                        },
+                        "suggestion": {
+                            "type": "object",
+                            "description": (
+                                "Optional native GitHub suggestion for one complete, "
+                                "independently safe, atomic local fix. Omit this object "
+                                "for coordinated or uncertain changes. The range must be "
+                                "a small contiguous RIGHT-side diff range containing the "
+                                "finding line. expected_text and replacement_text use LF "
+                                "newlines and no trailing newline."
+                            ),
+                            "properties": {
+                                "start_line": {"type": "integer", "minimum": 1},
+                                "end_line": {"type": "integer", "minimum": 1},
+                                "expected_text": {
+                                    "type": "string",
+                                    "maxLength": suggestion_contract.MAX_SUGGESTION_TEXT_CHARS,
+                                    "description": (
+                                        "Exact current PR-head text for the inclusive line "
+                                        "range, copied without line numbers."
+                                    ),
+                                },
+                                "replacement_text": {
+                                    "type": "string",
+                                    "maxLength": suggestion_contract.MAX_SUGGESTION_TEXT_CHARS,
+                                    "description": (
+                                        "Complete replacement for that range, with no "
+                                        "placeholders or Markdown suggestion fence."
+                                    ),
+                                },
+                            },
+                            "required": [
+                                "start_line",
+                                "end_line",
+                                "expected_text",
+                                "replacement_text",
+                            ],
+                            "additionalProperties": False,
                         },
                         "introduced_by_diff": {"type": "boolean", "const": True},
                     },
