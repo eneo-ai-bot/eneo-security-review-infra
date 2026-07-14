@@ -140,12 +140,14 @@ class FeedbackWorkflowTests(unittest.TestCase):
             self.assertNotIn(variable, reaction)
 
         self.assertIn("issues: write", workflow)
-        self.assertNotIn("pull-requests: write", workflow)
+        self.assertIn("pull-requests: write", workflow)
         self.assertIn('output.write(f"mode={mode}\\n")', dispatch)
         self.assertIn("steps.dispatch.outputs.dispatched == 'true'", reaction)
         self.assertIn("steps.dispatch.outputs.mode == 'review'", reaction)
-        self.assertIn("continue-on-error: true", reaction)
-        self.assertIn("gh api --silent", reaction)
+        self.assertNotIn("continue-on-error: true", reaction)
+        self.assertIn("if ! gh api --silent", reaction)
+        self.assertIn("::warning::Review request was accepted", reaction)
+        self.assertIn(">/dev/null 2>&1", reaction)
 
 
 if __name__ == "__main__":
