@@ -557,6 +557,75 @@ class RunToolTests(unittest.TestCase):
         self.assertEqual(publication["delivery_status"], "posted")
         self.assertEqual(publication["comment_id"], result["comment_id"])
 
+    def test_deliver_allows_retry_after_correctable_prior_verdict_conflict(self):
+        first_run_id = self.prepare_recorded_review(pr=17)
+        github = FakeGitHub()
+        with (
+            patch.object(tools, "_pr", return_value=self.pull()),
+            patch.object(review_publisher, "_default_gateway", return_value=github),
+        ):
+            first = self.call(
+                tools.review_deliver,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 17,
+                    "head_sha": "a" * 40,
+                    "run_id": first_run_id,
+                },
+            )
+            self.assertTrue(first["published"])
+
+            retryable_run_id = self.prepare_recorded_review(pr=17)
+            rejected = self.call(
+                tools.review_deliver,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 17,
+                    "head_sha": "a" * 40,
+                    "run_id": retryable_run_id,
+                    "previous_verdicts": [
+                        {
+                            "local_reference": "F1",
+                            "verdict": "resolved",
+                            "evidence": "Claimed fixed despite a current observation.",
+                        }
+                    ],
+                },
+            )
+
+            self.assertEqual(rejected["stage"], "validation_failed")
+            self.assertTrue(rejected["retryable"])
+            self.assertFalse(rejected["published"])
+            with closing(memory_db.connect()) as connection:
+                retryable_run = next(
+                    run
+                    for run in memory_db.list_runs(
+                        connection, repository="eneo-ai/eneo"
+                    )
+                    if run["id"] == retryable_run_id
+                )
+            self.assertEqual(retryable_run["status"], "running")
+            self.assertEqual(retryable_run["phase"], "reviewing")
+
+            delivered = self.call(
+                tools.review_deliver,
+                {
+                    "repository": "eneo-ai/eneo",
+                    "pr_number": 17,
+                    "head_sha": "a" * 40,
+                    "run_id": retryable_run_id,
+                    "previous_verdicts": [
+                        {
+                            "local_reference": "F1",
+                            "verdict": "still_present",
+                        }
+                    ],
+                },
+            )
+
+        self.assertTrue(delivered["published"])
+        self.assertEqual(delivered["stage"], "delivered")
+
     def test_deliver_records_publish_failure_and_failed_run(self):
         run_id = self.prepare_recorded_review(pr=10)
         github = FakeGitHub(base_sha="c" * 40)

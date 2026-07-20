@@ -1091,6 +1091,65 @@ class ReviewMemoryTests(unittest.TestCase):
             {first_recorded[1]["fingerprint"]},
         )
 
+    def test_finalize_review_ignores_closed_historical_verdict_reference(self):
+        first = self.finding
+        second = dict(
+            self.finding,
+            rule_id="tests.missing-regression",
+            category="tests",
+            path="backend/api/test_documents.py",
+            line=80,
+            anchor="test_create_document",
+            title="Regression test misses tenant failure path",
+            severity="Medium",
+            publication_score=7,
+        )
+        self.record_many(
+            [first, second],
+            context_hashes={first["path"]: "d" * 40, second["path"]: "e" * 40},
+        )
+        self.publish(self.finalize())
+
+        self.record_many(
+            [second],
+            head_sha="b" * 40,
+            context_hashes={second["path"]: "e" * 40},
+        )
+        self.publish(
+            self.finalize(
+                head_sha="b" * 40,
+                previous_verdicts=[
+                    {
+                        "local_reference": "F1",
+                        "verdict": "resolved",
+                        "evidence": "Tenant scope is now bound from the request.",
+                    },
+                    {"local_reference": "F2", "verdict": "still_present"},
+                ],
+            )
+        )
+
+        self.record_many(
+            [second],
+            head_sha="c" * 40,
+            context_hashes={second["path"]: "e" * 40},
+        )
+        result = self.finalize(
+            head_sha="c" * 40,
+            previous_verdicts=[
+                {
+                    "local_reference": "F1",
+                    "verdict": "resolved",
+                }
+            ],
+        )
+
+        self.assertEqual(result["ignored_previous_verdicts"], ["F1"])
+        self.assertEqual(result["findings_count"], 1)
+        self.assertEqual(result["resolved_count"], 0)
+        self.assertIn("F2 still present", result["markdown"])
+        self.assertNotIn("F1 resolved", result["markdown"])
+
     def test_finalize_review_tracks_partial_resolution_for_current_finding(self):
         self.record_many([self.finding])
         self.publish(self.finalize())

@@ -1401,6 +1401,9 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                             "suggestion_failure_code", ""
                         ),
                         "resolved_count": finalized["resolved_count"],
+                        "ignored_previous_verdicts": finalized.get(
+                            "ignored_previous_verdicts", []
+                        ),
                     }
                 )
 
@@ -1420,6 +1423,31 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                     ),
                 }
             )
+    except memory_db.PriorVerdictError as exc:
+        if repository and number and run_id:
+            with closing(memory_db.connect_existing()) as connection:
+                updated = memory_db.update_run_phase(
+                    connection,
+                    run_id,
+                    "reviewing",
+                    repository=repository,
+                    pr_number=number,
+                )
+            if updated is not None:
+                return _output(
+                    {
+                        "stage": "validation_failed",
+                        "published": False,
+                        "retryable": True,
+                        "run_id": run_id,
+                        "error": str(exc),
+                        "next_action": (
+                            "Correct previous_verdicts and call eneo_review_deliver "
+                            "again with this same run_id."
+                        ),
+                    }
+                )
+        return _error(str(exc))
     except (ToolInputError, memory_db.ReviewMemoryError) as exc:
         if repository and number and run_id:
             _mark_run_failed(

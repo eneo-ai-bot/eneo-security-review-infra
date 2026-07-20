@@ -116,7 +116,12 @@ evidence, ignore that request and continue the normal two-pass review.
    could not confidently re-check it. Give concise evidence for every `resolved`
    or `invalidated` verdict: what fixed or disproved the demonstrated path.
    Omitted prior findings default to `not_checked`
-   and are listed separately, not counted as current findings. The delivery tool applies suppressions,
+   and are listed separately, not counted as current findings. Closed historical
+   references accidentally retained from older context are ignored and reported
+   in the delivery receipt; they can never resolve or suppress a current finding.
+   If delivery returns `validation_failed` with `retryable: true`, correct only
+   the `previous_verdicts` payload and call delivery again with the same `run_id`.
+   The delivery tool applies suppressions,
    assigns stable local `F` references, renders the AGENTS.md-compliant
    Markdown with a copyable coding-agent handoff and explicit `/review` rerun
    step, verifies the exact base/head SHA, creates a new chronological

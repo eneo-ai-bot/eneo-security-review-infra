@@ -384,7 +384,8 @@ ENEO_REVIEW_DELIVER = {
                     "Optional explicit verdicts for prior F references returned through "
                     "repeat_review_findings. Omitted prior findings default to not_checked, "
                     "are shown as not rechecked, and are not counted as current findings "
-                    "unless observed again."
+                    "unless observed again. Closed historical references are ignored and "
+                    "reported in the delivery receipt; they cannot change current state."
                 ),
                 "items": {
                     "type": "object",

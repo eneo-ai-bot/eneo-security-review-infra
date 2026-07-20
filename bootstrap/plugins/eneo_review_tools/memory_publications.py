@@ -102,6 +102,28 @@ class PriorFindingVerdict(TypedDict):
     evidence: str
 
 
+class PriorVerdictError(ReviewMemoryError):
+    """A correctable prior-finding verdict supplied during delivery."""
+
+
+def _prior_verdict_text(
+    value: object,
+    *,
+    field: str,
+    maximum: int,
+    required: bool = True,
+) -> str:
+    try:
+        return clean_text(
+            value,
+            field=field,
+            maximum=maximum,
+            required=required,
+        )
+    except ReviewMemoryError as exc:
+        raise PriorVerdictError(str(exc)) from exc
+
+
 class PriorReconciliation(TypedDict):
     closed: list[ClosedFinding]
     not_checked: list[str]
@@ -607,68 +629,78 @@ def _unchecked_payload(item: dict[str, Any], *, title: str = "") -> UncheckedFin
 
 def _prior_verdict_value(value: str, *, field: str) -> PriorFindingVerdictValue:
     if value not in PRIOR_FINDING_VERDICTS:
-        raise ReviewMemoryError(f"{field} is not supported")
+        raise PriorVerdictError(f"{field} is not supported")
     return cast(PriorFindingVerdictValue, value)
 
 
 def _normalize_previous_verdicts(
     previous_verdicts: object,
     *,
+    current_references: set[str],
     ignored_references: set[str] | None = None,
-) -> dict[str, PriorFindingVerdict]:
+) -> tuple[dict[str, PriorFindingVerdict], list[str]]:
     if previous_verdicts is None:
-        return {}
+        return {}, []
     if not isinstance(previous_verdicts, Sequence) or isinstance(
         previous_verdicts, (str, bytes)
     ):
-        raise ReviewMemoryError("previous_verdicts must be an array")
+        raise PriorVerdictError("previous_verdicts must be an array")
     verdict_items = cast(Sequence[object], previous_verdicts)
     if len(verdict_items) > MAX_FINDINGS_PER_REVIEW:
-        raise ReviewMemoryError("previous_verdicts contains too many items")
+        raise PriorVerdictError("previous_verdicts contains too many items")
 
     verdicts: dict[str, PriorFindingVerdict] = {}
     ignored = ignored_references or set()
+    ignored_historical: list[str] = []
+    ignored_historical_set: set[str] = set()
     for index, raw_item in enumerate(verdict_items):
         if not isinstance(raw_item, Mapping):
-            raise ReviewMemoryError(
+            raise PriorVerdictError(
                 f"previous_verdicts[{index}] must be an object"
             )
         item = cast(Mapping[object, object], raw_item)
-        local_reference = clean_text(
+        local_reference = _prior_verdict_text(
             item.get("local_reference"),
             field=f"previous_verdicts[{index}].local_reference",
             maximum=12,
         ).upper()
         if local_reference_number(local_reference) < 1:
-            raise ReviewMemoryError(
+            raise PriorVerdictError(
                 f"previous_verdicts[{index}].local_reference must be F1, F2, ..."
             )
         if local_reference in ignored:
             continue
+        if local_reference not in current_references:
+            if local_reference not in ignored_historical_set:
+                ignored_historical.append(local_reference)
+                ignored_historical_set.add(local_reference)
+            continue
         if local_reference in verdicts:
-            raise ReviewMemoryError(f"duplicate previous verdict for {local_reference}")
+            raise PriorVerdictError(
+                f"duplicate previous verdict for {local_reference}"
+            )
 
-        raw_verdict = clean_text(
+        raw_verdict = _prior_verdict_text(
             item.get("verdict"),
             field=f"previous_verdicts[{index}].verdict",
             maximum=40,
         ).lower()
-
         verdict = _prior_verdict_value(
             raw_verdict,
             field=f"previous_verdicts[{index}].verdict",
         )
+        evidence = _prior_verdict_text(
+            item.get("evidence"),
+            field=f"previous_verdicts[{index}].evidence",
+            maximum=PRIOR_VERDICT_EVIDENCE_MAX,
+            required=verdict in PRIOR_VERDICTS_REQUIRING_EVIDENCE,
+        )
         verdicts[local_reference] = {
             "local_reference": local_reference,
             "verdict": verdict,
-            "evidence": clean_text(
-                item.get("evidence"),
-                field=f"previous_verdicts[{index}].evidence",
-                maximum=PRIOR_VERDICT_EVIDENCE_MAX,
-                required=verdict in PRIOR_VERDICTS_REQUIRING_EVIDENCE,
-            ),
+            "evidence": evidence,
         }
-    return verdicts
+    return verdicts, ignored_historical
 
 
 def _reconcile_prior_findings(
@@ -683,7 +715,7 @@ def _reconcile_prior_findings(
     }
     for local_reference in previous_verdicts:
         if local_reference not in by_reference:
-            raise ReviewMemoryError(
+            raise PriorVerdictError(
                 f"previous verdict {local_reference} does not match a current prior finding"
             )
 
@@ -711,7 +743,7 @@ def _reconcile_prior_findings(
             if verdict["verdict"] == "partially_resolved":
                 partially_resolved.append(local_reference)
                 continue
-            raise ReviewMemoryError(
+            raise PriorVerdictError(
                 f"previous verdict {local_reference}={verdict['verdict']} conflicts "
                 "with a newly recorded finding"
             )
@@ -919,8 +951,15 @@ def finalize_review(
             if fingerprint in previous_current
             and reconciliation.get("final_decision") == "drop"
         }
-        normalized_previous_verdicts = _normalize_previous_verdicts(
+        current_references = {
+            str(item["local_reference"]) for item in previous_current.values()
+        }
+        (
+            normalized_previous_verdicts,
+            ignored_previous_verdicts,
+        ) = _normalize_previous_verdicts(
             previous_verdicts,
+            current_references=current_references,
             ignored_references=set(dropped_previous),
         )
         for local_reference, drop in dropped_previous.items():
@@ -1126,6 +1165,7 @@ def finalize_review(
         "suggestion_delivery_status": "pending" if suggestions_count else "none",
         "resolved_count": sum(1 for item in closed if item["verdict"] == "resolved"),
         "closed_count": len(closed),
+        "ignored_previous_verdicts": ignored_previous_verdicts,
         "rendered_blocks_json": rendered_blocks_json,
         "rendered_hash": rendered_hash,
         "markdown": markdown,
