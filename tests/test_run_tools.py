@@ -530,6 +530,27 @@ class RunToolTests(unittest.TestCase):
             )
         return int(run["id"])
 
+    def prepare_empty_review(self, *, pr: int, base_sha="b" * 40, head_sha="a" * 40):
+        with closing(memory_db.connect()) as connection:
+            run = memory_db.start_run(
+                connection,
+                "eneo-ai/eneo",
+                pr,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
+            memory_db.record_findings(
+                connection,
+                "eneo-ai/eneo",
+                pr,
+                head_sha,
+                [],
+                review_run_id=int(run["id"]),
+                base_sha=base_sha,
+                context_hashes={},
+            )
+        return int(run["id"])
+
     def test_deliver_publishes_and_completes_run(self):
         run_id = self.prepare_recorded_review()
         github = FakeGitHub()
@@ -625,6 +646,66 @@ class RunToolTests(unittest.TestCase):
 
         self.assertTrue(delivered["published"])
         self.assertEqual(delivered["stage"], "delivered")
+
+    def test_deliver_keeps_absent_prior_verdict_contract_errors_retryable(self):
+        github = FakeGitHub()
+        cases = (
+            (18, "still_present"),
+            (19, "suppressed"),
+        )
+
+        for pr_number, verdict in cases:
+            with self.subTest(verdict=verdict):
+                first_run_id = self.prepare_recorded_review(pr=pr_number)
+                with (
+                    patch.object(tools, "_pr", return_value=self.pull()),
+                    patch.object(
+                        review_publisher,
+                        "_default_gateway",
+                        return_value=github,
+                    ),
+                ):
+                    first = self.call(
+                        tools.review_deliver,
+                        {
+                            "repository": "eneo-ai/eneo",
+                            "pr_number": pr_number,
+                            "head_sha": "a" * 40,
+                            "run_id": first_run_id,
+                        },
+                    )
+                    self.assertTrue(first["published"])
+
+                    retryable_run_id = self.prepare_empty_review(pr=pr_number)
+                    rejected = self.call(
+                        tools.review_deliver,
+                        {
+                            "repository": "eneo-ai/eneo",
+                            "pr_number": pr_number,
+                            "head_sha": "a" * 40,
+                            "run_id": retryable_run_id,
+                            "previous_verdicts": [
+                                {
+                                    "local_reference": "F1",
+                                    "verdict": verdict,
+                                }
+                            ],
+                        },
+                    )
+
+                self.assertEqual(rejected["stage"], "validation_failed")
+                self.assertTrue(rejected["retryable"])
+                self.assertFalse(rejected["published"])
+                with closing(memory_db.connect()) as connection:
+                    retryable_run = next(
+                        run
+                        for run in memory_db.list_runs(
+                            connection, repository="eneo-ai/eneo"
+                        )
+                        if run["id"] == retryable_run_id
+                    )
+                self.assertEqual(retryable_run["status"], "running")
+                self.assertEqual(retryable_run["phase"], "reviewing")
 
     def test_deliver_records_publish_failure_and_failed_run(self):
         run_id = self.prepare_recorded_review(pr=10)

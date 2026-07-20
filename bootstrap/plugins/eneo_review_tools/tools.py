@@ -1442,8 +1442,10 @@ def review_deliver(args: dict[str, Any], **_: Any) -> str:
                         "run_id": run_id,
                         "error": str(exc),
                         "next_action": (
-                            "Correct previous_verdicts and call eneo_review_deliver "
-                            "again with this same run_id."
+                            "Align previous_verdicts with the recorded findings. Re-record "
+                            "any omitted still-current finding or use not_checked when it "
+                            "was not rechecked, then call eneo_review_deliver again with "
+                            "this same run_id."
                         ),
                     }
                 )

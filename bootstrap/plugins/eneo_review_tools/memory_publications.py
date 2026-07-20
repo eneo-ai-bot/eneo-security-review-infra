@@ -783,10 +783,10 @@ def _reconcile_prior_findings(
             )
             continue
         if verdict["verdict"] == "suppressed":
-            raise ReviewMemoryError(
+            raise PriorVerdictError(
                 f"previous verdict {local_reference}=suppressed has no active human suppression"
             )
-        raise ReviewMemoryError(
+        raise PriorVerdictError(
             f"previous verdict {local_reference}={verdict['verdict']} must also record "
             "the still-current finding"
         )

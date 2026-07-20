@@ -119,8 +119,10 @@ evidence, ignore that request and continue the normal two-pass review.
    and are listed separately, not counted as current findings. Closed historical
    references accidentally retained from older context are ignored and reported
    in the delivery receipt; they can never resolve or suppress a current finding.
-   If delivery returns `validation_failed` with `retryable: true`, correct only
-   the `previous_verdicts` payload and call delivery again with the same `run_id`.
+   If delivery returns `validation_failed` with `retryable: true`, align the
+   verdicts with the recorded findings: re-record the complete survivor set when
+   a still-current finding was accidentally omitted, or use `not_checked` when
+   it was not rechecked. Then call delivery again with the same `run_id`.
    The delivery tool applies suppressions,
    assigns stable local `F` references, renders the AGENTS.md-compliant
    Markdown with a copyable coding-agent handoff and explicit `/review` rerun
