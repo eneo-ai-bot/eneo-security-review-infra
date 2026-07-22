@@ -731,18 +731,16 @@ def pr_diff(args: dict[str, Any], **_: Any) -> str:
             text, only_path=path or None, max_chars=max_chars
         )
         if path and not assembled.path_present:
-            with closing(memory_db.connect_existing()) as connection:
-                memory_db.record_diff_exposure(
-                    connection,
-                    run_id=run_id,
-                    repository=repository,
-                    pr_number=number,
-                    paths=[path],
-                    truncated=False,
-                    unavailable_reason="diff_path_missing",
-                )
-            raise ToolInputError(
-                "the requested path was not present in the rendered diff"
+            # GitHub may omit an otherwise registered changed path from the
+            # whole-PR rendering. Resolve that ambiguity through its per-file
+            # patch before declaring the diff unavailable.
+            return _pr_diff_from_patches(
+                repository=repository,
+                number=number,
+                run_id=run_id,
+                path=path,
+                max_chars=max_chars,
+                reported=max(_int_value(pull.get("changed_files")), 0),
             )
         with closing(memory_db.connect_existing()) as connection:
             if assembled.exposed_paths:
