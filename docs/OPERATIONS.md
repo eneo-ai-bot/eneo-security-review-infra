@@ -395,17 +395,17 @@ or repository text, so scrub them before committing or sharing.
 
 ## Updating And Validation
 
-`HERMES_IMAGE` is pinned to the Hermes 0.18.2 release tag and its immutable
+`HERMES_IMAGE` is pinned to the Hermes 0.19.0 release tag and its immutable
 multi-platform digest in `.env.example`, `compose.yaml`, and `Dockerfile`.
 Update both the human-readable tag and digest through a reviewed dependency
 bump. Never replace this with the moving `latest` or `main` tag.
 
-Hermes 0.18.2 predates GPT-5.6 in its offline Codex picker, but its Codex route
-accepts an explicitly configured model and uses live model discovery when the
-OAuth endpoint is available. The managed profile therefore configures
-`gpt-5.6-sol` directly instead of depending on the picker. A controlled review
-after deployment is the final proof that the subscription is entitled to the
-model and the OAuth route accepts it.
+Hermes 0.19.0 supports GPT-5.6 throughout its model configuration and picker.
+The managed profile still configures `gpt-5.6-sol` directly so deployment does
+not depend on an interactive picker. A controlled review after deployment is
+the final proof that the subscription is entitled to the model and the OAuth
+route accepts it. The Hermes image does not bundle the standalone Codex CLI;
+this service uses Hermes' `openai-codex` provider directly.
 
 After a source update, redeploy. The `review-memory-init` service refreshes the
 managed `/opt/data` profile and migrates SQLite before the gateway starts.
