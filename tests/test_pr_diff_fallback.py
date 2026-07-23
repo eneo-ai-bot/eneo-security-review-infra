@@ -172,12 +172,30 @@ class PrDiffFallbackTests(unittest.TestCase):
         self.assertEqual(result["diff_source"], "per_file_patch")
         self.assertIn("b/src/target.py", result["diff"])
 
-    def test_pr_diff_unavailable_path_points_to_pr_file_on_406(self):
+    def test_unchanged_path_returns_guidance_without_tool_failure(self):
+        run_id = self._begin_run(["src/changed.py"])
+        result = self._pr_diff(
+            run_id,
+            _index([_cf(path="src/changed.py")]),
+            path="src/context.py",
+        )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["path_state"], "not_in_changed_files")
+        self.assertEqual(result["diff"], "")
+        self.assertFalse(result["truncated"])
+        self.assertIn("eneo_pr_file", result["next_action"])
+        self.assertIn("Do not retry eneo_pr_diff", result["next_action"])
+
+    def test_pr_diff_unavailable_path_returns_non_failure_handoff_to_pr_file(self):
         run_id = self._begin_run()
         index = _index([_cf(patch=None, patch_available=False, patch_state="missing")])
         result = self._pr_diff(run_id, index, path="backend/api.py")
-        self.assertIn("error", result)
-        self.assertIn("eneo_pr_file", result["error"])
+        self.assertNotIn("error", result)
+        self.assertEqual(result["path_state"], "diff_unavailable")
+        self.assertEqual(result["diff"], "")
+        self.assertIn("eneo_pr_file", result["next_action"])
+        self.assertIn("Do not retry eneo_pr_diff", result["next_action"])
 
     def test_pr_diff_no_path_fallback_records_complete_coverage(self):
         run_id = self._begin_run()

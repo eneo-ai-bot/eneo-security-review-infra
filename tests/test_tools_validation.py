@@ -1197,7 +1197,7 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("do not retry guessed paths", message)
         self.assertNotIn("backend/guessed/path.py", message)
 
-    def test_pr_file_rejects_base_side_for_added_file_before_network(self):
+    def test_pr_file_redirects_added_file_to_head_without_tool_failure(self):
         files = [{"path": "backend/new.py", "status": "added", "previous_path": None}]
         with (
             patch.dict(os.environ, self.env, clear=False),
@@ -1209,10 +1209,13 @@ class ToolValidationTests(unittest.TestCase):
             result = json.loads(
                 tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new.py", "side": "base", "run_id": run_id})
             )
-        self.assertIn("added file has no base side", result["error"])
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "side_unavailable")
+        self.assertEqual(result["valid_side"], "head")
+        self.assertIn("Do not retry side: base", result["next_action"])
         reader.assert_not_called()
 
-    def test_pr_file_rejects_head_side_for_deleted_file_before_network(self):
+    def test_pr_file_redirects_deleted_file_to_base_without_tool_failure(self):
         files = [{"path": "backend/gone.py", "status": "removed", "previous_path": None}]
         with (
             patch.dict(os.environ, self.env, clear=False),
@@ -1224,7 +1227,10 @@ class ToolValidationTests(unittest.TestCase):
             result = json.loads(
                 tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/gone.py", "side": "head", "run_id": run_id})
             )
-        self.assertIn("deleted file has no head side", result["error"])
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "side_unavailable")
+        self.assertEqual(result["valid_side"], "base")
+        self.assertIn("Do not retry side: head", result["next_action"])
         reader.assert_not_called()
 
     def test_pr_file_base_side_of_renamed_file_uses_previous_path(self):
