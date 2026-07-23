@@ -922,6 +922,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             pr_number INTEGER NOT NULL,
             path TEXT NOT NULL,
             change_status TEXT NOT NULL DEFAULT '',
+            previous_path TEXT NOT NULL DEFAULT '',
             is_changed_path INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1)),
             domain TEXT NOT NULL DEFAULT '',
             review_mode TEXT NOT NULL DEFAULT 'normal',
@@ -1469,6 +1470,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
         "review_run_files",
         "is_changed_path",
         "INTEGER NOT NULL DEFAULT 0 CHECK (is_changed_path IN (0, 1))",
+    )
+    _ensure_column(
+        connection,
+        "review_run_files",
+        "previous_path",
+        "TEXT NOT NULL DEFAULT ''",
     )
     _ensure_column(
         connection,

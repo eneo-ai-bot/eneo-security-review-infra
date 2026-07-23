@@ -244,6 +244,14 @@ class ToolValidationTests(unittest.TestCase):
             remediation_contract,
         )
 
+    def test_read_schemas_expose_non_retryable_terminal_contract(self):
+        for schema in (schemas.ENEO_PR_DIFF, schemas.ENEO_PR_FILE):
+            with self.subTest(tool=schema["name"]):
+                description = schema["description"]
+                self.assertIn("terminal: true", description)
+                self.assertIn("retryable: false", description)
+                self.assertIn("next_action", description)
+
     def test_schema_prior_verdicts_come_from_memory_owner(self):
         deliver_verdict_schema = schemas.ENEO_REVIEW_DELIVER["parameters"]["properties"][
             "previous_verdicts"
@@ -1197,6 +1205,103 @@ class ToolValidationTests(unittest.TestCase):
         self.assertIn("do not retry guessed paths", message)
         self.assertNotIn("backend/guessed/path.py", message)
 
+    def test_pr_file_not_found_returns_terminal_non_failure(self):
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(
+                tools,
+                "_request_json",
+                side_effect=tools.NotFoundError("not found"),
+            ),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend/context.py",
+                        "side": "head",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "not_found_at_revision")
+        self.assertEqual(result["content"], "")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        self.assertIn("Do not retry eneo_pr_file", result["next_action"])
+
+    def test_pr_file_missing_blob_returns_terminal_non_failure(self):
+        metadata = {
+            "type": "file",
+            "encoding": "none",
+            "content": "",
+            "size": 1_100_000,
+            "sha": "c" * 40,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(tools, "_request_json", return_value=metadata),
+            patch.object(
+                tools,
+                "_request",
+                side_effect=tools.NotFoundError("not found"),
+            ),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend/context.py",
+                        "side": "head",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "not_found_at_revision")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+
+    def test_pr_file_missing_head_repository_returns_terminal_non_failure(self):
+        pull = self._pull()
+        pull["head"]["repo"] = None
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=pull),
+            patch.object(tools, "_changed_files") as changed_reader,
+            patch.object(tools, "_file_at_revision") as file_reader,
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend/context.py",
+                        "side": "head",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "source_repository_unavailable")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        changed_reader.assert_not_called()
+        file_reader.assert_not_called()
+
     def test_pr_file_redirects_added_file_to_head_without_tool_failure(self):
         files = [{"path": "backend/new.py", "status": "added", "previous_path": None}]
         with (
@@ -1212,6 +1317,8 @@ class ToolValidationTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["file_state"], "side_unavailable")
         self.assertEqual(result["valid_side"], "head")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
         self.assertIn("Do not retry side: base", result["next_action"])
         reader.assert_not_called()
 
@@ -1230,6 +1337,8 @@ class ToolValidationTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["file_state"], "side_unavailable")
         self.assertEqual(result["valid_side"], "base")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
         self.assertIn("Do not retry side: head", result["next_action"])
         reader.assert_not_called()
 
@@ -1246,6 +1355,201 @@ class ToolValidationTests(unittest.TestCase):
                 tools.pr_file({"repository": "eneo/platform", "pr_number": 1, "path": "backend/new_name.py", "side": "base", "run_id": run_id})
             )
         reader.assert_called_once_with("eneo/platform", "backend/old_name.py", "b" * 40)
+
+    def test_pr_file_reuses_run_owned_rename_metadata_without_remote_file_index(self):
+        with patch.dict(os.environ, self.env, clear=False):
+            run_id = self.start_run()
+            with closing(memory_db.connect_existing(self.db)) as connection:
+                memory_db.register_changed_files(
+                    connection,
+                    run_id=run_id,
+                    repository="eneo/platform",
+                    pr_number=1,
+                    files=[
+                        {
+                            "path": "backend/new_name.py",
+                            "status": "renamed",
+                            "previous_path": "backend/old_name.py",
+                        }
+                    ],
+                )
+            with (
+                patch.object(tools, "_pr", return_value=self._pull()),
+                patch.object(tools, "_changed_files") as remote_index,
+                patch.object(
+                    tools,
+                    "_file_at_revision",
+                    return_value=b"prior\n",
+                ) as reader,
+            ):
+                result = json.loads(
+                    tools.pr_file(
+                        {
+                            "repository": "eneo/platform",
+                            "pr_number": 1,
+                            "path": "backend/new_name.py",
+                            "side": "base",
+                            "run_id": run_id,
+                        }
+                    )
+                )
+
+        self.assertNotIn("error", result)
+        remote_index.assert_not_called()
+        reader.assert_called_once_with(
+            "eneo/platform", "backend/old_name.py", "b" * 40
+        )
+
+    def test_pr_file_redirects_unchanged_base_read_to_head_without_tool_failure(self):
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(tools, "_file_at_revision") as reader,
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend/context.py",
+                        "side": "base",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "side_unavailable")
+        self.assertEqual(result["valid_side"], "head")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        reader.assert_not_called()
+
+    def test_pr_file_redirects_rename_without_prior_path_to_head(self):
+        files = [
+            {
+                "path": "backend/new_name.py",
+                "status": "renamed",
+                "previous_path": None,
+            }
+        ]
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=files),
+            patch.object(tools, "_file_at_revision") as reader,
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend/new_name.py",
+                        "side": "base",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "side_unavailable")
+        self.assertEqual(result["valid_side"], "head")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        reader.assert_not_called()
+
+    def test_pr_file_non_regular_path_returns_terminal_non_failure(self):
+        metadata = {
+            "type": "dir",
+            "encoding": "none",
+            "content": "",
+            "size": 0,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(tools, "_request_json", return_value=metadata),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "backend",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "not_regular")
+        self.assertEqual(result["content"], "")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+
+    def test_pr_file_oversized_path_returns_terminal_non_failure(self):
+        metadata = {
+            "type": "file",
+            "encoding": "none",
+            "content": "",
+            "size": tools._MAX_FILE_BYTES + 1,
+            "sha": "a" * 40,
+        }
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(tools, "_request_json", return_value=metadata),
+            patch.object(tools, "_request") as raw_reader,
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "data/huge.json",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "too_large")
+        self.assertEqual(result["content"], "")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        raw_reader.assert_not_called()
+
+    def test_pr_file_binary_path_returns_terminal_non_failure(self):
+        with (
+            patch.dict(os.environ, self.env, clear=False),
+            patch.object(tools, "_pr", return_value=self._pull()),
+            patch.object(tools, "_changed_files", return_value=[]),
+            patch.object(tools, "_file_at_revision", return_value=b"\x00binary"),
+        ):
+            run_id = self.start_run()
+            result = json.loads(
+                tools.pr_file(
+                    {
+                        "repository": "eneo/platform",
+                        "pr_number": 1,
+                        "path": "assets/image.bin",
+                        "run_id": run_id,
+                    }
+                )
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["file_state"], "binary")
+        self.assertEqual(result["content"], "")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
 
 
 if __name__ == "__main__":

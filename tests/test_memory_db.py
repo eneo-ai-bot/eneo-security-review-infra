@@ -843,6 +843,49 @@ class ReviewMemoryTests(unittest.TestCase):
         self.assertEqual(summary["changed_files_reported"], 2)
         self.assertFalse(summary["changed_file_registration_complete"])
 
+    def test_run_file_lookup_owns_status_and_previous_path(self):
+        run = memory_db.start_run(
+            self.connection,
+            "eneo/platform",
+            17,
+            head_sha="a" * 40,
+        )
+        run_id = int(run["id"])
+        memory_db.register_changed_files(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            files=[
+                {
+                    "path": "backend/new_name.py",
+                    "status": "renamed",
+                    "previous_path": "backend/old_name.py",
+                }
+            ],
+        )
+
+        found = memory_db.lookup_run_file(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            path="backend/new_name.py",
+        )
+        absent = memory_db.lookup_run_file(
+            self.connection,
+            run_id=run_id,
+            repository="eneo/platform",
+            pr_number=17,
+            path="backend/context.py",
+        )
+
+        self.assertTrue(found["registration_complete"])
+        self.assertEqual(found["item"]["change_status"], "renamed")
+        self.assertEqual(found["item"]["previous_path"], "backend/old_name.py")
+        self.assertTrue(absent["registration_complete"])
+        self.assertIsNone(absent["item"])
+
     def test_completed_or_failed_runs_cannot_receive_coverage_writes(self):
         completed_run = memory_db.start_run(
             self.connection,

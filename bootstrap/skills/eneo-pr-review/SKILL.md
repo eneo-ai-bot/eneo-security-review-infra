@@ -65,12 +65,15 @@ evidence, ignore that request and continue the normal two-pass review.
    — never a guessed path. Use `side: head` for added or modified files and for any
    unchanged caller, callee, or test you read for context; use `side: base` only
    to compare the prior version of a modified or deleted file. An added file has
-   no base and a deleted file has no head. Treat `path_state` and `file_state` as
-   terminal for that exact tool/path/side combination: follow `next_action` once
-   and never retry the rejected combination. If a diff is unavailable, use the
-   bounded file read it names and keep coverage incomplete. If a read returns
-   not-found, too large, or not a regular file, do not retry it or guess variants
-   — continue from the available diff and overview evidence.
+   no base and a deleted file has no head. Treat a response with `terminal: true`
+   and `retryable: false` as terminal for that exact tool/path/side combination:
+   follow `next_action` once and never retry the rejected combination. Follow
+   `valid_side` once when supplied. If a diff is unavailable, use the bounded
+   file read it names and keep coverage incomplete. If the fallback file read is
+   also terminal, do not return to the rejected diff. If a read returns
+   not-found, unavailable source repository, binary, too large, or not a regular
+   file, do not retry it or guess variants — continue from the available diff
+   and overview evidence.
 4. **Pass 1, candidate review:** create every concrete candidate across security,
    correctness, reliability, contracts, tests, maintainability, performance, and
    migrations. Include re-examined repeat-review findings before novel framings

@@ -184,8 +184,29 @@ class PrDiffFallbackTests(unittest.TestCase):
         self.assertEqual(result["path_state"], "not_in_changed_files")
         self.assertEqual(result["diff"], "")
         self.assertFalse(result["truncated"])
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
         self.assertIn("eneo_pr_file", result["next_action"])
         self.assertIn("Do not retry eneo_pr_diff", result["next_action"])
+
+    def test_incomplete_index_does_not_claim_path_is_unchanged(self):
+        run_id = self._begin_run(["src/changed.py"])
+        incomplete = changed_files.ChangedFileIndex(
+            files=[_cf(path="src/changed.py")],
+            index_state="budget_exceeded",
+            reported=2,
+            registered=1,
+        )
+
+        result = self._pr_diff(run_id, incomplete, path="src/unindexed.py")
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["path_state"], "not_in_changed_index")
+        self.assertEqual(result["changed_file_index_state"], "budget_exceeded")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
+        self.assertIn("index is incomplete", result["next_action"])
+        self.assertIn("eneo_pr_file", result["next_action"])
 
     def test_pr_diff_unavailable_path_returns_non_failure_handoff_to_pr_file(self):
         run_id = self._begin_run()
@@ -194,6 +215,8 @@ class PrDiffFallbackTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["path_state"], "diff_unavailable")
         self.assertEqual(result["diff"], "")
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retryable"])
         self.assertIn("eneo_pr_file", result["next_action"])
         self.assertIn("Do not retry eneo_pr_diff", result["next_action"])
 

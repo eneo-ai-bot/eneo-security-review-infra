@@ -50,6 +50,7 @@ class CoverageSummary(TypedDict):
 class RunFileItem(TypedDict):
     path: str
     change_status: str
+    previous_path: str
     domain: str
     review_mode: str
     diff_state: DiffState
@@ -64,6 +65,11 @@ class RunFilePage(TypedDict):
     next_cursor: str | None
     total_matching: int
     items: list[RunFileItem]
+
+
+class RunFileLookup(TypedDict):
+    item: RunFileItem | None
+    registration_complete: bool
 
 
 class FileIndexSummary(TypedDict):
@@ -225,14 +231,20 @@ def register_changed_files(
         for item in files:
             path = normalize_path(str(item.get("path", "")))
             change_status = str(item.get("status", ""))[:40]
+            raw_previous_path = str(item.get("previous_path") or "")
+            previous_path = (
+                normalize_path(raw_previous_path) if raw_previous_path else ""
+            )
             connection.execute(
                 """
                 INSERT INTO review_run_files (
-                    run_id, repository, pr_number, path, change_status, domain,
-                    is_changed_path, review_mode, first_accessed_at, last_accessed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    run_id, repository, pr_number, path, change_status, previous_path,
+                    domain, is_changed_path, review_mode, first_accessed_at,
+                    last_accessed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(run_id, path) DO UPDATE SET
                     change_status = excluded.change_status,
+                    previous_path = excluded.previous_path,
                     is_changed_path = 1,
                     domain = excluded.domain,
                     review_mode = excluded.review_mode,
@@ -244,6 +256,7 @@ def register_changed_files(
                     pr_number,
                     path,
                     change_status,
+                    previous_path,
                     _path_domain(path),
                     _review_mode(path, change_status),
                     moment,
@@ -298,6 +311,7 @@ def _file_item(row: sqlite3.Row) -> RunFileItem:
     return {
         "path": str(row["path"]),
         "change_status": str(row["change_status"] or ""),
+        "previous_path": str(row["previous_path"] or ""),
         "domain": str(row["domain"] or ""),
         "review_mode": str(row["review_mode"] or "normal"),
         "diff_state": cast(DiffState, str(row["diff_state"] or "unseen")),
@@ -316,7 +330,8 @@ def file_index_summary(
     registration = _run_registration(connection, run_id)
     rows = connection.execute(
         """
-        SELECT path, change_status, is_changed_path, domain, review_mode, diff_state
+        SELECT path, change_status, previous_path, is_changed_path, domain,
+               review_mode, diff_state
         FROM review_run_files
         WHERE run_id = ? AND is_changed_path = 1
         ORDER BY path
@@ -334,6 +349,41 @@ def file_index_summary(
         "by_review_mode": _counter(connection, run_id, "review_mode"),
         "by_change_status": _counter(connection, run_id, "change_status"),
         "sample_paths": [_file_item(row) for row in rows],
+    }
+
+
+def lookup_run_file(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    repository: str,
+    pr_number: int,
+    path: str,
+) -> RunFileLookup:
+    """Read one path from the run-owned changed-file snapshot."""
+    run_id = _positive_run_id(run_id)
+    repository = normalize_repository(repository)
+    pr_number = int(pr_number)
+    path = normalize_path(path)
+    _validate_run(
+        connection,
+        run_id=run_id,
+        repository=repository,
+        pr_number=pr_number,
+    )
+    registration = _run_registration(connection, run_id)
+    row = connection.execute(
+        """
+        SELECT path, change_status, previous_path, is_changed_path, domain,
+               review_mode, diff_state
+        FROM review_run_files
+        WHERE run_id = ? AND repository = ? AND pr_number = ? AND path = ?
+        """,
+        (run_id, repository, pr_number, path),
+    ).fetchone()
+    return {
+        "item": _file_item(row) if row is not None else None,
+        "registration_complete": registration["changed_file_registration_complete"],
     }
 
 
@@ -379,7 +429,8 @@ def list_run_files(
         _file_item(row)
         for row in connection.execute(
             f"""
-            SELECT path, change_status, is_changed_path, domain, review_mode, diff_state
+            SELECT path, change_status, previous_path, is_changed_path, domain,
+                   review_mode, diff_state
             FROM review_run_files
             WHERE {where}
             ORDER BY path
